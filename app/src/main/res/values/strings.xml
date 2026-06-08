@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Default (English fallback) strings. Hindi overrides live in values-hi/strings.xml -->
+    <string name="app_name">Sahayak</string>
+    <string name="onboarding_title">Turn on Sahayak</string>
+    <string name="onboarding_subtitle">Your phone\'s companion</string>
+    <string name="onboarding_step1">Open Settings</string>
+    <string name="onboarding_step2">Go to Accessibility</string>
+    <string name="onboarding_step3">Turn on Sahayak</string>
+    <string name="onboarding_step1_sub">Go into your phone\'s settings</string>
+    <string name="onboarding_step2_sub">Tap on Accessibility &amp; Motor</string>
+    <string name="onboarding_step3_sub">Switch Sahayak on</string>
+    <string name="onboarding_button">Let\'s turn it on</string>
+    <string name="tts_welcome">Hello, I am Sahayak. I will help you.</string>
+    <string name="task_complete">All done!</string>
+    <string name="thinking">Sahayak is thinking…</string>
+    <string name="element_not_found">One moment, searching…</string>
+
+    <!-- MainActivity test UI labels -->
+    <string name="btn_show_dot">Show Dot at Center</string>
+    <string name="btn_hide_dot">Hide Dot</string>
+    <string name="btn_namaste">Namaste Bolo</string>
+    <string name="hint_find_element">Element dhundhein</string>
+    <string name="btn_search">Dhundho</string>
+    <string name="btn_remove_dot">Dot Hatao</string>
+    <string name="dot_tap_here">यहाँ दबाइए</string>
+    <string name="toast_element_not_found">Element nahi mila</string>
+</resources>
