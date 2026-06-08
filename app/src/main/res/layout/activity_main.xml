@@ -1,108 +1,166 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:background="@color/navy">
 
-    <LinearLayout
-        android:layout_width="match_parent"
+    <!-- Header bar -->
+    <TextView
+        android:id="@+id/logo"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="24dp">
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="24dp"
+        android:fontFamily="@font/outfit_bold"
+        android:text="@string/app_name"
+        android:textColor="@color/coral"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginBottom="24dp"
-            android:text="@string/app_name"
-            android:textColor="@color/saffron"
-            android:textSize="32sp"
-            android:textStyle="bold" />
+    <!-- Permission status cluster (3 dots) -->
+    <LinearLayout
+        android:id="@+id/statusCluster"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="24dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        app:layout_constraintBottom_toBottomOf="@id/logo"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="@id/logo">
 
-        <!-- Day 4: overlay test buttons -->
-        <Button
-            android:id="@+id/btnShowDot"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:text="@string/btn_show_dot" />
+        <View
+            android:id="@+id/dotOverlay"
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/badge_red" />
 
-        <Button
-            android:id="@+id/btnHideDot"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:text="@string/btn_hide_dot" />
+        <View
+            android:id="@+id/dotAccessibility"
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/badge_red" />
 
-        <!-- Day 6: TTS test button -->
-        <Button
-            android:id="@+id/btnNamaste"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="24dp"
-            android:text="@string/btn_namaste" />
-
-        <!-- Day 5: connect accessibility + overlay -->
-        <EditText
-            android:id="@+id/editElement"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:hint="@string/hint_find_element"
-            android:importantForAutofill="no"
-            android:inputType="text" />
-
-        <Button
-            android:id="@+id/btnSearch"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:text="@string/btn_search" />
-
-        <Button
-            android:id="@+id/btnRemoveDot"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="24dp"
-            android:text="@string/btn_remove_dot" />
-
-        <!-- Fix 3: Emulator test targets -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:text="@string/section_emulator_targets"
-            android:textColor="@color/text_dark"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/btnFindSearch"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:text="@string/btn_find_search" />
-
-        <Button
-            android:id="@+id/btnFindSettings"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:text="@string/btn_find_settings" />
-
-        <Button
-            android:id="@+id/btnFindChrome"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
-            android:text="@string/btn_find_chrome" />
-
-        <Button
-            android:id="@+id/btnFindCompose"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/btn_find_compose" />
-
+        <View
+            android:id="@+id/dotCapture"
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/badge_red" />
     </LinearLayout>
-</ScrollView>
+
+    <!-- Main task card -->
+    <LinearLayout
+        android:id="@+id/taskCard"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginTop="32dp"
+        android:background="@drawable/card_navy"
+        android:orientation="vertical"
+        android:padding="20dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/logo">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="@font/outfit"
+            android:text="@string/main_prompt_label"
+            android:textColor="@color/white_60"
+            android:textSize="14sp" />
+
+        <EditText
+            android:id="@+id/editTask"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/edit_underline"
+            android:fontFamily="@font/outfit"
+            android:hint="@string/main_task_hint"
+            android:importantForAutofill="no"
+            android:inputType="text"
+            android:paddingVertical="8dp"
+            android:textColor="@color/white"
+            android:textColorHint="@color/white_50"
+            android:textCursorDrawable="@null"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/btnStartGuidance"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:background="@drawable/btn_coral_pill"
+            android:fontFamily="@font/outfit"
+            android:padding="14dp"
+            android:text="@string/main_start_guidance"
+            android:textAllCaps="false"
+            android:textColor="@color/white"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <!-- Recent header -->
+    <TextView
+        android:id="@+id/recentHeader"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="32dp"
+        android:fontFamily="@font/outfit"
+        android:letterSpacing="0.15"
+        android:text="@string/main_recent"
+        android:textAllCaps="true"
+        android:textColor="@color/white_50"
+        android:textSize="12sp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/taskCard" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recentList"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginTop="12dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/recentHeader" />
+
+    <!-- Active status footer -->
+    <LinearLayout
+        android:id="@+id/activeStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="32dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <View
+            android:id="@+id/activeDot"
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:background="@drawable/badge_gray" />
+
+        <TextView
+            android:id="@+id/activeText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:fontFamily="@font/outfit"
+            android:text="@string/main_inactive"
+            android:textColor="@color/white_50"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

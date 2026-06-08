@@ -2,24 +2,73 @@
 <resources>
     <!-- All user-facing text is English for the MVP. Multilingual support is post-MVP. -->
     <string name="app_name">Waylo</string>
+
+    <!-- Legacy onboarding strings (kept for reference / fallback) -->
     <string name="onboarding_title">Set Up Waylo</string>
     <string name="onboarding_subtitle">Your phone\'s companion</string>
-    <string name="onboarding_step1">Open Settings</string>
-    <string name="onboarding_step2">Go to Accessibility</string>
-    <string name="onboarding_step3">Enable Waylo</string>
-    <string name="onboarding_step1_sub">Go into your phone\'s settings</string>
-    <string name="onboarding_step2_sub">Tap on Accessibility &amp; Motor</string>
-    <string name="onboarding_step3_sub">Switch Waylo on</string>
     <string name="onboarding_button">Let\'s Go</string>
+
     <string name="tts_welcome">Hello, I am Waylo. I will help you navigate your phone.</string>
     <string name="task_complete">All done!</string>
     <string name="thinking">Waylo is thinking...</string>
     <string name="element_not_found">Please wait, searching...</string>
 
-    <!-- MainActivity test UI labels -->
+    <!-- Onboarding — Welcome -->
+    <string name="ob_welcome_tagline">Your phone. Guided.</string>
+    <string name="ob_get_started">Get Started</string>
+
+    <!-- Onboarding — Overlay -->
+    <string name="ob_overlay_title">Draw Over Apps</string>
+    <string name="ob_overlay_body">Waylo places a dot on your screen to show exactly what to tap.</string>
+    <string name="ob_overlay_button">Grant Permission</string>
+
+    <!-- Onboarding — Accessibility -->
+    <string name="ob_accessibility_title">Read the Screen</string>
+    <string name="ob_accessibility_body">Waylo reads what\'s on your screen to know where to guide you. It cannot see passwords.</string>
+    <string name="ob_accessibility_button">Enable in Settings</string>
+
+    <!-- Onboarding — Screen Capture -->
+    <string name="ob_capture_title">Capture the Screen</string>
+    <string name="ob_capture_body">When Waylo can\'t find a button automatically, it takes a screenshot to figure it out.</string>
+    <string name="ob_capture_button">Allow Screen Capture</string>
+    <string name="ob_skip">Skip for now</string>
+    <string name="ob_finish">All Done →</string>
+
+    <!-- Status badges -->
+    <string name="status_granted">Granted</string>
+    <string name="status_not_granted">Not granted</string>
+
+    <!-- Main screen -->
+    <string name="main_prompt_label">What would you like to do?</string>
+    <string name="main_task_hint">Describe the task…</string>
+    <string name="main_start_guidance">Start Guidance →</string>
+    <string name="main_recent">Recent</string>
+    <string name="main_active">Waylo is active</string>
+    <string name="main_inactive">Waylo is inactive</string>
+
+    <!-- Permissions bottom sheet -->
+    <string name="perm_sheet_title">Permissions</string>
+    <string name="perm_overlay">Draw over apps</string>
+    <string name="perm_accessibility">Read the screen</string>
+    <string name="perm_capture">Screen capture</string>
+    <string name="perm_microphone">Microphone</string>
+
+    <!-- Developer tools -->
+    <string name="dev_tools_title">Developer Tools</string>
+    <string name="dev_grant_capture">Grant Screen Capture</string>
+    <string name="dev_ocr_section">OCR Pipeline Test</string>
+    <string name="dev_ocr_hint">What to find?</string>
+    <string name="dev_ocr_button">Find with OCR Pipeline</string>
+
+    <!-- Foreground service notification -->
+    <string name="notif_channel_name">Waylo Guidance</string>
+    <string name="notif_title">Waylo is guiding you</string>
+    <string name="notif_text">Tap to return to Waylo</string>
+
+    <!-- MainActivity test UI labels (developer menu) -->
     <string name="btn_show_dot">Show Dot at Center</string>
     <string name="btn_hide_dot">Hide Dot</string>
-    <string name="btn_namaste">Say Hello</string>
+    <string name="btn_namaste">Test TTS</string>
     <string name="hint_find_element">Enter element name (e.g. search, compose, create)</string>
     <string name="btn_search">Find</string>
     <string name="btn_remove_dot">Remove Dot</string>

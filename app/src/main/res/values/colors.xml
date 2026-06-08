@@ -1,11 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="saffron">#FF6B35</color>
-    <color name="saffron_dark">#E55A28</color>
+    <!-- Waylo brand palette: deep navy + coral accent. No gradients. -->
+    <color name="navy">#0A1628</color>
+    <color name="navy_card">#12203A</color>
+    <color name="navy_elevated">#16263F</color>
+    <color name="coral">#FF5733</color>
+    <color name="coral_dark">#E04826</color>
+
     <color name="white">#FFFFFFFF</color>
     <color name="black">#FF000000</color>
+
+    <!-- Translucent whites for secondary text -->
+    <color name="white_70">#B3FFFFFF</color>
+    <color name="white_60">#99FFFFFF</color>
+    <color name="white_50">#80FFFFFF</color>
+    <color name="white_12">#1FFFFFFF</color>
+
+    <!-- Status badge dots -->
+    <color name="status_green">#3DDC84</color>
+    <color name="status_red">#FF4D4D</color>
+    <color name="status_gray">#5A6B82</color>
+
+    <!-- Skeleton placeholder -->
+    <color name="skeleton">#1E2E48</color>
+
+    <!-- Dot overlay -->
     <color name="dot_red">#FFFF0000</color>
+
+    <!-- Legacy keys kept so older references still resolve -->
+    <color name="saffron">#FF5733</color>
+    <color name="saffron_dark">#E04826</color>
     <color name="card_white">#FFFFFFFF</color>
-    <color name="text_dark">#FF222222</color>
-    <color name="text_gray">#FF666666</color>
+    <color name="text_dark">#FFFFFFFF</color>
+    <color name="text_gray">#B3FFFFFF</color>
 </resources>

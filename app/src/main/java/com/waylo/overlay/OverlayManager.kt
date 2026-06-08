@@ -1,11 +1,14 @@
 package com.waylo.overlay
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.PixelFormat
 import android.os.Build
 import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
+import com.waylo.ocr.ScreenAnalysisPipeline.PipelineResult
 
 /**
  * Draws and positions the [DotView] on top of every other app using a system
@@ -21,6 +24,7 @@ object OverlayManager {
     private var appContext: Context? = null
     private var dotView: DotView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+    private var moveAnimator: ValueAnimator? = null
 
     /** Initialise with a context; safe to call multiple times. */
     fun init(context: Context) {
@@ -29,9 +33,12 @@ object OverlayManager {
         Log.d(TAG, "OverlayManager initialised.")
     }
 
+    /** True if the dot is currently attached to the window. */
+    fun isShowing(): Boolean = dotView != null
+
     /**
      * Show the pulsing dot at absolute screen coordinates (x, y), with [instruction]
-     * shown in the label above it. If a dot is already showing it is moved instead.
+     * shown in the label. If a dot is already showing it animates to the new spot.
      */
     fun showDot(x: Int, y: Int, instruction: String) {
         val wm = windowManager ?: run {
@@ -40,9 +47,8 @@ object OverlayManager {
         }
 
         if (dotView != null) {
-            // Already showing — just update text and reposition.
             dotView?.setInstruction(instruction)
-            moveDot(x, y)
+            moveDotAnimated(x, y)
             return
         }
 
@@ -76,7 +82,24 @@ object OverlayManager {
         }
     }
 
-    /** Move an already-visible dot to new screen coordinates. */
+    /**
+     * Show or move the dot based on a pipeline result. Animates if already
+     * visible, otherwise shows it in place.
+     */
+    fun showDotAtResult(result: PipelineResult) {
+        if (result.source == "failed") {
+            Log.d(TAG, "showDotAtResult: pipeline failed, not moving dot.")
+            return
+        }
+        if (dotView == null) {
+            showDot(result.x, result.y, result.label)
+        } else {
+            dotView?.setInstruction(result.label)
+            moveDotAnimated(result.x, result.y)
+        }
+    }
+
+    /** Instantly reposition the dot (no animation). */
     fun moveDot(x: Int, y: Int) {
         val wm = windowManager ?: return
         val view = dotView ?: return
@@ -91,8 +114,48 @@ object OverlayManager {
         }
     }
 
+    /**
+     * Smoothly slide the dot from its current position to (toX, toY).
+     * The pulse/label is paused during the move and resumed on arrival, so the
+     * dot never teleports.
+     */
+    fun moveDotAnimated(toX: Int, toY: Int, duration: Long = 400) {
+        val wm = windowManager ?: return
+        val view = dotView ?: return
+        val params = layoutParams ?: return
+
+        moveAnimator?.cancel()
+
+        val fromX = params.x
+        val fromY = params.y
+        if (fromX == toX && fromY == toY) return
+
+        view.onMoveStart()
+
+        moveAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            this.duration = duration
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val t = animator.animatedValue as Float
+                params.x = (fromX + (toX - fromX) * t).toInt()
+                params.y = (fromY + (toY - fromY) * t).toInt()
+                try {
+                    wm.updateViewLayout(view, params)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to update overlay during animation.", e)
+                    cancel()
+                }
+            }
+            // Resume the pulse + label fade-in once the dot arrives.
+            addOnArrival { view.onMoveEnd() }
+            start()
+        }
+    }
+
     /** Remove the dot from the window if it is currently showing. */
     fun hideDot() {
+        moveAnimator?.cancel()
+        moveAnimator = null
         val wm = windowManager ?: return
         val view = dotView ?: return
         try {
@@ -115,5 +178,18 @@ object OverlayManager {
             @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
+    }
+
+    /** Small helper to run [block] when a ValueAnimator finishes (not cancelled). */
+    private fun ValueAnimator.addOnArrival(block: () -> Unit) {
+        addListener(object : android.animation.AnimatorListenerAdapter() {
+            private var cancelled = false
+            override fun onAnimationCancel(animation: android.animation.Animator) {
+                cancelled = true
+            }
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (!cancelled) block()
+            }
+        })
     }
 }

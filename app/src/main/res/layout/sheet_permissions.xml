@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/navy_card"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="20dp"
+        android:fontFamily="@font/outfit_bold"
+        android:text="@string/perm_sheet_title"
+        android:textColor="@color/white"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <include
+        android:id="@+id/rowOverlay"
+        layout="@layout/item_permission_row" />
+
+    <include
+        android:id="@+id/rowAccessibility"
+        layout="@layout/item_permission_row" />
+
+    <include
+        android:id="@+id/rowCapture"
+        layout="@layout/item_permission_row" />
+
+    <include
+        android:id="@+id/rowMic"
+        layout="@layout/item_permission_row" />
+
+</LinearLayout>

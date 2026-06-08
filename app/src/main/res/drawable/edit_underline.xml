@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bottom-line-only background: a coral line drawn at the bottom edge. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:gravity="bottom">
+        <shape android:shape="rectangle">
+            <size android:height="1.5dp" />
+            <solid android:color="@color/coral" />
+        </shape>
+    </item>
+</layer-list>
