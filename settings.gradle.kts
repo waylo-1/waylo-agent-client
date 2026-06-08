@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Sahayak"
+rootProject.name = "Waylo"
 include(":app")

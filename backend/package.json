@@ -1,7 +1,7 @@
 {
-  "name": "sahayak-backend",
+  "name": "waylo-backend",
   "version": "1.0.0",
-  "description": "Sahayak backend — generates step plans via Gemini and stores shareable guides.",
+  "description": "Waylo backend — generates step plans via Gemini and stores shareable guides.",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {

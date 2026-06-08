@@ -1,8 +1,8 @@
 // TODO: Day 15-16 — implement the Layer 2 (ML Kit OCR) and Layer 3 (Gemini Vision)
 // fallbacks used when ElementFinder fails to locate an element.
-package com.sahayak.guidance
+package com.waylo.guidance
 
-import com.sahayak.ai.Step
+import com.waylo.ai.Step
 
 /**
  * Fallback chain for when the accessibility-tree search (Layer 1) fails.

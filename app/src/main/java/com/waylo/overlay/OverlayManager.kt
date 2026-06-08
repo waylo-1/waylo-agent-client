@@ -1,4 +1,4 @@
-package com.sahayak.overlay
+package com.waylo.overlay
 
 import android.content.Context
 import android.graphics.PixelFormat
@@ -15,7 +15,7 @@ import android.view.WindowManager
  */
 object OverlayManager {
 
-    private const val TAG = "Sahayak"
+    private const val TAG = "Waylo"
 
     private var windowManager: WindowManager? = null
     private var appContext: Context? = null

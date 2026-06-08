@@ -1,8 +1,8 @@
 // TODO: Day 17 — implement fetch/store of shareable guides via the backend
 // (POST /guide, GET /guide/:id).
-package com.sahayak.sharing
+package com.waylo.sharing
 
-import com.sahayak.ai.Step
+import com.waylo.ai.Step
 
 /**
  * Stores and retrieves shareable guides through the backend so a child can

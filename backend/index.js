@@ -1,4 +1,4 @@
-// Sahayak backend — Express server skeleton.
+// Waylo backend — Express server skeleton.
 // Routes:
 //   POST /plan        -> Gemini -> JSON step plan      (Day 8)
 //   POST /guide       -> store a shareable guide       (Day 17)
@@ -20,7 +20,7 @@ app.use(express.json());
 
 // Health check.
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'sahayak-backend' });
+  res.json({ status: 'ok', service: 'waylo-backend' });
 });
 
 // Feature routes.
@@ -28,7 +28,7 @@ app.use('/plan', planRoutes);
 app.use('/guide', guideRoutes);
 
 app.listen(PORT, () => {
-  console.log(`Sahayak backend listening on port ${PORT}`);
+  console.log(`Waylo backend listening on port ${PORT}`);
 });
 
 module.exports = app;

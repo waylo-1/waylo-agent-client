@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.sahayak"
+    namespace = "com.waylo"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.sahayak"
+        applicationId = "com.waylo"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -48,6 +48,7 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.cardview:cardview:1.0.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
     // ML Kit on-device text recognition (OCR fallback - Layer 2)
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")

@@ -1,4 +1,4 @@
-package com.sahayak.accessibility
+package com.waylo.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
@@ -9,21 +9,21 @@ import android.view.accessibility.AccessibilityNodeInfo
 /**
  * Reads the UI tree of whatever app is currently on screen.
  *
- * This is the eyes of Sahayak. Every other layer (ElementFinder, GuidanceEngine)
+ * This is the eyes of Waylo. Every other layer (ElementFinder, GuidanceEngine)
  * depends on the live node tree exposed here.
  *
- * Accessed as a singleton via [SahayakAccessibilityService.instance]. The instance
+ * Accessed as a singleton via [WayloAccessibilityService.instance]. The instance
  * is only non-null while the service is connected (i.e. the user has enabled it in
  * Settings > Accessibility).
  */
-class SahayakAccessibilityService : AccessibilityService() {
+class WayloAccessibilityService : AccessibilityService() {
 
     companion object {
-        private const val TAG = "Sahayak"
+        private const val TAG = "Waylo"
 
         /** Live reference to the connected service, or null if not enabled. */
         @Volatile
-        var instance: SahayakAccessibilityService? = null
+        var instance: WayloAccessibilityService? = null
             private set
     }
 

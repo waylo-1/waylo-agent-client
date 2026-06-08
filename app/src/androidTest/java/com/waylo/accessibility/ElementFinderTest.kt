@@ -1,4 +1,4 @@
-package com.sahayak.accessibility
+package com.waylo.accessibility
 
 import android.view.accessibility.AccessibilityNodeInfo
 import org.junit.Assert.assertEquals

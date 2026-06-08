@@ -1,9 +1,9 @@
 // TODO: Day 10 — implement execution of an individual Step.
 // Resolves the element (via ElementFinder, then fallbacks), places the dot,
-// and speaks the Hindi instruction.
-package com.sahayak.guidance
+// and speaks the instruction.
+package com.waylo.guidance
 
-import com.sahayak.ai.Step
+import com.waylo.ai.Step
 
 /**
  * Executes a single [Step]: finds the target element, positions the dot, and

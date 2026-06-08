@@ -1,9 +1,9 @@
 // TODO: Day 10 — implement the main orchestrator that runs a plan step by step.
 // Receives a List<Step>, drives the dot + voice through each one, and advances
 // when the user taps. Singleton accessed via GuidanceEngine.instance.
-package com.sahayak.guidance
+package com.waylo.guidance
 
-import com.sahayak.ai.Step
+import com.waylo.ai.Step
 
 /**
  * Main orchestrator. Walks the user through a generated plan one step at a time,

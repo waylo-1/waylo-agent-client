@@ -1,11 +1,11 @@
-package com.sahayak.ui
+package com.waylo.ui
 
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import androidx.appcompat.app.AppCompatActivity
-import com.sahayak.accessibility.SahayakAccessibilityService
-import com.sahayak.databinding.ActivityOnboardingBinding
+import com.waylo.accessibility.WayloAccessibilityService
+import com.waylo.databinding.ActivityOnboardingBinding
 
 /**
  * First screen the user sees. Walks them through enabling the accessibility
@@ -19,7 +19,7 @@ class OnboardingActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         // If the service is already enabled, skip onboarding entirely.
-        if (SahayakAccessibilityService.instance != null) {
+        if (WayloAccessibilityService.instance != null) {
             goToMain()
             return
         }
@@ -35,7 +35,7 @@ class OnboardingActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         // Returning from Settings — check whether the service is now connected.
-        if (SahayakAccessibilityService.instance != null) {
+        if (WayloAccessibilityService.instance != null) {
             goToMain()
         }
     }

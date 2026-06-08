@@ -1,9 +1,9 @@
 // TODO: Day 9 — implement Retrofit calls to the backend (/plan, /guide).
 // The Gemini API key lives only on the backend — never in the Android app.
-package com.sahayak.ai
+package com.waylo.ai
 
 /**
- * Talks to the Sahayak backend, which in turn calls Gemini. The app never holds
+ * Talks to the Waylo backend, which in turn calls Gemini. The app never holds
  * the Gemini API key directly.
  */
 object GeminiClient {

@@ -1,4 +1,4 @@
-package com.sahayak.overlay
+package com.waylo.overlay
 
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
@@ -26,7 +26,7 @@ class DotView(context: Context) : View(context) {
     // Padding so the 1.3x pulse scale never clips at the edges.
     private val pulsePaddingPx: Float = dp(16f)
 
-    private var instruction: String = ""
+    private var instruction: String = "Tap here"
 
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#FF0000")
