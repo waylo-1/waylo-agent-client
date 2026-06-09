@@ -1,239 +1,104 @@
 package com.waylo.overlay
 
-import android.animation.ValueAnimator
+import android.animation.ObjectAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.util.TypedValue
+import android.view.MotionEvent
 import android.view.View
-import android.view.animation.LinearInterpolator
+import android.view.animation.AccelerateDecelerateInterpolator
 
 /**
- * An animated, pulsing red dot drawn on top of other apps to show the user
- * exactly where to tap.
- *
- *  - Inner dot: 80dp solid red, pulses 1.0x -> 1.3x over 800ms.
- *  - Outer ring: 100dp semi-transparent red (#44FF0000) "sonar" ripple over
- *    1200ms, offset from the inner pulse for a layered effect.
- *  - Label: a rounded rect below the dot showing the current instruction.
- *    It is hidden while the dot is moving and fades in on arrival.
+ * A large, deliberately impossible-to-miss pulsing red dot drawn on top of
+ * other apps. Inner solid dot (100dp), outer translucent pulsing ring (140dp),
+ * and an instruction label below it.
  */
 class DotView(context: Context) : View(context) {
 
-    private val innerDiameterPx: Float = dp(80f)
-    private val innerRadiusPx: Float = innerDiameterPx / 2f
-    private val outerDiameterPx: Float = dp(100f)
-    private val outerRadiusPx: Float = outerDiameterPx / 2f
+    var onTap: (() -> Unit)? = null
 
-    // Layout regions.
-    private val padding: Float = dp(20f)            // room for outer ripple expansion
-    private val labelGap: Float = dp(10f)           // gap between dot and label
-    private val labelAreaPx: Float = dp(48f)        // vertical room for the label below
-
-    private var instruction: String = "Tap here"
-    private var isMoving: Boolean = false
-
-    // Animated state.
-    private var innerScale: Float = 1f
-    private var ripple: Float = 0f                  // 0..1 sonar progress
-    private var labelAlpha: Float = 1f              // 0..1 fade for the label
+    private var instructionText: String = "Tap here"
 
     private val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#FF0000")
+        color = Color.RED
         style = Paint.Style.FILL
     }
 
     private val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#44FF0000")
+        color = Color.argb(100, 255, 0, 0)
         style = Paint.Style.FILL
     }
 
-    private val labelBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#99000000") // 60% black
-        style = Paint.Style.FILL
-    }
-
-    private val labelTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textSize = dp(12f)
+        textSize = 36f
         textAlign = Paint.Align.CENTER
+        setShadowLayer(4f, 0f, 2f, Color.BLACK)
     }
 
-    private var innerAnimator: ValueAnimator? = null
-    private var rippleAnimator: ValueAnimator? = null
-    private var labelAnimator: ValueAnimator? = null
+    private val dotSizePx = (100 * resources.displayMetrics.density).toInt()   // 100dp
+    private val outerSizePx = (140 * resources.displayMetrics.density).toInt()  // 140dp
+
+    private var pulseScale = 1f
 
     init {
-        startPulse()
+        // Start the pulse animation immediately.
+        ObjectAnimator.ofFloat(this, "pulseScale", 1f, 1.4f).apply {
+            duration = 700
+            repeatMode = ObjectAnimator.REVERSE
+            repeatCount = ObjectAnimator.INFINITE
+            interpolator = AccelerateDecelerateInterpolator()
+            start()
+        }
+        // Software layer so the shadow layer on text renders reliably.
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
 
-    /** Update the instruction label text shown below the dot. */
+    // Driven by the ObjectAnimator above.
+    fun setPulseScale(scale: Float) {
+        pulseScale = scale
+        invalidate()
+    }
+
+    fun getPulseScale(): Float = pulseScale
+
     fun setInstruction(text: String) {
-        instruction = text
+        instructionText = text
         invalidate()
-    }
-
-    /** Called by OverlayManager when an animated move begins. */
-    fun onMoveStart() {
-        isMoving = true
-        pausePulse()
-        hideLabel()
-    }
-
-    /** Called by OverlayManager when the dot arrives at its destination. */
-    fun onMoveEnd() {
-        isMoving = false
-        startPulse()
-        fadeInLabel()
-    }
-
-    private fun startPulse() {
-        if (innerAnimator?.isRunning == true) return
-
-        innerAnimator = ValueAnimator.ofFloat(1f, 1.3f).apply {
-            duration = 800
-            repeatCount = ValueAnimator.INFINITE
-            repeatMode = ValueAnimator.REVERSE
-            addUpdateListener {
-                innerScale = it.animatedValue as Float
-                invalidate()
-            }
-            start()
-        }
-
-        rippleAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 1200
-            repeatCount = ValueAnimator.INFINITE
-            repeatMode = ValueAnimator.RESTART
-            interpolator = LinearInterpolator()
-            addUpdateListener {
-                ripple = it.animatedValue as Float
-                invalidate()
-            }
-            start()
-        }
-    }
-
-    private fun pausePulse() {
-        innerAnimator?.cancel()
-        innerAnimator = null
-        rippleAnimator?.cancel()
-        rippleAnimator = null
-        innerScale = 1f
-        ripple = 0f
-        invalidate()
-    }
-
-    private fun hideLabel() {
-        labelAnimator?.cancel()
-        labelAlpha = 0f
-        invalidate()
-    }
-
-    private fun fadeInLabel() {
-        labelAnimator?.cancel()
-        labelAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 250
-            addUpdateListener {
-                labelAlpha = it.animatedValue as Float
-                invalidate()
-            }
-            start()
-        }
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val width = (outerDiameterPx + padding * 2).toInt()
-        val height = (outerDiameterPx + padding * 2 + labelGap + labelAreaPx).toInt()
-        setMeasuredDimension(width, height)
+        val size = outerSizePx + 80 // extra space for the pulsing ring
+        setMeasuredDimension(size, size + 60) // extra height for the label
     }
 
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
+        val cx = width / 2f
+        val cy = (outerSizePx / 2f) + 10
 
-        val centerX = width / 2f
-        val dotCenterY = padding + outerRadiusPx
+        // Outer pulsing ring.
+        canvas.drawCircle(cx, cy, (outerSizePx / 2f) * pulseScale, outerPaint)
 
-        // Outer sonar ring: expands from inner radius outward and fades as it grows.
-        if (!isMoving) {
-            val rippleRadius = innerRadiusPx + (outerRadiusPx - innerRadiusPx + dp(14f)) * ripple
-            val rippleAlpha = (1f - ripple).coerceIn(0f, 1f)
-            outerPaint.alpha = (0x44 * rippleAlpha).toInt()
-            canvas.drawCircle(centerX, dotCenterY, rippleRadius, outerPaint)
-        }
+        // Inner solid dot.
+        canvas.drawCircle(cx, cy, dotSizePx / 2f, innerPaint)
 
-        // Inner dot (scaled by the pulse).
-        canvas.drawCircle(centerX, dotCenterY, innerRadiusPx * innerScale, innerPaint)
-
-        // Label below the dot — only when stationary and faded in.
-        if (instruction.isNotBlank() && labelAlpha > 0f && !isMoving) {
-            drawLabel(canvas, centerX, dotCenterY)
-        }
+        // Instruction label below the dot.
+        canvas.drawText(instructionText, cx, cy + outerSizePx / 2f + 40, textPaint)
     }
 
-    private fun drawLabel(canvas: Canvas, centerX: Float, dotCenterY: Float) {
-        val maxTextWidth = width - dp(8f)
-        val lines = wrapText(instruction, maxTextWidth, maxLines = 2)
-
-        val padH = dp(10f)
-        val padV = dp(6f)
-        val lineHeight = labelTextPaint.textSize * 1.3f
-        val textBlockHeight = lineHeight * lines.size
-
-        val widest = lines.maxOf { labelTextPaint.measureText(it) }
-        val boxLeft = centerX - widest / 2f - padH
-        val boxRight = centerX + widest / 2f + padH
-        val boxTop = dotCenterY + outerRadiusPx + labelGap
-        val boxBottom = boxTop + textBlockHeight + padV * 2
-
-        val alpha = (labelAlpha * 255).toInt().coerceIn(0, 255)
-        labelBgPaint.alpha = (alpha * 0.6f).toInt()
-        labelTextPaint.alpha = alpha
-
-        canvas.drawRoundRect(boxLeft, boxTop, boxRight, boxBottom, dp(8f), dp(8f), labelBgPaint)
-
-        var baseline = boxTop + padV + labelTextPaint.textSize
-        for (line in lines) {
-            canvas.drawText(line, centerX, baseline, labelTextPaint)
-            baseline += lineHeight
+    @Suppress("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_UP) {
+            onTap?.invoke()
+            performClick()
+            return true
         }
+        return true // consume all touch events
     }
 
-    /** Naive word-wrap into at most [maxLines] lines that fit [maxWidth]. */
-    private fun wrapText(text: String, maxWidth: Float, maxLines: Int): List<String> {
-        val words = text.split(" ")
-        val lines = mutableListOf<String>()
-        var current = StringBuilder()
-        for (word in words) {
-            val candidate = if (current.isEmpty()) word else "$current $word"
-            if (labelTextPaint.measureText(candidate) <= maxWidth) {
-                current = StringBuilder(candidate)
-            } else {
-                if (current.isNotEmpty()) lines.add(current.toString())
-                current = StringBuilder(word)
-                if (lines.size == maxLines - 1) break
-            }
-        }
-        if (current.isNotEmpty() && lines.size < maxLines) lines.add(current.toString())
-        if (lines.isEmpty()) lines.add(text)
-        return lines
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
     }
-
-    override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
-        innerAnimator?.cancel()
-        rippleAnimator?.cancel()
-        labelAnimator?.cancel()
-        innerAnimator = null
-        rippleAnimator = null
-        labelAnimator = null
-    }
-
-    private fun dp(value: Float): Float =
-        TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP,
-            value,
-            resources.displayMetrics
-        )
 }

@@ -59,6 +59,11 @@
     <string name="dev_ocr_section">OCR Pipeline Test</string>
     <string name="dev_ocr_hint">What to find?</string>
     <string name="dev_ocr_button">Find with OCR Pipeline</string>
+    <string name="dev_demo_section">Demo Tasks</string>
+    <string name="dev_demo_photo">Demo: Take a Photo</string>
+    <string name="dev_demo_whatsapp">Demo: Open WhatsApp</string>
+    <string name="dev_demo_youtube">Demo: Open YouTube</string>
+    <string name="dev_stop_guidance">Stop Guidance</string>
 
     <!-- Foreground service notification -->
     <string name="notif_channel_name">Waylo Guidance</string>

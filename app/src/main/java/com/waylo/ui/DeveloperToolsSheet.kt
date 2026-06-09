@@ -10,24 +10,27 @@ import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.waylo.R
 import com.waylo.accessibility.ElementFinder
 import com.waylo.databinding.SheetDeveloperToolsBinding
+import com.waylo.guidance.DemoTasks
+import com.waylo.guidance.GuidanceEngine
 import com.waylo.ocr.ScreenAnalysisPipeline
 import com.waylo.overlay.OverlayManager
 import com.waylo.permissions.PermissionManager
 import com.waylo.screenshot.ScreenCaptureManager
-import com.waylo.voice.Speaker
+import com.waylo.service.WayloGuidanceService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
  * Hidden developer menu (opened by tapping the logo 5 times). Hosts every
- * Week-1/2 test control so the production UI stays clean.
+ * test control so the production UI stays clean.
+ *
+ * This sheet does NOT own the overlay or the Speaker — those live in
+ * WayloGuidanceService. It only triggers actions on those singletons.
  */
 class DeveloperToolsSheet : BottomSheetDialogFragment() {
 
     private var _binding: SheetDeveloperToolsBinding? = null
     private val binding get() = _binding!!
-
-    private var speaker: Speaker? = null
 
     override fun getTheme(): Int = R.style.Theme_Waylo_BottomSheet
 
@@ -42,15 +45,13 @@ class DeveloperToolsSheet : BottomSheetDialogFragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        OverlayManager.init(requireContext().applicationContext)
-        speaker = Speaker(requireContext().applicationContext)
 
         // Screen capture permission
         binding.btnGrantCapture.setOnClickListener {
             ScreenCaptureManager.requestPermission(requireActivity())
         }
 
-        // Overlay
+        // Overlay (owned by the service)
         binding.btnShowDot.setOnClickListener {
             if (!ensureOverlay()) return@setOnClickListener
             val m = resources.displayMetrics
@@ -59,13 +60,14 @@ class DeveloperToolsSheet : BottomSheetDialogFragment() {
         binding.btnHideDot.setOnClickListener { OverlayManager.hideDot() }
         binding.btnRemoveDot.setOnClickListener { OverlayManager.hideDot() }
 
-        // TTS
+        // TTS — routed through the service-owned Speaker
         binding.btnNamaste.setOnClickListener {
-            if (!Speaker.isTtsAvailable(requireContext())) {
+            if (!Speaker_isAvailable()) {
                 Toast.makeText(requireContext(), R.string.tts_unavailable, Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
-            speaker?.speak(getString(R.string.tts_welcome))
+            WayloGuidanceService.instance?.speaker?.speak("Hello, I am Waylo")
+                ?: Toast.makeText(requireContext(), "Service not running", Toast.LENGTH_SHORT).show()
         }
 
         // Accessibility find
@@ -92,6 +94,30 @@ class DeveloperToolsSheet : BottomSheetDialogFragment() {
         binding.btnFindSettings.setOnClickListener { launchTargetThenFind("settings", "com.android.settings") }
         binding.btnFindChrome.setOnClickListener { launchTargetThenFind("address", "com.android.chrome") }
         binding.btnFindCompose.setOnClickListener { launchTargetThenFind("compose", null) }
+
+        // Demo tasks — full guidance loop
+        binding.btnDemoPhoto.setOnClickListener { startDemo("Take a Photo", DemoTasks.takeAPhoto) }
+        binding.btnDemoWhatsApp.setOnClickListener { startDemo("Open WhatsApp", DemoTasks.openWhatsApp) }
+        binding.btnDemoYouTube.setOnClickListener { startDemo("Open YouTube", DemoTasks.openYouTube) }
+        binding.btnStopGuidance.setOnClickListener { GuidanceEngine.stop() }
+    }
+
+    private fun Speaker_isAvailable(): Boolean =
+        com.waylo.voice.Speaker.isTtsAvailable(requireContext())
+
+    private fun startDemo(task: String, steps: List<com.waylo.ai.Step>) {
+        if (!ensureOverlay()) return
+        if (WayloGuidanceService.instance == null) {
+            WayloGuidanceService.start(requireContext())
+        }
+        GuidanceEngine.start(task, steps)
+        dismiss()
+        // Drop to the home screen so the dot can find the app icon.
+        val home = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+            addCategory(android.content.Intent.CATEGORY_HOME)
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        startActivity(home)
     }
 
     private fun ensureOverlay(): Boolean {
@@ -153,8 +179,6 @@ class DeveloperToolsSheet : BottomSheetDialogFragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
-        speaker?.shutdown()
-        speaker = null
         _binding = null
     }
 }

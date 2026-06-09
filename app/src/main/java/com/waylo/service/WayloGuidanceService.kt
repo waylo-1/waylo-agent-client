@@ -6,19 +6,31 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Point
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.waylo.R
+import com.waylo.guidance.GuidanceEngine
+import com.waylo.overlay.OverlayManager
 import com.waylo.ui.MainActivity
+import com.waylo.voice.Speaker
 
 /**
- * Foreground service that hosts the guidance session. Android requires screen
- * capture (MediaProjection) to run inside a foreground service of type
- * mediaProjection on API 29+.
+ * Foreground service that owns the overlay dot and the TTS Speaker, so both
+ * persist across every app and the home screen — independent of any Activity
+ * lifecycle.
  *
- * Singleton-style access via [instance] while running.
+ * The service runs as a normal foreground service while only showing the dot.
+ * It elevates to the mediaProjection foreground type lazily, only when a screen
+ * capture is actually needed (see [ScreenCaptureManager]). This avoids the
+ * Android 14+ requirement that a mediaProjection FGS must have an active
+ * projection at startForeground time.
  */
 class WayloGuidanceService : Service() {
 
@@ -26,6 +38,9 @@ class WayloGuidanceService : Service() {
         private const val TAG = "Waylo"
         const val CHANNEL_ID = "waylo_guidance"
         const val NOTIFICATION_ID = 42
+
+        const val ACTION_START_GUIDANCE = "com.waylo.action.START_GUIDANCE"
+        const val ACTION_STOP_GUIDANCE = "com.waylo.action.STOP_GUIDANCE"
 
         @Volatile
         var instance: WayloGuidanceService? = null
@@ -45,9 +60,34 @@ class WayloGuidanceService : Service() {
         }
     }
 
+    /** Process-lived TTS engine. Accessed via WayloGuidanceService.instance?.speaker. */
+    lateinit var speaker: Speaker
+        private set
+
+    private var currentTask: String = ""
+
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Log.e("WAYLO_DOT", "Service onCreate fired")
+        Log.e("WAYLO_DOT", "Overlay permission: ${Settings.canDrawOverlays(this)}")
+        speaker = Speaker(this)
+        OverlayManager.init(this) // service context — overlay survives leaving the app
+        Log.e("WAYLO_DOT", "OverlayManager initialized")
+
+        // Smoke test: show the dot at the center of the screen 2s after the
+        // service starts. If this appears, the overlay path works and any bug
+        // is in the guidance/pipeline layer. If not, it's permissions/overlay.
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val size = Point()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getSize(size)
+        val centerX = size.x / 2
+        val centerY = size.y / 2
+        Handler(Looper.getMainLooper()).postDelayed({
+            Log.e("WAYLO_DOT", "Smoke test: showing dot at $centerX, $centerY")
+            OverlayManager.showDot(centerX, centerY, "Waylo Active")
+        }, 2000)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,22 +99,18 @@ class WayloGuidanceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        GuidanceEngine.stop()
+        speaker.shutdown()
+        OverlayManager.destroy()
         instance = null
         Log.d(TAG, "WayloGuidanceService destroyed.")
         super.onDestroy()
     }
 
     private fun startAsForeground() {
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        // Plain foreground service: enough to keep the overlay alive everywhere.
+        // The mediaProjection type is added later only during a capture.
+        startForeground(NOTIFICATION_ID, buildNotification())
     }
 
     private fun buildNotification(): Notification {
@@ -98,17 +134,36 @@ class WayloGuidanceService : Service() {
             .build()
     }
 
-    // --- Guidance lifecycle (stubs; GuidanceEngine wires these in Week 2) ---
-
-    /** TODO: Week 2 — begin a guidance session driven by GuidanceEngine. */
-    fun startGuidance() {
-        Log.d(TAG, "startGuidance() called (stub).")
+    /**
+     * Elevate this foreground service to include the mediaProjection type.
+     * Called by ScreenCaptureManager immediately before starting a projection.
+     */
+    fun enableMediaProjectionType() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+                Log.d(TAG, "Elevated FGS to mediaProjection type.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to elevate FGS to mediaProjection type.", e)
+            }
+        }
     }
 
-    /** TODO: Week 2 — end the current guidance session and stop the service. */
+    // --- Guidance lifecycle ---
+
+    /** Begin a guidance session for [task] with [steps]. */
+    fun startGuidance(task: String, steps: List<com.waylo.ai.Step>) {
+        currentTask = task
+        GuidanceEngine.start(task, steps)
+    }
+
+    /** End the current guidance session (keeps the service alive for the dot). */
     fun stopGuidance() {
-        Log.d(TAG, "stopGuidance() called (stub).")
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        GuidanceEngine.stop()
+        OverlayManager.hideDot()
     }
 }
