@@ -51,6 +51,12 @@ class WayloAccessibilityService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: "unknown"
         val type = AccessibilityEvent.eventTypeToString(event.eventType)
         Log.d(TAG, "Event from [$pkg] type=$type")
+
+        // A window state change means the user navigated (likely by tapping the
+        // real button under the dot). Let guidance advance to the next step.
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            com.waylo.guidance.GuidanceEngine.onWindowChanged(pkg)
+        }
     }
 
     override fun onInterrupt() {

@@ -39,6 +39,14 @@ object GuidanceEngine {
     private var isRunning = false
     private var currentTask: String = ""
 
+    // Auto-advance bookkeeping: a window change shortly after the user acts
+    // (e.g. tapping the real button under the dot) advances to the next step.
+    private var stepShownAt = 0L
+    private var advancing = false
+
+    /** Minimum dwell before a window change is allowed to advance the step. */
+    private const val ADVANCE_GUARD_MS = 1200L
+
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeJob: Job? = null
 
@@ -116,7 +124,13 @@ object GuidanceEngine {
         Log.e(TAG, "executeStep called for index $index: ${step.instruction}")
         Log.e(TAG, "findDescription: ${step.findDescription}")
 
+        // Speak the same short instruction that is shown under the dot, so the
+        // on-screen label and the voice always match.
+        val spoken = shortLabel(step.instruction)
         WayloGuidanceService.instance?.speaker?.speak(step.instruction)
+
+        stepShownAt = android.os.SystemClock.elapsedRealtime()
+        advancing = false
 
         activeJob?.cancel()
         activeJob = scope.launch {
@@ -150,7 +164,8 @@ object GuidanceEngine {
             withContext(Dispatchers.Main) {
                 if (result != null && result.source != "failed") {
                     Log.e(TAG, "Pipeline found: ${result.source} at ${result.x},${result.y}")
-                    OverlayManager.showDotAtResult(result)
+                    // Show the short instruction under the dot (matches the voice).
+                    OverlayManager.showDotAtResult(result, spoken)
                 } else {
                     // Fallback: place the dot at a visible position so the user
                     // always gets feedback, even if detection failed.
@@ -160,17 +175,49 @@ object GuidanceEngine {
                     val size = Point()
                     @Suppress("DEPRECATION")
                     wm.defaultDisplay.getSize(size)
-                    OverlayManager.showDot(size.x / 2, size.y / 3, step.instruction)
+                    OverlayManager.showDot(size.x / 2, size.y / 3, spoken)
                 }
             }
         }
     }
 
-    /** Called when the user taps the dot (or the target). Advance one step. */
+    /**
+     * Called by the accessibility service when the foreground window changes.
+     * If enough time has passed since the current step was shown, we treat the
+     * navigation as the user having acted (tapped the real button under the dot)
+     * and advance to the next step. The same dot view then glides to the next
+     * target for a seamless transition.
+     */
+    fun onWindowChanged(pkg: String) {
+        if (!isRunning || advancing) return
+        val elapsed = android.os.SystemClock.elapsedRealtime() - stepShownAt
+        if (elapsed < ADVANCE_GUARD_MS) {
+            Log.e(TAG, "onWindowChanged($pkg): ignored, only ${elapsed}ms since step shown.")
+            return
+        }
+        advancing = true
+        Log.e(TAG, "onWindowChanged($pkg): advancing to next step after ${elapsed}ms.")
+        // Small delay so the new screen settles before we scan for the target.
+        scope.launch {
+            kotlinx.coroutines.delay(500)
+            executeStep(currentIndex + 1)
+        }
+    }
+
+    /** Manual advance (used by dev/demo controls). Advances one step. */
     fun onUserTappedTarget() {
         if (!isRunning) return
-        Log.e(TAG, "User tapped target on step ${currentIndex + 1}.")
+        Log.e(TAG, "Manual advance from step ${currentIndex + 1}.")
         executeStep(currentIndex + 1)
+    }
+
+    /**
+     * Trim a full instruction to a short label suitable for the dot and TTS.
+     * Keeps it readable on a small pill without truncating mid-thought.
+     */
+    private fun shortLabel(instruction: String): String {
+        val trimmed = instruction.trim()
+        return if (trimmed.length <= 40) trimmed else trimmed.take(37).trimEnd() + "…"
     }
 
     private fun taskComplete() {
