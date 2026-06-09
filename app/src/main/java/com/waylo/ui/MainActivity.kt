@@ -5,13 +5,17 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.waylo.R
+import com.waylo.ai.GeminiClient
 import com.waylo.databinding.ActivityMainBinding
+import com.waylo.guidance.GuidanceEngine
 import com.waylo.overlay.OverlayManager
 import com.waylo.permissions.PermissionManager
 import com.waylo.screenshot.ScreenCaptureManager
 import com.waylo.service.WayloGuidanceService
+import kotlinx.coroutines.launch
 
 /**
  * Production home screen. Clean navy UI with a task card, recent list, and an
@@ -44,14 +48,56 @@ class MainActivity : AppCompatActivity() {
             if (task.isEmpty()) {
                 Toast.makeText(this, R.string.main_task_hint, Toast.LENGTH_SHORT).show()
             } else {
-                // Week 2 wires this into GuidanceEngine. For now, start the
-                // foreground service so the active indicator reflects state.
-                WayloGuidanceService.start(this)
-                Toast.makeText(this, R.string.thinking, Toast.LENGTH_SHORT).show()
+                startGuidanceFor(task)
             }
         }
 
         setupRecentList()
+    }
+
+    /**
+     * Calls the Waylo backend for a plan, shows a loading state, then hands the
+     * steps to [GuidanceEngine]. The foreground service keeps guidance alive once
+     * the user switches to the target app (e.g. Instagram).
+     */
+    private fun startGuidanceFor(task: String) {
+        // Keep guidance alive across app switches.
+        WayloGuidanceService.start(this)
+
+        // Loading state.
+        binding.btnStartGuidance.isEnabled = false
+        binding.btnStartGuidance.setText(R.string.thinking)
+        Toast.makeText(this, R.string.thinking, Toast.LENGTH_SHORT).show()
+
+        lifecycleScope.launch {
+            try {
+                val steps = GeminiClient.requestPlan(task)
+                if (steps.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        R.string.element_not_found,
+                        Toast.LENGTH_LONG
+                    ).show()
+                    WayloGuidanceService.stop(this@MainActivity)
+                } else {
+                    GuidanceEngine.instance.startGuidance(applicationContext, steps)
+                    // Drop to the home screen so the user can open the target app
+                    // and follow the dot.
+                    moveTaskToBack(true)
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    getString(R.string.guidance_failed),
+                    Toast.LENGTH_LONG
+                ).show()
+                WayloGuidanceService.stop(this@MainActivity)
+            } finally {
+                binding.btnStartGuidance.isEnabled = true
+                binding.btnStartGuidance.setText(R.string.main_start_guidance)
+                refreshActiveStatus()
+            }
+        }
     }
 
     override fun onResume() {
