@@ -5,7 +5,6 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.waylo.guidance.GuidanceEngine
 
 /**
  * Reads the UI tree of whatever app is currently on screen.
@@ -52,11 +51,6 @@ class WayloAccessibilityService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: "unknown"
         val type = AccessibilityEvent.eventTypeToString(event.eventType)
         Log.d(TAG, "Event from [$pkg] type=$type")
-
-        // When the user taps the highlighted element, advance the active guidance.
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED) {
-            GuidanceEngine.instance.onUserTap()
-        }
     }
 
     override fun onInterrupt() {

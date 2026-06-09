@@ -142,7 +142,46 @@
             android:id="@+id/btnFindCompose"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
             android:text="@string/btn_find_compose" />
+
+        <!-- Demo tasks (full guidance loop, no backend) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:fontFamily="monospace"
+            android:text="@string/dev_demo_section"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnDemoPhoto"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="@string/dev_demo_photo" />
+
+        <Button
+            android:id="@+id/btnDemoWhatsApp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="@string/dev_demo_whatsapp" />
+
+        <Button
+            android:id="@+id/btnDemoYouTube"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:text="@string/dev_demo_youtube" />
+
+        <Button
+            android:id="@+id/btnStopGuidance"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/dev_stop_guidance" />
 
     </LinearLayout>
 </ScrollView>

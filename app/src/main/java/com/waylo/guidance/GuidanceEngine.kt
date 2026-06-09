@@ -1,168 +1,146 @@
-// Main orchestrator that runs a plan step by step.
-// Receives a List<Step>, drives the dot + voice through each one, and advances
-// when the user taps the highlighted element. Singleton via GuidanceEngine.instance.
 package com.waylo.guidance
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
+import android.graphics.Point
 import android.util.Log
-import android.util.TypedValue
+import android.view.WindowManager
 import com.waylo.accessibility.ElementFinder
 import com.waylo.ai.Step
+import com.waylo.ocr.ScreenAnalysisPipeline
 import com.waylo.overlay.OverlayManager
 import com.waylo.service.WayloGuidanceService
-import com.waylo.voice.Speaker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Main orchestrator. Walks the user through a generated plan one step at a time,
- * coordinating [ElementFinder], [OverlayManager] and [Speaker].
+ * Main orchestrator. Walks the user through a plan one step at a time:
+ * speaks each instruction, locates the target element, places the dot on it,
+ * and advances when the user taps the dot.
  *
- * Flow per step: find the element → place the dot on it → speak the instruction →
- * wait for the user to tap → advance. On completion it speaks a friendly closer
- * and tears down the foreground service.
- *
- * Singleton — accessed via [GuidanceEngine.instance].
+ * Owned by the process (not an Activity), so guidance survives the user leaving
+ * the Waylo app. If the pipeline can't find a target, the dot is still shown at
+ * a sensible fallback position so the user always sees feedback.
  */
-class GuidanceEngine private constructor() {
+object GuidanceEngine {
 
-    companion object {
-        private const val TAG = "Waylo"
+    private const val TAG = "WAYLO_DOT"
 
-        /** Delay before resolving the next step, letting the new screen settle. */
-        private const val STEP_SETTLE_MS = 900L
-
-        /** Spoken when the whole plan is finished. */
-        private const val COMPLETION_PHRASE = "Sab kuch ho gaya!"
-
-        val instance: GuidanceEngine by lazy { GuidanceEngine() }
-    }
-
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    private var appContext: Context? = null
-    private var speaker: Speaker? = null
+    /** Kept to honour the PRD contract (`GuidanceEngine.instance`). Self-reference. */
+    var instance: GuidanceEngine? = this
 
     private var steps: List<Step> = emptyList()
-    private var currentIndex: Int = 0
+    private var currentIndex = 0
+    private var isRunning = false
+    private var currentTask: String = ""
 
-    @Volatile
-    private var running: Boolean = false
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var activeJob: Job? = null
 
-    /** True once a step's dot is shown and we're waiting for the user to tap. */
-    @Volatile
-    private var awaitingTap: Boolean = false
-
-    /** True while guidance is active (used by callers/UI). */
-    fun isRunning(): Boolean = running
-
-    /**
-     * Load a plan and begin the guidance loop. Safe to call from any thread —
-     * all UI work is posted to the main thread.
-     */
-    fun startGuidance(context: Context, steps: List<Step>) {
-        if (steps.isEmpty()) {
-            Log.w(TAG, "GuidanceEngine: startGuidance called with no steps.")
+    /** Begin guidance for [task] using the supplied [stepList]. */
+    fun start(task: String, stepList: List<Step>) {
+        if (stepList.isEmpty()) {
+            Log.e(TAG, "start() called with no steps.")
             return
         }
-
-        mainHandler.post {
-            this.appContext = context.applicationContext
-            if (speaker == null) {
-                speaker = Speaker(appContext!!)
-            }
-            this.steps = steps
-            this.currentIndex = 0
-            this.running = true
-            Log.d(TAG, "GuidanceEngine: starting plan with ${steps.size} steps.")
-            executeCurrentStep()
-        }
+        currentTask = task
+        steps = stepList
+        currentIndex = 0
+        isRunning = true
+        Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps.")
+        executeStep(0)
     }
 
-    /**
-     * Called when the user taps something on screen (wired from the accessibility
-     * service on TYPE_VIEW_CLICKED). Advances to the next step.
-     */
-    fun onUserTap() {
-        if (!running || !awaitingTap) return
-        awaitingTap = false
-        Log.d(TAG, "GuidanceEngine: user tap detected, advancing from step ${currentIndex + 1}.")
-        mainHandler.postDelayed({ nextStep() }, STEP_SETTLE_MS)
-    }
-
-    /** Advance to the next step, or finish if the plan is complete. */
-    fun nextStep() {
-        if (!running) return
-        currentIndex++
-        executeCurrentStep()
-    }
-
-    /** Stop the session and clean up the overlay + service. */
+    /** Stop guidance, clear the dot, and silence the voice. */
     fun stop() {
-        mainHandler.post {
-            Log.d(TAG, "GuidanceEngine: stopping.")
-            running = false
-            awaitingTap = false
-            OverlayManager.hideDot()
-            speaker?.stop()
-            speaker?.shutdown()
-            speaker = null
-            appContext?.let { WayloGuidanceService.stop(it) }
-            steps = emptyList()
-            currentIndex = 0
-        }
+        isRunning = false
+        activeJob?.cancel()
+        activeJob = null
+        OverlayManager.hideDot()
+        WayloGuidanceService.instance?.speaker?.stop()
+        Log.e(TAG, "Guidance stopped.")
     }
 
-    // --- internals ---
-
-    private fun executeCurrentStep() {
-        if (!running) return
-
-        if (currentIndex >= steps.size) {
-            finish()
+    private fun executeStep(index: Int) {
+        if (!isRunning || index >= steps.size) {
+            if (index >= steps.size) taskComplete()
             return
         }
 
-        val step = steps[currentIndex]
-        Log.d(TAG, "GuidanceEngine: step ${currentIndex + 1}/${steps.size} — '${step.instruction}' (find: '${step.findDescription}')")
+        currentIndex = index
+        val step = steps[index]
+        Log.e(TAG, "executeStep called for index $index: ${step.instruction}")
+        Log.e(TAG, "findDescription: ${step.findDescription}")
 
-        val match = ElementFinder.findElement(step.findDescription)
-        if (match != null) {
-            val bounds = ElementFinder.getBoundsOnScreen(match.node)
-            // showDot positions the top-left of the dot view; offset so the dot's
-            // centre lands on the element's centre.
-            val half = dp(70f)
-            val x = bounds.centerX() - half
-            val y = bounds.centerY() - half
-            OverlayManager.showDot(x, y, step.instruction)
-        } else {
-            // Element not located on the current screen. Keep any existing dot,
-            // still speak the instruction so the user can act, then wait for a tap.
-            Log.d(TAG, "GuidanceEngine: element not found for step ${currentIndex + 1}; speaking instruction anyway.")
+        WayloGuidanceService.instance?.speaker?.speak(step.instruction)
+
+        activeJob?.cancel()
+        activeJob = scope.launch {
+            val service = WayloGuidanceService.instance
+            if (service == null) {
+                Log.e(TAG, "No service context — cannot run guidance.")
+                return@launch
+            }
+
+            // Try the pipeline, but never let it hang the loop.
+            val result = withTimeoutOrNull(4000) {
+                // Step 1 is almost always "find the app icon on the home screen".
+                if (index == 0) {
+                    val home = withContext(Dispatchers.IO) {
+                        ElementFinder.findOnHomeScreen(step.findDescription)
+                    }
+                    if (home != null) {
+                        val bounds = ElementFinder.getBoundsOnScreen(home.node)
+                        return@withTimeoutOrNull ScreenAnalysisPipeline.PipelineResult(
+                            x = bounds.centerX(),
+                            y = bounds.centerY(),
+                            source = "home-screen",
+                            confidence = home.score.toFloat(),
+                            label = step.findDescription
+                        )
+                    }
+                }
+                ScreenAnalysisPipeline.find(service, step.findDescription)
+            }
+
+            withContext(Dispatchers.Main) {
+                if (result != null && result.source != "failed") {
+                    Log.e(TAG, "Pipeline found: ${result.source} at ${result.x},${result.y}")
+                    OverlayManager.showDotAtResult(result)
+                } else {
+                    // Fallback: place the dot at a visible position so the user
+                    // always gets feedback, even if detection failed.
+                    Log.e(TAG, "Pipeline failed/timed out, showing dot at fallback position")
+                    val ctx: Context = service
+                    val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    val size = Point()
+                    @Suppress("DEPRECATION")
+                    wm.defaultDisplay.getSize(size)
+                    OverlayManager.showDot(size.x / 2, size.y / 3, step.instruction)
+                }
+            }
         }
-
-        speaker?.speak(step.instruction)
-        awaitingTap = true
     }
 
-    private fun finish() {
-        Log.d(TAG, "GuidanceEngine: plan complete.")
-        running = false
-        awaitingTap = false
+    /** Called when the user taps the dot (or the target). Advance one step. */
+    fun onUserTappedTarget() {
+        if (!isRunning) return
+        Log.e(TAG, "User tapped target on step ${currentIndex + 1}.")
+        executeStep(currentIndex + 1)
+    }
+
+    private fun taskComplete() {
         OverlayManager.hideDot()
-        speaker?.speak(COMPLETION_PHRASE)
-        // Give the closer a moment to play before tearing down the service.
-        mainHandler.postDelayed({
-            appContext?.let { WayloGuidanceService.stop(it) }
-        }, 2500L)
+        WayloGuidanceService.instance?.speaker?.speak("Sab kuch ho gaya!")
+        isRunning = false
+        Log.e(TAG, "Task complete: '$currentTask'")
     }
 
-    private fun dp(value: Float): Int {
-        val ctx = appContext ?: return value.toInt()
-        return TypedValue.applyDimension(
-            TypedValue.COMPLEX_UNIT_DIP,
-            value,
-            ctx.resources.displayMetrics
-        ).toInt()
-    }
+    fun getCurrentStep(): Step? = steps.getOrNull(currentIndex)
+
+    fun isActive(): Boolean = isRunning
 }

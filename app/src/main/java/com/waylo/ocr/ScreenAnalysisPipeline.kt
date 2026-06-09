@@ -41,38 +41,46 @@ object ScreenAnalysisPipeline {
     suspend fun analyze(context: Context, description: String): PipelineResult =
         withContext(Dispatchers.IO) {
             // --- Layer 1: accessibility tree ---
+            Log.e("WAYLO_DOT", "Pipeline layer 1 starting for: $description")
             val match = ElementFinder.findElement(description)
+            Log.e("WAYLO_DOT", "Layer 1 result: ${match?.score} score, node: ${match?.node?.contentDescription}")
             if (match != null && match.score > ACCESSIBILITY_CONFIDENCE) {
                 val bounds = ElementFinder.getBoundsOnScreen(match.node)
                 val label = match.node.text?.toString()
                     ?: match.node.contentDescription?.toString()
                     ?: description
                 Log.d(TAG, "Pipeline: Layer 1 (accessibility) hit, score=${match.score}.")
-                return@withContext PipelineResult(
+                val r = PipelineResult(
                     x = bounds.centerX(),
                     y = bounds.centerY(),
                     source = "accessibility",
                     confidence = match.score.toFloat(),
                     label = label
                 )
+                Log.e("WAYLO_DOT", "Final pipeline result: source=${r.source} x=${r.x} y=${r.y}")
+                return@withContext r
             }
             Log.d(TAG, "Pipeline: Layer 1 insufficient (score=${match?.score ?: 0}), trying OCR.")
 
             // --- Layer 2: screen capture + OCR ---
+            Log.e("WAYLO_DOT", "Pipeline layer 2 starting (OCR)")
             val bitmap = captureScreenSuspend(context)
             if (bitmap != null) {
                 try {
                     val elements = OcrAnalyzer.analyzeScreen(bitmap)
                     val ocrMatch = OcrAnalyzer.findBestMatch(elements, description)
+                    Log.e("WAYLO_DOT", "Layer 2 result: ${ocrMatch?.text} at ${ocrMatch?.centerX},${ocrMatch?.centerY}")
                     if (ocrMatch != null) {
                         Log.d(TAG, "Pipeline: Layer 2 (OCR) hit '${ocrMatch.text}'.")
-                        return@withContext PipelineResult(
+                        val r = PipelineResult(
                             x = ocrMatch.centerX,
                             y = ocrMatch.centerY,
                             source = "ocr",
                             confidence = ocrMatch.confidence,
                             label = ocrMatch.text
                         )
+                        Log.e("WAYLO_DOT", "Final pipeline result: source=${r.source} x=${r.x} y=${r.y}")
+                        return@withContext r
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Pipeline: OCR layer threw.", e)
@@ -81,14 +89,23 @@ object ScreenAnalysisPipeline {
                     if (!bitmap.isRecycled) bitmap.recycle()
                 }
             } else {
-                Log.d(TAG, "Pipeline: Layer 2 capture returned null.")
+                Log.e("WAYLO_DOT", "Layer 2 capture returned null (no screen-capture permission?).")
             }
 
             // --- Layer 3: Gemini Vision (stub) ---
             // TODO: Week 2 — send the screenshot to Gemini Vision via the backend.
-            Log.d(TAG, "All layers failed for: $description")
-            PipelineResult(0, 0, "failed", 0f, description)
+            Log.e("WAYLO_DOT", "All layers failed for: $description")
+            val failed = PipelineResult(0, 0, "failed", 0f, description)
+            Log.e("WAYLO_DOT", "Final pipeline result: source=${failed.source} x=${failed.x} y=${failed.y}")
+            failed
         }
+
+    /**
+     * Convenience alias used by GuidanceEngine: run the pipeline and return the
+     * result (does not place the dot).
+     */
+    suspend fun find(context: Context, description: String): PipelineResult =
+        analyze(context, description)
 
     /**
      * Convenience: run the pipeline then place/move the dot on the result.

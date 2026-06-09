@@ -19,6 +19,16 @@ object ElementFinder {
     /** Minimum score required for a match to be considered reliable. */
     private const val MIN_SCORE = 30
 
+    /** Known launcher packages where home-screen app icons live. */
+    private val LAUNCHER_PACKAGES = setOf(
+        "com.google.android.apps.nexuslauncher",
+        "com.sec.android.app.launcher",
+        "com.miui.home",
+        "com.android.launcher",
+        "com.android.launcher3",
+        "com.oneplus.launcher"
+    )
+
     data class MatchResult(
         val node: AccessibilityNodeInfo,
         val score: Int,
@@ -80,6 +90,49 @@ object ElementFinder {
     }
 
     /**
+     * Like [findElement] but only considers nodes that belong to a known
+     * launcher package. Used for Step 1 of a task ("find the app icon").
+     */
+    fun findOnHomeScreen(description: String): MatchResult? {
+        val service = WayloAccessibilityService.instance
+        if (service == null) {
+            Log.d(TAG, "findOnHomeScreen: accessibility service not connected.")
+            return null
+        }
+
+        val launcherNodes = service.getAllNodes().filter { node ->
+            val pkg = node.packageName?.toString()
+            pkg != null && LAUNCHER_PACKAGES.contains(pkg)
+        }
+        Log.d(TAG, "findOnHomeScreen: '$description' across ${launcherNodes.size} launcher nodes.")
+        if (launcherNodes.isEmpty()) {
+            Log.d(TAG, "findOnHomeScreen: no launcher nodes (is the home screen visible?).")
+            return null
+        }
+
+        val scored = launcherNodes
+            .map { node -> Pair(node, scoreNodeWithBreakdown(node, description)) }
+            .sortedByDescending { it.second.total }
+
+        scored.take(3).forEachIndexed { i, (node, breakdown) ->
+            Log.d(
+                TAG,
+                "  home #${i + 1} score=${breakdown.total} text='${node.text}' " +
+                    "desc='${node.contentDescription}' pkg='${node.packageName}'"
+            )
+        }
+
+        val best = scored.firstOrNull()
+        return if (best != null && best.second.total > MIN_SCORE) {
+            Log.d(TAG, "findOnHomeScreen: FOUND (score ${best.second.total}).")
+            MatchResult(best.first, best.second.total, "homeScreen")
+        } else {
+            Log.d(TAG, "findOnHomeScreen: NOT FOUND (best ${best?.second?.total ?: 0}).")
+            null
+        }
+    }
+
+    /**
      * Score a single node against the description using a set of weighted rules.
      * Higher is better.
      */
@@ -134,6 +187,29 @@ object ElementFinder {
         }
         if (node.isVisibleToUser) {
             score += 10; parts.add("visible +10")
+        }
+
+        // Launcher icon class hints (Launcher3 / common launchers).
+        val className = node.className?.toString() ?: ""
+        if (className.contains("IconView") || className.contains("BubbleTextView")) {
+            score += 20; parts.add("launcherIconClass +20")
+        }
+
+        // Home-screen package bonus: a matching node living in a known launcher
+        // is very likely the app icon we want.
+        val pkg = node.packageName?.toString()
+        val isLauncher = pkg != null && LAUNCHER_PACKAGES.contains(pkg)
+        val anyFieldMatches =
+            (contentDesc?.contains(desc) == true) ||
+                (text?.contains(desc) == true) ||
+                (viewId?.contains(desc) == true) ||
+                tokens.any { t ->
+                    contentDesc?.contains(t) == true ||
+                        text?.contains(t) == true ||
+                        viewId?.contains(t) == true
+                }
+        if (isLauncher && anyFieldMatches) {
+            score += 25; parts.add("homeScreenNode($pkg) +25")
         }
 
         // per-word presence across any field (cumulative)

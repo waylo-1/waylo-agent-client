@@ -89,6 +89,10 @@ object ScreenCaptureManager {
 
         try {
             val manager = ensureManager(context)
+            // Android 14+: the foreground service must declare the
+            // mediaProjection type before a projection is started.
+            com.waylo.service.WayloGuidanceService.instance?.enableMediaProjectionType()
+
             // Recreate the projection from the stored token for each capture.
             val projection = manager.getMediaProjection(resultCode, resultData!!).also {
                 mediaProjection = it

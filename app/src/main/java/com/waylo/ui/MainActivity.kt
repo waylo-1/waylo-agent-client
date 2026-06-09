@@ -1,26 +1,32 @@
 package com.waylo.ui
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.waylo.R
+import com.waylo.accessibility.WayloAccessibilityService
 import com.waylo.ai.GeminiClient
 import com.waylo.databinding.ActivityMainBinding
 import com.waylo.guidance.GuidanceEngine
-import com.waylo.overlay.OverlayManager
 import com.waylo.permissions.PermissionManager
 import com.waylo.screenshot.ScreenCaptureManager
 import com.waylo.service.WayloGuidanceService
 import kotlinx.coroutines.launch
 
 /**
- * Production home screen. Clean navy UI with a task card, recent list, and an
- * active-status footer. All developer/test controls are hidden behind a 5-tap
- * easter egg on the logo.
+ * Production home screen. The overlay dot and TTS are owned by
+ * [WayloGuidanceService], NOT this Activity, so they persist after the user
+ * leaves Waylo. This screen takes the user's task, asks the Waylo backend for a
+ * plan, and kicks off guidance.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -35,7 +41,10 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        OverlayManager.init(applicationContext)
+        // NOTE: do NOT call OverlayManager.init() here — the overlay is owned by
+        // WayloGuidanceService with the service context so it survives leaving
+        // the app. Start the service so the dot + Speaker come alive.
+        startGuidanceService()
 
         binding.logo.setOnClickListener { onLogoTapped() }
 
@@ -44,60 +53,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnStartGuidance.setOnClickListener {
-            val task = binding.editTask.text.toString().trim()
-            if (task.isEmpty()) {
-                Toast.makeText(this, R.string.main_task_hint, Toast.LENGTH_SHORT).show()
-            } else {
-                startGuidanceFor(task)
-            }
+            onStartGuidanceClicked()
         }
 
         setupRecentList()
-    }
-
-    /**
-     * Calls the Waylo backend for a plan, shows a loading state, then hands the
-     * steps to [GuidanceEngine]. The foreground service keeps guidance alive once
-     * the user switches to the target app (e.g. Instagram).
-     */
-    private fun startGuidanceFor(task: String) {
-        // Keep guidance alive across app switches.
-        WayloGuidanceService.start(this)
-
-        // Loading state.
-        binding.btnStartGuidance.isEnabled = false
-        binding.btnStartGuidance.setText(R.string.thinking)
-        Toast.makeText(this, R.string.thinking, Toast.LENGTH_SHORT).show()
-
-        lifecycleScope.launch {
-            try {
-                val steps = GeminiClient.requestPlan(task)
-                if (steps.isEmpty()) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        R.string.element_not_found,
-                        Toast.LENGTH_LONG
-                    ).show()
-                    WayloGuidanceService.stop(this@MainActivity)
-                } else {
-                    GuidanceEngine.instance.startGuidance(applicationContext, steps)
-                    // Drop to the home screen so the user can open the target app
-                    // and follow the dot.
-                    moveTaskToBack(true)
-                }
-            } catch (e: Exception) {
-                Toast.makeText(
-                    this@MainActivity,
-                    getString(R.string.guidance_failed),
-                    Toast.LENGTH_LONG
-                ).show()
-                WayloGuidanceService.stop(this@MainActivity)
-            } finally {
-                binding.btnStartGuidance.isEnabled = true
-                binding.btnStartGuidance.setText(R.string.main_start_guidance)
-                refreshActiveStatus()
-            }
-        }
     }
 
     override fun onResume() {
@@ -113,6 +72,97 @@ class MainActivity : AppCompatActivity() {
         ) {
             ScreenCaptureManager.onPermissionResult(resultCode, data)
             refreshStatusCluster()
+        }
+    }
+
+    private fun startGuidanceService() {
+        val serviceIntent = Intent(this, WayloGuidanceService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+    }
+
+    /**
+     * Validate permissions, call the Waylo backend for a plan, then hand the
+     * steps to [GuidanceEngine]. The foreground service keeps guidance alive once
+     * the user switches to the target app (e.g. Instagram).
+     */
+    private fun onStartGuidanceClicked() {
+        val task = binding.editTask.text.toString().trim()
+        if (task.isEmpty()) {
+            Toast.makeText(this, R.string.main_task_hint, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Overlay permission is mandatory for the dot to appear.
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(
+                this,
+                "Please grant 'Draw over apps' permission first",
+                Toast.LENGTH_LONG
+            ).show()
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
+            return
+        }
+
+        // Accessibility service is needed to read the screen.
+        if (WayloAccessibilityService.instance == null) {
+            Toast.makeText(
+                this,
+                "Please enable Waylo in Accessibility Settings first",
+                Toast.LENGTH_LONG
+            ).show()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            return
+        }
+
+        // Ensure the service is running so the dot + Speaker are alive.
+        startGuidanceService()
+
+        // Loading state while the backend (Gemini) builds the plan.
+        binding.btnStartGuidance.isEnabled = false
+        binding.btnStartGuidance.setText(R.string.thinking)
+        Toast.makeText(this, R.string.thinking, Toast.LENGTH_SHORT).show()
+
+        lifecycleScope.launch {
+            try {
+                val steps = GeminiClient.requestPlan(task)
+                if (steps.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        R.string.element_not_found,
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    GuidanceEngine.start(task, steps)
+                    // Minimize to home so the user can open the target app and
+                    // follow the dot. Small delay lets the engine initialize.
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        val home = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_HOME)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        startActivity(home)
+                    }, 500)
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    getString(R.string.guidance_failed),
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                binding.btnStartGuidance.isEnabled = true
+                binding.btnStartGuidance.setText(R.string.main_start_guidance)
+                refreshActiveStatus()
+            }
         }
     }
 
