@@ -10,17 +10,14 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.waylo.R
 import com.waylo.accessibility.WayloAccessibilityService
-import com.waylo.ai.GeminiClient
 import com.waylo.databinding.ActivityMainBinding
 import com.waylo.guidance.GuidanceEngine
 import com.waylo.permissions.PermissionManager
 import com.waylo.screenshot.ScreenCaptureManager
 import com.waylo.service.WayloGuidanceService
-import kotlinx.coroutines.launch
 
 /**
  * Production home screen. The overlay dot and TTS are owned by
@@ -85,14 +82,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Validate permissions, call the Waylo backend for a plan, then hand the
-     * steps to [GuidanceEngine]. The foreground service keeps guidance alive once
-     * the user switches to the target app (e.g. Instagram).
+     * Validate permissions, then hand the task to [GuidanceEngine], which calls
+     * the Waylo backend for a plan and runs guidance. The foreground service
+     * keeps guidance alive once the user switches to the target app.
      */
     private fun onStartGuidanceClicked() {
         val task = binding.editTask.text.toString().trim()
         if (task.isEmpty()) {
-            Toast.makeText(this, R.string.main_task_hint, Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Please describe what you want to do", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -100,7 +97,7 @@ class MainActivity : AppCompatActivity() {
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(
                 this,
-                "Please grant 'Draw over apps' permission first",
+                "Please grant Draw Over Apps permission first",
                 Toast.LENGTH_LONG
             ).show()
             startActivity(
@@ -126,44 +123,20 @@ class MainActivity : AppCompatActivity() {
         // Ensure the service is running so the dot + Speaker are alive.
         startGuidanceService()
 
-        // Loading state while the backend (Gemini) builds the plan.
-        binding.btnStartGuidance.isEnabled = false
-        binding.btnStartGuidance.setText(R.string.thinking)
-        Toast.makeText(this, R.string.thinking, Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Starting guidance for: $task", Toast.LENGTH_SHORT).show()
+        GuidanceEngine.start(task) // calls backend, gets real steps
 
-        lifecycleScope.launch {
-            try {
-                val steps = GeminiClient.requestPlan(task)
-                if (steps.isEmpty()) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        R.string.element_not_found,
-                        Toast.LENGTH_LONG
-                    ).show()
-                } else {
-                    GuidanceEngine.start(task, steps)
-                    // Minimize to home so the user can open the target app and
-                    // follow the dot. Small delay lets the engine initialize.
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        val home = Intent(Intent.ACTION_MAIN).apply {
-                            addCategory(Intent.CATEGORY_HOME)
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                        }
-                        startActivity(home)
-                    }, 500)
+        // Minimize to home so the user can open the target app and follow the
+        // dot. Small delay lets the engine initialize.
+        Handler(Looper.getMainLooper()).postDelayed({
+            startActivity(
+                Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_HOME)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-            } catch (e: Exception) {
-                Toast.makeText(
-                    this@MainActivity,
-                    getString(R.string.guidance_failed),
-                    Toast.LENGTH_LONG
-                ).show()
-            } finally {
-                binding.btnStartGuidance.isEnabled = true
-                binding.btnStartGuidance.setText(R.string.main_start_guidance)
-                refreshActiveStatus()
-            }
-        }
+            )
+        }, 800)
+        refreshActiveStatus()
     }
 
     private fun setupRecentList() {

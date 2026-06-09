@@ -1,91 +1,115 @@
-// Retrofit client for the Waylo backend (/plan, /guide).
+// HTTP client for the Waylo backend (/plan).
 // The Gemini API key lives only on the backend — never in the Android app.
 package com.waylo.ai
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import com.waylo.service.WayloGuidanceService
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.Body
-import retrofit2.http.POST
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Talks to the Waylo backend, which in turn calls Gemini. The app never holds
- * the Gemini API key directly.
+ * Talks to the deployed Waylo backend, which in turn calls Gemini. The app
+ * never holds the Gemini API key directly.
  *
  * Backend: https://backendinitial-production.up.railway.app
  */
 object GeminiClient {
 
-    private const val TAG = "Waylo"
-    private const val BASE_URL = "https://backendinitial-production.up.railway.app/"
+    private const val BACKEND_URL = "https://backendinitial-production.up.railway.app"
 
-    // ---- Wire models matching the backend JSON ----
-
-    private data class PlanRequest(val task: String)
-
-    private data class PlanResponse(
-        val success: Boolean = false,
-        val language: String? = null,
-        val steps: List<StepDto>? = null,
-        val totalSteps: Int? = null
-    )
-
-    private data class StepDto(
-        val stepNumber: Int? = null,
-        val instruction: String? = null,
-        val findDescription: String? = null,
-        val appName: String? = null,
-        val expectedScreenTitle: String? = null
-    )
-
-    private interface PlanApi {
-        @POST("plan")
-        suspend fun plan(@Body body: PlanRequest): PlanResponse
-    }
-
-    // Gemini calls can take several seconds — give generous read timeouts.
-    private val http: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .build()
-    }
-
-    private val api: PlanApi by lazy {
-        Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .client(http)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-            .create(PlanApi::class.java)
-    }
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
 
     /**
-     * POST /plan with the user's task. Returns the parsed steps, or an empty
-     * list if the backend reports failure or returns nothing.
+     * POST /plan with the user's task. Retries up to [maxRetries] times on
+     * transient backend errors (5xx / empty responses / network exceptions),
+     * with a short delay between attempts. Returns the parsed steps, or an
+     * empty list if every attempt fails.
      */
-    suspend fun requestPlan(task: String): List<Step> = withContext(Dispatchers.IO) {
-        Log.d(TAG, "GeminiClient: requesting plan for task='$task'")
-        try {
-            val response = api.plan(PlanRequest(task))
-            val dtos = response.steps.orEmpty()
-            Log.d(TAG, "GeminiClient: backend returned success=${response.success}, ${dtos.size} steps.")
+    suspend fun getPlan(task: String): List<Step> = withContext(Dispatchers.IO) {
+        val maxRetries = 3
+        val retryDelayMs = 2000L
 
-            dtos.mapIndexed { i, dto ->
-                Step(
-                    index = dto.stepNumber ?: (i + 1),
-                    instruction = dto.instruction.orEmpty(),
-                    findDescription = dto.findDescription.orEmpty()
+        repeat(maxRetries) { attempt ->
+            Log.e("WAYLO_DOT", "GeminiClient: attempt ${attempt + 1}/$maxRetries for task: $task")
+            try {
+                val jsonBody = JSONObject().apply {
+                    put("task", task)
+                    put("language", "en")
+                }.toString()
+
+                val requestBody = jsonBody.toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("$BACKEND_URL/plan")
+                    .post(requestBody)
+                    .addHeader("Content-Type", "application/json")
+                    .build()
+
+                val response = client.newCall(request).execute()
+                val responseBody = response.body?.string() ?: ""
+                Log.e("WAYLO_DOT", "GeminiClient: code=${response.code} body=$responseBody")
+
+                if (response.isSuccessful) {
+                    val steps = parseSteps(responseBody)
+                    if (steps.isNotEmpty()) return@withContext steps
+                }
+
+                // 500 or empty — tell the user and wait before retrying.
+                if (attempt < maxRetries - 1) {
+                    Log.e("WAYLO_DOT", "GeminiClient: retrying in ${retryDelayMs}ms...")
+                    // Speak feedback on first failure only.
+                    if (attempt == 0) {
+                        withContext(Dispatchers.Main) {
+                            WayloGuidanceService.instance?.speaker
+                                ?.speak("Taking a moment, please wait...")
+                        }
+                    }
+                    delay(retryDelayMs)
+                }
+            } catch (e: Exception) {
+                Log.e("WAYLO_DOT", "GeminiClient: exception on attempt ${attempt + 1}: ${e.message}")
+                if (attempt < maxRetries - 1) delay(retryDelayMs)
+            }
+        }
+
+        Log.e("WAYLO_DOT", "GeminiClient: all $maxRetries attempts failed")
+        return@withContext emptyList()
+    }
+
+    private fun parseSteps(json: String): List<Step> {
+        return try {
+            val obj = JSONObject(json)
+            if (!obj.optBoolean("success", false)) {
+                Log.e("WAYLO_DOT", "parseSteps: backend returned success=false: $json")
+                return emptyList()
+            }
+            val stepsArray = obj.getJSONArray("steps")
+            val result = mutableListOf<Step>()
+            for (i in 0 until stepsArray.length()) {
+                val s = stepsArray.getJSONObject(i)
+                result.add(
+                    Step(
+                        index = s.optInt("stepNumber", i + 1),
+                        instruction = s.optString("instruction", "Follow the dot"),
+                        findDescription = s.optString("findDescription", "")
+                    )
                 )
-            }.filter { it.findDescription.isNotBlank() }
+            }
+            Log.e("WAYLO_DOT", "parseSteps: got ${result.size} steps")
+            result.forEach { Log.e("WAYLO_DOT", "  Step ${it.index}: ${it.instruction} | find: ${it.findDescription}") }
+            result
         } catch (e: Exception) {
-            Log.e(TAG, "GeminiClient: plan request failed.", e)
-            throw e
+            Log.e("WAYLO_DOT", "parseSteps FAILED: ${e.message} | json: $json", e)
+            emptyList()
         }
     }
 }

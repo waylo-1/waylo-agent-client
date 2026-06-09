@@ -5,6 +5,7 @@ import android.graphics.Point
 import android.util.Log
 import android.view.WindowManager
 import com.waylo.accessibility.ElementFinder
+import com.waylo.ai.GeminiClient
 import com.waylo.ai.Step
 import com.waylo.ocr.ScreenAnalysisPipeline
 import com.waylo.overlay.OverlayManager
@@ -53,6 +54,45 @@ object GuidanceEngine {
         isRunning = true
         Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps.")
         executeStep(0)
+    }
+
+    /**
+     * Entry point for real backend calls. Fetches a plan from the backend via
+     * [GeminiClient], then delegates to the [start] overload that takes a
+     * concrete step list.
+     */
+    fun start(task: String) {
+        if (isRunning) stop()
+        isRunning = true
+        currentTask = task
+        currentIndex = 0
+        Log.e(TAG, "GuidanceEngine.start: calling backend for task: $task")
+        WayloGuidanceService.instance?.speaker?.speak("Got it. Finding the steps for you.")
+
+        scope.launch {
+            try {
+                val steps = GeminiClient.getPlan(task) // calls backend /plan
+                Log.e(TAG, "Backend returned ${steps.size} steps")
+                if (steps.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        WayloGuidanceService.instance?.speaker
+                            ?.speak("Sorry, I couldn't understand that task. Please try again.")
+                        isRunning = false
+                    }
+                    return@launch
+                }
+                withContext(Dispatchers.Main) {
+                    start(task, steps) // delegate to the existing List<Step> overload
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Backend call failed: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    WayloGuidanceService.instance?.speaker
+                        ?.speak("Network error. Please check your internet and try again.")
+                    isRunning = false
+                }
+            }
+        }
     }
 
     /** Stop guidance, clear the dot, and silence the voice. */
@@ -135,7 +175,7 @@ object GuidanceEngine {
 
     private fun taskComplete() {
         OverlayManager.hideDot()
-        WayloGuidanceService.instance?.speaker?.speak("Sab kuch ho gaya!")
+        WayloGuidanceService.instance?.speaker?.speak("All done! Task complete.")
         isRunning = false
         Log.e(TAG, "Task complete: '$currentTask'")
     }

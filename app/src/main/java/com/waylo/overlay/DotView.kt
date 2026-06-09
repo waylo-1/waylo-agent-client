@@ -10,9 +10,9 @@ import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
 
 /**
- * A large, deliberately impossible-to-miss pulsing red dot drawn on top of
- * other apps. Inner solid dot (100dp), outer translucent pulsing ring (140dp),
- * and an instruction label below it.
+ * A small, translucent pulsing red dot drawn on top of other apps, with a
+ * semi-transparent label pill below it. Sized to point at a target without
+ * obscuring it: 22dp inner dot, 36dp outer ring.
  */
 class DotView(context: Context) : View(context) {
 
@@ -21,70 +21,73 @@ class DotView(context: Context) : View(context) {
     private var instructionText: String = "Tap here"
 
     private val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.RED
+        color = Color.argb(200, 255, 50, 50)  // semi-transparent red
         style = Paint.Style.FILL
     }
 
-    private val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(100, 255, 0, 0)
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(80, 255, 50, 50)   // very translucent ring
+        style = Paint.Style.FILL
+    }
+
+    private val textBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(160, 0, 0, 0)      // semi-transparent black bg
         style = Paint.Style.FILL
     }
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textSize = 36f
+        textSize = 28f
         textAlign = Paint.Align.CENTER
-        setShadowLayer(4f, 0f, 2f, Color.BLACK)
+        setShadowLayer(3f, 0f, 1f, Color.BLACK)
     }
 
-    private val dotSizePx = (100 * resources.displayMetrics.density).toInt()   // 100dp
-    private val outerSizePx = (140 * resources.displayMetrics.density).toInt()  // 140dp
+    private val dp = resources.displayMetrics.density
+    private val innerRadius = 22 * dp   // 22dp inner dot
+    private val outerRadius = 36 * dp   // 36dp outer ring
+    private val totalSize = (outerRadius * 2 + 8 * dp).toInt()
 
     private var pulseScale = 1f
 
     init {
-        // Start the pulse animation immediately.
-        ObjectAnimator.ofFloat(this, "pulseScale", 1f, 1.4f).apply {
-            duration = 700
+        ObjectAnimator.ofFloat(this, "pulseScale", 1f, 1.25f).apply {
+            duration = 900
             repeatMode = ObjectAnimator.REVERSE
             repeatCount = ObjectAnimator.INFINITE
             interpolator = AccelerateDecelerateInterpolator()
             start()
         }
-        // Software layer so the shadow layer on text renders reliably.
         setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
 
-    // Driven by the ObjectAnimator above.
-    fun setPulseScale(scale: Float) {
-        pulseScale = scale
-        invalidate()
-    }
-
-    fun getPulseScale(): Float = pulseScale
-
-    fun setInstruction(text: String) {
-        instructionText = text
-        invalidate()
-    }
+    fun setPulseScale(s: Float) { pulseScale = s; invalidate() }
+    fun getPulseScale() = pulseScale
+    fun setInstruction(text: String) { instructionText = text; invalidate() }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val size = outerSizePx + 80 // extra space for the pulsing ring
-        setMeasuredDimension(size, size + 60) // extra height for the label
+        setMeasuredDimension(totalSize, totalSize + (40 * dp).toInt())
     }
 
     override fun onDraw(canvas: Canvas) {
         val cx = width / 2f
-        val cy = (outerSizePx / 2f) + 10
+        val cy = outerRadius + 4 * dp
 
-        // Outer pulsing ring.
-        canvas.drawCircle(cx, cy, (outerSizePx / 2f) * pulseScale, outerPaint)
+        // pulsing outer ring
+        canvas.drawCircle(cx, cy, outerRadius * pulseScale, ringPaint)
 
-        // Inner solid dot.
-        canvas.drawCircle(cx, cy, dotSizePx / 2f, innerPaint)
+        // solid inner dot
+        canvas.drawCircle(cx, cy, innerRadius, innerPaint)
 
-        // Instruction label below the dot.
-        canvas.drawText(instructionText, cx, cy + outerSizePx / 2f + 40, textPaint)
+        // label pill background
+        val labelY = cy + outerRadius + 8 * dp
+        val textWidth = textPaint.measureText(instructionText)
+        val pad = 10 * dp
+        canvas.drawRoundRect(
+            cx - textWidth / 2 - pad, labelY - 22 * dp,
+            cx + textWidth / 2 + pad, labelY + 6 * dp,
+            8 * dp, 8 * dp, textBgPaint
+        )
+        canvas.drawText(instructionText, cx, labelY, textPaint)
     }
 
     @Suppress("ClickableViewAccessibility")
@@ -92,9 +95,8 @@ class DotView(context: Context) : View(context) {
         if (event.action == MotionEvent.ACTION_UP) {
             onTap?.invoke()
             performClick()
-            return true
         }
-        return true // consume all touch events
+        return true
     }
 
     override fun performClick(): Boolean {

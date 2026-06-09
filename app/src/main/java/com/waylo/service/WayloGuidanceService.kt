@@ -6,14 +6,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Point
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.provider.Settings
 import android.util.Log
-import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.waylo.R
 import com.waylo.guidance.GuidanceEngine
@@ -74,20 +70,7 @@ class WayloGuidanceService : Service() {
         speaker = Speaker(this)
         OverlayManager.init(this) // service context — overlay survives leaving the app
         Log.e("WAYLO_DOT", "OverlayManager initialized")
-
-        // Smoke test: show the dot at the center of the screen 2s after the
-        // service starts. If this appears, the overlay path works and any bug
-        // is in the guidance/pipeline layer. If not, it's permissions/overlay.
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val size = Point()
-        @Suppress("DEPRECATION")
-        wm.defaultDisplay.getSize(size)
-        val centerX = size.x / 2
-        val centerY = size.y / 2
-        Handler(Looper.getMainLooper()).postDelayed({
-            Log.e("WAYLO_DOT", "Smoke test: showing dot at $centerX, $centerY")
-            OverlayManager.showDot(centerX, centerY, "Waylo Active")
-        }, 2000)
+        // The dot is shown ONLY when GuidanceEngine.start() runs — never on service start.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -98,9 +81,21 @@ class WayloGuidanceService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * Fired when the user swipes Waylo away from the recents screen. Stop
+     * guidance, remove the dot, and shut the service down so nothing lingers.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        GuidanceEngine.stop()
+        OverlayManager.hideDot()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         GuidanceEngine.stop()
         speaker.shutdown()
+        OverlayManager.hideDot()
         OverlayManager.destroy()
         instance = null
         Log.d(TAG, "WayloGuidanceService destroyed.")

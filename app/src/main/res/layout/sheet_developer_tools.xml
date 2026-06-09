@@ -181,7 +181,25 @@
             android:id="@+id/btnStopGuidance"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="24dp"
             android:text="@string/dev_stop_guidance" />
+
+        <!-- Backend health check -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:fontFamily="monospace"
+            android:text="@string/dev_backend_section"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnTestBackend"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/dev_test_backend" />
 
     </LinearLayout>
 </ScrollView>

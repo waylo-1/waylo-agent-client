@@ -10,7 +10,7 @@
 
     <string name="tts_welcome">Hello, I am Waylo. I will help you navigate your phone.</string>
     <string name="task_complete">All done!</string>
-    <string name="thinking">Waylo soch raha hai...</string>
+    <string name="thinking">Waylo is thinking...</string>
     <string name="element_not_found">Please wait, searching...</string>
     <string name="guidance_failed">Could not reach Waylo. Please check your internet and try again.</string>
 
@@ -65,6 +65,10 @@
     <string name="dev_demo_whatsapp">Demo: Open WhatsApp</string>
     <string name="dev_demo_youtube">Demo: Open YouTube</string>
     <string name="dev_stop_guidance">Stop Guidance</string>
+
+    <!-- Backend health check -->
+    <string name="dev_backend_section">Backend</string>
+    <string name="dev_test_backend">Test Backend</string>
 
     <!-- Foreground service notification -->
     <string name="notif_channel_name">Waylo Guidance</string>

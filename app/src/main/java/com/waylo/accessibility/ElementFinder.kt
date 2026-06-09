@@ -8,9 +8,11 @@ import android.view.accessibility.AccessibilityNodeInfo
  * Scoring-based search over the live accessibility tree (Layer 1 of the guidance
  * fallback chain). Instant and fully on-device.
  *
- * Given an English [findElement] description like "plus button create post bottom nav",
- * it tokenises the description and scores every node on screen, returning the best
- * candidate if it clears a confidence threshold.
+ * Given an English [findElement] description like
+ * "The YouTube app icon, which is a red rectangle with a white play button",
+ * it strips filler/stop words, scores every node on screen against the
+ * remaining meaningful tokens, and returns the best candidate if it clears a
+ * confidence threshold.
  */
 object ElementFinder {
 
@@ -18,6 +20,18 @@ object ElementFinder {
 
     /** Minimum score required for a match to be considered reliable. */
     private const val MIN_SCORE = 30
+
+    /**
+     * Filler words that pollute scoring when the backend sends rich, sentence
+     * style descriptions. These are removed before tokenising.
+     */
+    private val STOP_WORDS = setOf(
+        "the", "a", "an", "which", "is", "are", "in", "on", "at",
+        "to", "of", "with", "and", "or", "that", "this", "it", "its",
+        "there", "their", "has", "have", "be", "been", "being",
+        "middle", "bottom", "top", "left", "right", "corner", "button",
+        "icon", "screen", "page", "app"
+    )
 
     /** Known launcher packages where home-screen app icons live. */
     private val LAUNCHER_PACKAGES = setOf(
@@ -42,49 +56,50 @@ object ElementFinder {
     )
 
     /**
-     * Find the best on-screen element matching [description].
-     * Returns null if no node clears [MIN_SCORE] or the service is not connected.
+     * Find the best on-screen element matching [rawDescription].
+     *
+     * The raw description (often a full sentence from the backend) is cleaned by
+     * stripping punctuation and stop words, leaving only meaningful tokens to
+     * score against. Returns null if no node clears [MIN_SCORE] or the service
+     * is not connected.
      */
-    fun findElement(description: String): MatchResult? {
-        val service = WayloAccessibilityService.instance
-        if (service == null) {
-            Log.d(TAG, "ElementFinder: accessibility service not connected.")
+    fun findElement(rawDescription: String): MatchResult? {
+        // Strip filler words, keep only meaningful tokens.
+        val tokens = rawDescription.lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .split(" ")
+            .filter { it.length > 2 && it !in STOP_WORDS }
+        val cleanedDescription = tokens.joinToString(" ")
+        Log.e("WAYLO_DOT", "findElement: raw='$rawDescription' → cleaned='$cleanedDescription'")
+
+        val service = WayloAccessibilityService.instance ?: run {
+            Log.e("WAYLO_DOT", "findElement: accessibility service not connected!")
             return null
         }
 
-        val nodes = service.getAllNodes()
-        Log.d(TAG, "ElementFinder: searching for '$description' across ${nodes.size} nodes scanned.")
-        if (nodes.isEmpty()) {
-            Log.d(TAG, "ElementFinder: no nodes on screen.")
-            return null
-        }
+        val allNodes = service.getAllNodes()
+        Log.e("WAYLO_DOT", "findElement: scanning ${allNodes.size} nodes for '$cleanedDescription'")
 
-        val scored = nodes
-            .map { node ->
-                val breakdown = scoreNodeWithBreakdown(node, description)
-                Triple(node, breakdown, buildReason(node, description))
-            }
-            .sortedByDescending { it.second.total }
+        val scored = allNodes.mapNotNull { node ->
+            val score = scoreNode(node, cleanedDescription, tokens)
+            if (score > 0) MatchResult(node, score, cleanedDescription) else null
+        }.sortedByDescending { it.score }
 
-        // Log the top 3 candidates with their individual score breakdowns.
-        Log.d(TAG, "ElementFinder: top 3 candidates (threshold = $MIN_SCORE):")
-        scored.take(3).forEachIndexed { i, (node, breakdown, reason) ->
-            Log.d(
-                TAG,
-                "  #${i + 1} score=${breakdown.total} " +
-                    "text='${node.text}' desc='${node.contentDescription}' " +
-                    "id='${node.viewIdResourceName}'"
+        val top3 = scored.take(3)
+        top3.forEach {
+            Log.e(
+                "WAYLO_DOT",
+                "  Candidate: score=${it.score} desc='${it.node.contentDescription}' " +
+                    "text='${it.node.text}' pkg='${it.node.packageName}'"
             )
-            Log.d(TAG, "       breakdown: ${breakdown.parts.joinToString(", ").ifEmpty { "no field matched" }} | reason=$reason")
         }
 
         val best = scored.firstOrNull()
-        return if (best != null && best.second.total > MIN_SCORE) {
-            Log.d(TAG, "ElementFinder: DECISION = FOUND (score ${best.second.total} > $MIN_SCORE).")
-            MatchResult(best.first, best.second.total, best.third)
+        return if (best != null && best.score > MIN_SCORE) {
+            Log.e("WAYLO_DOT", "findElement: FOUND '${best.node.contentDescription}' score=${best.score}")
+            best
         } else {
-            val topScore = best?.second?.total ?: 0
-            Log.d(TAG, "ElementFinder: DECISION = NOT FOUND (best score $topScore did not clear $MIN_SCORE).")
+            Log.e("WAYLO_DOT", "findElement: NOT FOUND (best score=${best?.score ?: 0}, threshold=$MIN_SCORE)")
             null
         }
     }
@@ -93,7 +108,13 @@ object ElementFinder {
      * Like [findElement] but only considers nodes that belong to a known
      * launcher package. Used for Step 1 of a task ("find the app icon").
      */
-    fun findOnHomeScreen(description: String): MatchResult? {
+    fun findOnHomeScreen(rawDescription: String): MatchResult? {
+        val tokens = rawDescription.lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .split(" ")
+            .filter { it.length > 2 && it !in STOP_WORDS }
+        val cleanedDescription = tokens.joinToString(" ")
+
         val service = WayloAccessibilityService.instance
         if (service == null) {
             Log.d(TAG, "findOnHomeScreen: accessibility service not connected.")
@@ -104,14 +125,14 @@ object ElementFinder {
             val pkg = node.packageName?.toString()
             pkg != null && LAUNCHER_PACKAGES.contains(pkg)
         }
-        Log.d(TAG, "findOnHomeScreen: '$description' across ${launcherNodes.size} launcher nodes.")
+        Log.d(TAG, "findOnHomeScreen: '$cleanedDescription' across ${launcherNodes.size} launcher nodes.")
         if (launcherNodes.isEmpty()) {
             Log.d(TAG, "findOnHomeScreen: no launcher nodes (is the home screen visible?).")
             return null
         }
 
         val scored = launcherNodes
-            .map { node -> Pair(node, scoreNodeWithBreakdown(node, description)) }
+            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedDescription, tokens)) }
             .sortedByDescending { it.second.total }
 
         scored.take(3).forEachIndexed { i, (node, breakdown) ->
@@ -133,31 +154,47 @@ object ElementFinder {
     }
 
     /**
-     * Score a single node against the description using a set of weighted rules.
-     * Higher is better.
+     * Score a single node against [description]. Public entry point that
+     * tokenises the description itself (used by tests and ad-hoc callers).
      */
     fun scoreNode(node: AccessibilityNodeInfo, description: String): Int {
-        return scoreNodeWithBreakdown(node, description).total
+        val tokens = description.lowercase().trim()
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+        return scoreNodeWithBreakdown(node, description.lowercase().trim(), tokens).total
     }
 
     /**
-     * Score a node and capture which fields contributed what, for verbose logging.
+     * Score a node against a pre-cleaned description and its pre-computed
+     * [tokens]. Used by [findElement] to avoid re-tokenising for every node.
+     */
+    private fun scoreNode(
+        node: AccessibilityNodeInfo,
+        cleanedDescription: String,
+        tokens: List<String>
+    ): Int {
+        return scoreNodeWithBreakdown(node, cleanedDescription, tokens).total
+    }
+
+    /**
+     * Score a node and capture which fields contributed what, for verbose
+     * logging. Uses the supplied [tokens] for word-level matching.
      */
     private fun scoreNodeWithBreakdown(
         node: AccessibilityNodeInfo,
-        description: String
+        description: String,
+        tokens: List<String>
     ): ScoreBreakdown {
         var score = 0
         val parts = mutableListOf<String>()
         val desc = description.lowercase().trim()
-        val tokens = desc.split(Regex("\\s+")).filter { it.isNotBlank() }
 
         val contentDesc = node.contentDescription?.toString()?.lowercase()?.trim()
         val text = node.text?.toString()?.lowercase()?.trim()
         val viewId = node.viewIdResourceName?.substringAfterLast('/')?.lowercase()?.trim()
 
         // contentDescription matching
-        if (!contentDesc.isNullOrBlank()) {
+        if (!contentDesc.isNullOrBlank() && desc.isNotBlank()) {
             if (contentDesc == desc) {
                 score += 60; parts.add("contentDesc exact +60")
             } else if (contentDesc.contains(desc) || desc.contains(contentDesc)) {
@@ -166,7 +203,7 @@ object ElementFinder {
         }
 
         // text matching
-        if (!text.isNullOrBlank()) {
+        if (!text.isNullOrBlank() && desc.isNotBlank()) {
             if (text == desc) {
                 score += 50; parts.add("text exact +50")
             } else if (text.contains(desc) || desc.contains(text)) {
@@ -176,7 +213,7 @@ object ElementFinder {
 
         // viewId (last segment) matching
         if (!viewId.isNullOrBlank()) {
-            if (tokens.any { viewId.contains(it) } || desc.contains(viewId)) {
+            if (tokens.any { viewId.contains(it) } || (desc.isNotBlank() && desc.contains(viewId))) {
                 score += 35; parts.add("viewId '$viewId' +35")
             }
         }
@@ -200,9 +237,9 @@ object ElementFinder {
         val pkg = node.packageName?.toString()
         val isLauncher = pkg != null && LAUNCHER_PACKAGES.contains(pkg)
         val anyFieldMatches =
-            (contentDesc?.contains(desc) == true) ||
-                (text?.contains(desc) == true) ||
-                (viewId?.contains(desc) == true) ||
+            (desc.isNotBlank() && contentDesc?.contains(desc) == true) ||
+                (desc.isNotBlank() && text?.contains(desc) == true) ||
+                (desc.isNotBlank() && viewId?.contains(desc) == true) ||
                 tokens.any { t ->
                     contentDesc?.contains(t) == true ||
                         text?.contains(t) == true ||
@@ -235,20 +272,5 @@ object ElementFinder {
         val rect = Rect()
         node.getBoundsInScreen(rect)
         return rect
-    }
-
-    /** Human-readable explanation of why a node scored as it did (debug aid). */
-    private fun buildReason(node: AccessibilityNodeInfo, description: String): String {
-        val parts = mutableListOf<String>()
-        val desc = description.lowercase().trim()
-        val contentDesc = node.contentDescription?.toString()?.lowercase()?.trim()
-        val text = node.text?.toString()?.lowercase()?.trim()
-        if (contentDesc == desc) parts.add("exactDesc")
-        else if (!contentDesc.isNullOrBlank() && (contentDesc.contains(desc) || desc.contains(contentDesc))) parts.add("partialDesc")
-        if (text == desc) parts.add("exactText")
-        else if (!text.isNullOrBlank() && (text.contains(desc) || desc.contains(text))) parts.add("partialText")
-        if (node.isClickable) parts.add("clickable")
-        if (node.isVisibleToUser) parts.add("visible")
-        return if (parts.isEmpty()) "weak" else parts.joinToString("+")
     }
 }

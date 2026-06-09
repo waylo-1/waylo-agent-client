@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.waylo.R
 import com.waylo.accessibility.ElementFinder
+import com.waylo.ai.GeminiClient
 import com.waylo.databinding.SheetDeveloperToolsBinding
 import com.waylo.guidance.DemoTasks
 import com.waylo.guidance.GuidanceEngine
@@ -100,6 +101,28 @@ class DeveloperToolsSheet : BottomSheetDialogFragment() {
         binding.btnDemoWhatsApp.setOnClickListener { startDemo("Open WhatsApp", DemoTasks.openWhatsApp) }
         binding.btnDemoYouTube.setOnClickListener { startDemo("Open YouTube", DemoTasks.openYouTube) }
         binding.btnStopGuidance.setOnClickListener { GuidanceEngine.stop() }
+
+        // Backend health check
+        binding.btnTestBackend.setOnClickListener { testBackend() }
+    }
+
+    private fun testBackend() {
+        lifecycleScope.launch {
+            try {
+                val steps = GeminiClient.getPlan("open YouTube")
+                Toast.makeText(
+                    requireContext(),
+                    "Backend OK: ${steps.size} steps returned",
+                    Toast.LENGTH_LONG
+                ).show()
+            } catch (e: Exception) {
+                Toast.makeText(
+                    requireContext(),
+                    "Backend FAILED: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     private fun Speaker_isAvailable(): Boolean =
