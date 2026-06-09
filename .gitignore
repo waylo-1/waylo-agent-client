@@ -31,6 +31,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# ---- Nested repos ----
+backend_initial/
+
 # ---- OS / Editor ----
 .DS_Store
 Thumbs.db
