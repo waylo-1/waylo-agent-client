@@ -33,6 +33,9 @@ class MainActivity : AppCompatActivity() {
     private var logoTapCount = 0
     private var lastTapTime = 0L
 
+    // Task waiting to start once screen-capture permission is granted.
+    private var pendingTask: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -64,11 +67,28 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == ScreenCaptureManager.REQUEST_CODE &&
-            resultCode == RESULT_OK && data != null
-        ) {
-            ScreenCaptureManager.onPermissionResult(resultCode, data)
-            refreshStatusCluster()
+        if (requestCode == ScreenCaptureManager.REQUEST_CODE) {
+            if (resultCode == RESULT_OK && data != null) {
+                ScreenCaptureManager.onPermissionResult(resultCode, data)
+                refreshStatusCluster()
+                // If a task was waiting on this permission, launch it now.
+                pendingTask?.let { task ->
+                    pendingTask = null
+                    launchGuidance(task)
+                }
+            } else {
+                // User declined screen capture. Continue without OCR/vision —
+                // Layer 1 (accessibility) still works.
+                Toast.makeText(
+                    this,
+                    "Screen access denied — guidance will work but may be less accurate.",
+                    Toast.LENGTH_LONG
+                ).show()
+                pendingTask?.let { task ->
+                    pendingTask = null
+                    launchGuidance(task)
+                }
+            }
         }
     }
 
@@ -123,12 +143,27 @@ class MainActivity : AppCompatActivity() {
         // Ensure the service is running so the dot + Speaker are alive.
         startGuidanceService()
 
-        // Screen capture powers the OCR + vision fallback layers. Request it
-        // once here if not already granted (the dialog is one-time per session).
+        // Screen capture powers the OCR + vision fallback layers. If it isn't
+        // granted yet, request it FIRST and defer starting guidance until the
+        // grant arrives in onActivityResult — otherwise the capture dialog gets
+        // dismissed when we minimize to home and OCR/vision can never run.
         if (!ScreenCaptureManager.hasPermission()) {
+            pendingTask = task
+            Toast.makeText(this, "Allow screen access to continue", Toast.LENGTH_SHORT).show()
             ScreenCaptureManager.requestPermission(this)
+            return
         }
 
+        launchGuidance(task)
+    }
+
+    /**
+     * Actually start guidance and minimize to home. Called either directly (if
+     * capture permission is already granted) or from onActivityResult once the
+     * user responds to the capture dialog.
+     */
+    private fun launchGuidance(task: String) {
+        startGuidanceService()
         Toast.makeText(this, "Starting guidance for: $task", Toast.LENGTH_SHORT).show()
         GuidanceEngine.start(task) // calls backend, gets real steps
 
