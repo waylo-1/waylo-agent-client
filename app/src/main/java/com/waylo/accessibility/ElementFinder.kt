@@ -63,14 +63,14 @@ object ElementFinder {
      * score against. Returns null if no node clears [MIN_SCORE] or the service
      * is not connected.
      */
-    fun findElement(rawDescription: String): MatchResult? {
+    fun findElement(rawDescription: String, targetPackage: String? = null): MatchResult? {
         // Strip filler words, keep only meaningful tokens.
         val tokens = rawDescription.lowercase()
             .replace(Regex("[^a-z0-9 ]"), " ")
             .split(" ")
             .filter { it.length > 2 && it !in STOP_WORDS }
         val cleanedDescription = tokens.joinToString(" ")
-        Log.e("WAYLO_DOT", "findElement: raw='$rawDescription' → cleaned='$cleanedDescription'")
+        Log.e("WAYLO_DOT", "findElement: raw='$rawDescription' → cleaned='$cleanedDescription' targetPkg=$targetPackage")
 
         val service = WayloAccessibilityService.instance ?: run {
             Log.e("WAYLO_DOT", "findElement: accessibility service not connected!")
@@ -81,7 +81,7 @@ object ElementFinder {
         Log.e("WAYLO_DOT", "findElement: scanning ${allNodes.size} nodes for '$cleanedDescription'")
 
         val scored = allNodes.mapNotNull { node ->
-            val score = scoreNode(node, cleanedDescription, tokens)
+            val score = scoreNode(node, cleanedDescription, tokens, targetPackage)
             if (score > 0) MatchResult(node, score, cleanedDescription) else null
         }.sortedByDescending { it.score }
 
@@ -108,7 +108,7 @@ object ElementFinder {
      * Like [findElement] but only considers nodes that belong to a known
      * launcher package. Used for Step 1 of a task ("find the app icon").
      */
-    fun findOnHomeScreen(rawDescription: String): MatchResult? {
+    fun findOnHomeScreen(rawDescription: String, targetPackage: String? = null): MatchResult? {
         val tokens = rawDescription.lowercase()
             .replace(Regex("[^a-z0-9 ]"), " ")
             .split(" ")
@@ -132,7 +132,7 @@ object ElementFinder {
         }
 
         val scored = launcherNodes
-            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedDescription, tokens)) }
+            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage)) }
             .sortedByDescending { it.second.total }
 
         scored.take(3).forEachIndexed { i, (node, breakdown) ->
@@ -167,13 +167,16 @@ object ElementFinder {
     /**
      * Score a node against a pre-cleaned description and its pre-computed
      * [tokens]. Used by [findElement] to avoid re-tokenising for every node.
+     * If [targetPackage] is set, nodes belonging to that package get a strong
+     * bonus (fixes e.g. the Play Store logo outscoring the real YouTube icon).
      */
     private fun scoreNode(
         node: AccessibilityNodeInfo,
         cleanedDescription: String,
-        tokens: List<String>
+        tokens: List<String>,
+        targetPackage: String? = null
     ): Int {
-        return scoreNodeWithBreakdown(node, cleanedDescription, tokens).total
+        return scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage).total
     }
 
     /**
@@ -183,7 +186,8 @@ object ElementFinder {
     private fun scoreNodeWithBreakdown(
         node: AccessibilityNodeInfo,
         description: String,
-        tokens: List<String>
+        tokens: List<String>,
+        targetPackage: String? = null
     ): ScoreBreakdown {
         var score = 0
         val parts = mutableListOf<String>()
@@ -192,6 +196,12 @@ object ElementFinder {
         val contentDesc = node.contentDescription?.toString()?.lowercase()?.trim()
         val text = node.text?.toString()?.lowercase()?.trim()
         val viewId = node.viewIdResourceName?.substringAfterLast('/')?.lowercase()?.trim()
+
+        // Strong preference for the target app's package (e.g. the real
+        // com.google.android.youtube icon over the Play Store listing).
+        if (targetPackage != null && node.packageName?.toString() == targetPackage) {
+            score += 50; parts.add("targetPackage($targetPackage) +50")
+        }
 
         // contentDescription matching
         if (!contentDesc.isNullOrBlank() && desc.isNotBlank()) {

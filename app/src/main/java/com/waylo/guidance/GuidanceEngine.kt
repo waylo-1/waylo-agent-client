@@ -144,8 +144,9 @@ object GuidanceEngine {
             val result = withTimeoutOrNull(4000) {
                 // Step 1 is almost always "find the app icon on the home screen".
                 if (index == 0) {
+                    val pkg = guessPackage(currentTask, step.findDescription)
                     val home = withContext(Dispatchers.IO) {
-                        ElementFinder.findOnHomeScreen(step.findDescription)
+                        ElementFinder.findOnHomeScreen(step.findDescription, pkg)
                     }
                     if (home != null) {
                         val bounds = ElementFinder.getBoundsOnScreen(home.node)
@@ -167,16 +168,66 @@ object GuidanceEngine {
                     // Show the short instruction under the dot (matches the voice).
                     OverlayManager.showDotAtResult(result, spoken)
                 } else {
-                    // Fallback: place the dot at a visible position so the user
-                    // always gets feedback, even if detection failed.
-                    Log.e(TAG, "Pipeline failed/timed out, showing dot at fallback position")
-                    val ctx: Context = service
-                    val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                    val size = Point()
-                    @Suppress("DEPRECATION")
-                    wm.defaultDisplay.getSize(size)
-                    OverlayManager.showDot(size.x / 2, size.y / 3, spoken)
+                    Log.e(TAG, "Pipeline (Layer 1/OCR) missed — running vision fallback.")
+                    runFallback(service, index, step, spoken)
                 }
+            }
+        }
+    }
+
+    /**
+     * Layer 3 recovery: when the on-device pipeline can't find the target, call
+     * the Gemini Vision fallback. It either returns coordinates (place the dot),
+     * a set of recovery steps (splice them in and re-run), or a hard failure.
+     */
+    private suspend fun runFallback(
+        service: WayloGuidanceService,
+        index: Int,
+        step: Step,
+        spoken: String
+    ) {
+        val result = withContext(Dispatchers.IO) {
+            FallbackHandler.handle(
+                context = service,
+                task = currentTask,
+                stepIndex = index,
+                totalSteps = steps.size,
+                findDesc = step.findDescription
+            )
+        }
+
+        when (result) {
+            is FallbackHandler.FallbackResult.Found -> {
+                val label = result.updatedInstruction?.let { shortLabel(it) } ?: spoken
+                result.updatedInstruction?.let { service.speaker.speak(it) }
+                OverlayManager.showDot(result.x, result.y, label)
+            }
+
+            is FallbackHandler.FallbackResult.NewSteps -> {
+                Log.e(TAG, "Troubleshoot produced ${result.steps.size} recovery steps.")
+                service.speaker.speak(result.explanation)
+                // Keep completed steps, replace everything from here with recovery steps.
+                steps = steps.take(index) + result.steps
+                // Re-run the current index (now the first recovery step). A short
+                // delay lets the explanation start speaking first.
+                stepShownAt = android.os.SystemClock.elapsedRealtime()
+                scope.launch {
+                    kotlinx.coroutines.delay(1500)
+                    executeStep(index)
+                }
+            }
+
+            is FallbackHandler.FallbackResult.Failed -> {
+                Log.e(TAG, "Fallback failed: ${result.reason}")
+                service.speaker.speak(
+                    "I couldn't find what I was looking for. Please scroll around or go back and try again."
+                )
+                // Leave a fallback dot so the user still has visual feedback.
+                val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                val size = Point()
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay.getSize(size)
+                OverlayManager.showDot(size.x / 2, size.y / 3, spoken)
             }
         }
     }
@@ -218,6 +269,29 @@ object GuidanceEngine {
     private fun shortLabel(instruction: String): String {
         val trimmed = instruction.trim()
         return if (trimmed.length <= 40) trimmed else trimmed.take(37).trimEnd() + "…"
+    }
+
+    /** Known package names for common apps, keyed by a recognisable keyword. */
+    private val KNOWN_PACKAGES = mapOf(
+        "youtube" to "com.google.android.youtube",
+        "whatsapp" to "com.whatsapp",
+        "phonepe" to "com.phonepe.app",
+        "irctc" to "com.irctc.rajdhani",
+        "play store" to "com.android.vending",
+        "playstore" to "com.android.vending",
+        "chrome" to "com.android.chrome",
+        "gmail" to "com.google.android.gm",
+        "maps" to "com.google.android.apps.maps"
+    )
+
+    /**
+     * Best-effort guess of the target app package for step 1, so [ElementFinder]
+     * can strongly prefer the real app icon over look-alikes (e.g. the Play
+     * Store listing). Matches against the task and the find description.
+     */
+    private fun guessPackage(task: String, findDescription: String): String? {
+        val haystack = "$task $findDescription".lowercase()
+        return KNOWN_PACKAGES.entries.firstOrNull { haystack.contains(it.key) }?.value
     }
 
     private fun taskComplete() {

@@ -33,10 +33,14 @@ object ScreenCaptureManager {
     private var projectionManager: MediaProjectionManager? = null
     private var mediaProjection: MediaProjection? = null
 
-    // Cached the granting token's resultCode + data so projection can be
-    // recreated each capture (a projection can be stopped by the system).
+    // Cached the granting token's resultCode + data so the projection can be
+    // (re)created. On Android 14+ a token may only be consumed ONCE, so we
+    // create the MediaProjection a single time and reuse it across captures.
     private var resultCode: Int = Activity.RESULT_CANCELED
     private var resultData: Intent? = null
+
+    /** True once we've created a live projection from the granted token. */
+    private var projectionStarted = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -50,6 +54,9 @@ object ScreenCaptureManager {
     fun onPermissionResult(resultCode: Int, data: Intent) {
         this.resultCode = resultCode
         this.resultData = data
+        // Force the next capture to build a fresh projection from this token.
+        projectionStarted = false
+        mediaProjection = null
         Log.d(TAG, "Screen capture permission stored (resultCode=$resultCode).")
     }
 
@@ -61,6 +68,7 @@ object ScreenCaptureManager {
     fun clearPermission() {
         resultCode = Activity.RESULT_CANCELED
         resultData = null
+        projectionStarted = false
         try {
             mediaProjection?.stop()
         } catch (e: Exception) {
@@ -71,9 +79,56 @@ object ScreenCaptureManager {
     }
 
     /**
+     * Get the live MediaProjection, creating it once from the stored token.
+     *
+     * On Android 14+ the permission token is single-use, so we must NOT call
+     * getMediaProjection repeatedly — we build it once and keep it alive for the
+     * whole guidance session. Returns null if no token or creation fails.
+     */
+    private fun getOrCreateProjection(context: Context): MediaProjection? {
+        mediaProjection?.let { return it }
+        if (!hasPermission()) return null
+
+        val manager = ensureManager(context)
+        // Android 14+: the FGS must declare the mediaProjection type before the
+        // projection is created.
+        com.waylo.service.WayloGuidanceService.instance?.enableMediaProjectionType()
+
+        val projection = try {
+            manager.getMediaProjection(resultCode, resultData!!)
+        } catch (e: Exception) {
+            Log.e(TAG, "getMediaProjection threw (token consumed/revoked?).", e)
+            null
+        }
+
+        if (projection == null) {
+            Log.e(TAG, "MediaProjection was null — token likely already used or revoked.")
+            // The single-use token is now spent; force the user to re-grant.
+            clearPermission()
+            return null
+        }
+
+        // A projection requires a registered callback on API 34+. When the
+        // projection stops (system revoke), drop our reference so we rebuild.
+        projection.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                Log.d(TAG, "MediaProjection stopped by system.")
+                mediaProjection = null
+                projectionStarted = false
+            }
+        }, mainHandler)
+
+        mediaProjection = projection
+        projectionStarted = true
+        Log.d(TAG, "MediaProjection created and cached for reuse.")
+        return projection
+    }
+
+    /**
      * Capture a single frame of the screen. The bitmap (or null on failure) is
-     * delivered to [callback] on the main thread. The VirtualDisplay and
-     * ImageReader are released immediately after the frame is read.
+     * delivered to [callback] on the main thread. Only the VirtualDisplay and
+     * ImageReader are released after each frame — the MediaProjection is kept
+     * alive and reused for subsequent captures (Android 14 token is single-use).
      */
     fun captureScreen(context: Context, callback: (Bitmap?) -> Unit) {
         if (!hasPermission()) {
@@ -88,19 +143,8 @@ object ScreenCaptureManager {
         val dpi = metrics.densityDpi
 
         try {
-            val manager = ensureManager(context)
-            // Android 14+: the foreground service must declare the
-            // mediaProjection type before a projection is started.
-            com.waylo.service.WayloGuidanceService.instance?.enableMediaProjectionType()
-
-            // Recreate the projection from the stored token for each capture.
-            val projection = manager.getMediaProjection(resultCode, resultData!!).also {
-                mediaProjection = it
-            }
-
+            val projection = getOrCreateProjection(context)
             if (projection == null) {
-                Log.e(TAG, "MediaProjection was null — token likely revoked.")
-                clearPermission()
                 mainHandler.post { callback(null) }
                 return
             }
@@ -109,16 +153,10 @@ object ScreenCaptureManager {
                 width, height, PixelFormat.RGBA_8888, 2
             )
 
-            // A projection requires a registered callback on API 34+.
-            projection.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    Log.d(TAG, "MediaProjection stopped.")
-                }
-            }, mainHandler)
-
             var virtualDisplay: VirtualDisplay? = null
             var delivered = false
 
+            // Release ONLY the per-capture resources. Keep the projection alive.
             fun cleanup() {
                 try {
                     virtualDisplay?.release()
@@ -130,12 +168,6 @@ object ScreenCaptureManager {
                 } catch (e: Exception) {
                     Log.w(TAG, "Error closing ImageReader.", e)
                 }
-                try {
-                    projection.stop()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error stopping projection.", e)
-                }
-                mediaProjection = null
             }
 
             virtualDisplay = projection.createVirtualDisplay(
@@ -178,7 +210,7 @@ object ScreenCaptureManager {
                     cleanup()
                     callback(null)
                 }
-            }, 2000)
+            }, 2500)
 
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException during capture — projection revoked.", e)

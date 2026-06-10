@@ -123,6 +123,12 @@ class MainActivity : AppCompatActivity() {
         // Ensure the service is running so the dot + Speaker are alive.
         startGuidanceService()
 
+        // Screen capture powers the OCR + vision fallback layers. Request it
+        // once here if not already granted (the dialog is one-time per session).
+        if (!ScreenCaptureManager.hasPermission()) {
+            ScreenCaptureManager.requestPermission(this)
+        }
+
         Toast.makeText(this, "Starting guidance for: $task", Toast.LENGTH_SHORT).show()
         GuidanceEngine.start(task) // calls backend, gets real steps
 
