@@ -89,39 +89,40 @@ object ScreenCaptureManager {
         mediaProjection?.let { return it }
         if (!hasPermission()) return null
 
-        val manager = ensureManager(context)
-        // Android 14+: the FGS must declare the mediaProjection type before the
-        // projection is created.
-        com.waylo.service.WayloGuidanceService.instance?.enableMediaProjectionType()
+        return try {
+            val manager = ensureManager(context)
+            // Android 14+: the FGS must declare the mediaProjection type before
+            // the projection is created. Do this synchronously on the main thread.
+            com.waylo.service.WayloGuidanceService.instance?.enableMediaProjectionType()
 
-        val projection = try {
-            manager.getMediaProjection(resultCode, resultData!!)
-        } catch (e: Exception) {
-            Log.e(TAG, "getMediaProjection threw (token consumed/revoked?).", e)
+            val projection = manager.getMediaProjection(resultCode, resultData!!)
+            if (projection == null) {
+                Log.e(TAG, "MediaProjection was null — token likely already used or revoked.")
+                clearPermission()
+                return null
+            }
+
+            // IMPORTANT (API 34+): register the callback BEFORE the projection is
+            // used to create a virtual display, or the system throws.
+            projection.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    Log.d(TAG, "MediaProjection stopped by system.")
+                    mediaProjection = null
+                    projectionStarted = false
+                }
+            }, mainHandler)
+
+            mediaProjection = projection
+            projectionStarted = true
+            Log.d(TAG, "MediaProjection created and cached for reuse.")
+            projection
+        } catch (e: Throwable) {
+            // Catch Throwable so an Android 14 SecurityException/IllegalState
+            // during elevation or projection creation can never kill the process.
+            Log.e(TAG, "getOrCreateProjection failed; recovering without crashing.", e)
+            clearPermission()
             null
         }
-
-        if (projection == null) {
-            Log.e(TAG, "MediaProjection was null — token likely already used or revoked.")
-            // The single-use token is now spent; force the user to re-grant.
-            clearPermission()
-            return null
-        }
-
-        // A projection requires a registered callback on API 34+. When the
-        // projection stops (system revoke), drop our reference so we rebuild.
-        projection.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                Log.d(TAG, "MediaProjection stopped by system.")
-                mediaProjection = null
-                projectionStarted = false
-            }
-        }, mainHandler)
-
-        mediaProjection = projection
-        projectionStarted = true
-        Log.d(TAG, "MediaProjection created and cached for reuse.")
-        return projection
     }
 
     /**
@@ -131,9 +132,20 @@ object ScreenCaptureManager {
      * alive and reused for subsequent captures (Android 14 token is single-use).
      */
     fun captureScreen(context: Context, callback: (Bitmap?) -> Unit) {
+        // Always run the MediaProjection work on the main thread. On Android 14
+        // elevating the FGS type and creating the projection off the main thread
+        // can throw and crash the whole process.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            captureScreenInternal(context, callback)
+        } else {
+            mainHandler.post { captureScreenInternal(context, callback) }
+        }
+    }
+
+    private fun captureScreenInternal(context: Context, callback: (Bitmap?) -> Unit) {
         if (!hasPermission()) {
             Log.w(TAG, "captureScreen called without permission.")
-            mainHandler.post { callback(null) }
+            callback(null)
             return
         }
 
@@ -145,7 +157,7 @@ object ScreenCaptureManager {
         try {
             val projection = getOrCreateProjection(context)
             if (projection == null) {
-                mainHandler.post { callback(null) }
+                callback(null)
                 return
             }
 
@@ -160,12 +172,12 @@ object ScreenCaptureManager {
             fun cleanup() {
                 try {
                     virtualDisplay?.release()
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.w(TAG, "Error releasing VirtualDisplay.", e)
                 }
                 try {
                     imageReader.close()
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.w(TAG, "Error closing ImageReader.", e)
                 }
             }
@@ -188,14 +200,14 @@ object ScreenCaptureManager {
                         val bitmap = imageToBitmap(image, width, height)
                         delivered = true
                         cleanup()
-                        mainHandler.post { callback(bitmap) }
+                        callback(bitmap)
                     }
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.e(TAG, "Error reading captured image.", e)
                     if (!delivered) {
                         delivered = true
                         cleanup()
-                        mainHandler.post { callback(null) }
+                        callback(null)
                     }
                 } finally {
                     image?.close()
@@ -212,13 +224,12 @@ object ScreenCaptureManager {
                 }
             }, 2500)
 
-        } catch (e: SecurityException) {
-            Log.e(TAG, "SecurityException during capture — projection revoked.", e)
+        } catch (e: Throwable) {
+            // Catch Throwable (not just Exception) so an Android 14 projection
+            // error can never crash the host process — fall back to null.
+            Log.e(TAG, "Capture failed; recovering without crashing.", e)
             clearPermission()
-            mainHandler.post { callback(null) }
-        } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error during capture.", e)
-            mainHandler.post { callback(null) }
+            callback(null)
         }
     }
 
