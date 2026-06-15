@@ -2,8 +2,12 @@ package com.waylo.ocr
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Point
 import android.util.Log
+import android.view.WindowManager
 import com.waylo.accessibility.ElementFinder
+import com.waylo.accessibility.WayloAccessibilityService
+import com.waylo.guidance.StepMetadata
 import com.waylo.overlay.OverlayManager
 import com.waylo.screenshot.ScreenCaptureManager
 import kotlinx.coroutines.Dispatchers
@@ -106,6 +110,61 @@ object ScreenAnalysisPipeline {
      */
     suspend fun find(context: Context, description: String): PipelineResult =
         analyze(context, description)
+
+    /**
+     * Enriched pipeline: run L0 (accessibility via [SemanticMatcher]) then
+     * L1 (OCR via [SemanticMatcher]) against rich [step] metadata.
+     *
+     * Returns a [PipelineResult] whose source is "accessibility" or "ocr" on a
+     * hit, or "failed" if both layers miss. [targetPackage] biases L0 toward the
+     * real app's nodes. Used by [com.waylo.guidance.GuidanceEngine].
+     */
+    suspend fun find(
+        context: Context,
+        step: StepMetadata,
+        targetPackage: String,
+        screenWidth: Int,
+        screenHeight: Int
+    ): PipelineResult = withContext(Dispatchers.IO) {
+        // --- L0: accessibility tree ---
+        val root = WayloAccessibilityService.instance?.rootInActiveWindow
+        if (root != null) {
+            val hit = ElementFinder.findElement(root, step, targetPackage, screenWidth, screenHeight)
+            if (hit != null) {
+                Log.e("WAYLO_DOT", "Pipeline L0(semantic) hit at ${hit.first},${hit.second}")
+                return@withContext PipelineResult(
+                    x = hit.first, y = hit.second,
+                    source = "accessibility", confidence = 100f, label = step.findDescription
+                )
+            }
+        } else {
+            Log.w(TAG, "Pipeline L0: no active window root.")
+        }
+
+        // --- L1: screen capture + OCR ---
+        val bitmap = captureScreenSuspend(context)
+        if (bitmap != null) {
+            try {
+                val hit = com.waylo.ocr.OcrAnalyzer.findElement(bitmap, step, screenWidth, screenHeight)
+                if (hit != null) {
+                    Log.e("WAYLO_DOT", "Pipeline L1(semantic OCR) hit at ${hit.first},${hit.second}")
+                    return@withContext PipelineResult(
+                        x = hit.first, y = hit.second,
+                        source = "ocr", confidence = 60f, label = step.findDescription
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Pipeline L1(semantic OCR) threw.", e)
+            } finally {
+                if (!bitmap.isRecycled) bitmap.recycle()
+            }
+        } else {
+            Log.e("WAYLO_DOT", "Pipeline L1: capture returned null.")
+        }
+
+        Log.e("WAYLO_DOT", "Pipeline (L0+L1 semantic) failed for: ${step.findDescription}")
+        PipelineResult(0, 0, "failed", 0f, step.findDescription)
+    }
 
     /**
      * Convenience: run the pipeline then place/move the dot on the result.

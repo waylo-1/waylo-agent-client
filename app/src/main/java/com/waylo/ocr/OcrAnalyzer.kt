@@ -7,6 +7,8 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.waylo.guidance.SemanticMatcher
+import com.waylo.guidance.StepMetadata
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
@@ -30,6 +32,9 @@ data class OcrElement(
 object OcrAnalyzer {
 
     private const val TAG = "Waylo"
+
+    /** Acceptance threshold for the enriched [SemanticMatcher] OCR scorer (L1). */
+    private const val OCR_MIN_SCORE = 60
 
     private val recognizer: TextRecognizer by lazy {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -112,6 +117,43 @@ object OcrAnalyzer {
             best
         } else {
             Log.d(TAG, "OCR found no match for '$description'.")
+            null
+        }
+    }
+
+    /**
+     * Enriched L1 search: OCR [bitmap], then score each detected text block
+     * against [step] via [SemanticMatcher.scoreText]. Returns the centre (x, y)
+     * of the best block clearing the OCR threshold (60), or null.
+     *
+     * OCR is less precise than the accessibility tree, hence the lower threshold.
+     */
+    suspend fun findElement(
+        bitmap: Bitmap,
+        step: StepMetadata,
+        screenWidth: Int,
+        screenHeight: Int
+    ): Pair<Int, Int>? {
+        val elements = analyzeScreen(bitmap)
+        if (elements.isEmpty()) return null
+
+        var best: OcrElement? = null
+        var bestScore = -1
+        for (element in elements) {
+            val score = SemanticMatcher.scoreText(
+                element.text, step, element.boundingBox, screenWidth, screenHeight
+            )
+            if (score > bestScore) {
+                bestScore = score
+                best = element
+            }
+        }
+
+        return if (best != null && bestScore >= OCR_MIN_SCORE) {
+            Log.d(TAG, "OCR(step): FOUND '${best.text}' score=$bestScore at (${best.centerX},${best.centerY})")
+            Pair(best.centerX, best.centerY)
+        } else {
+            Log.d(TAG, "OCR(step): no match (best=$bestScore, threshold=$OCR_MIN_SCORE)")
             null
         }
     }

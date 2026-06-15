@@ -3,6 +3,8 @@ package com.waylo.accessibility
 import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import com.waylo.guidance.SemanticMatcher
+import com.waylo.guidance.StepMetadata
 
 /**
  * Scoring-based search over the live accessibility tree (Layer 1 of the guidance
@@ -20,6 +22,12 @@ object ElementFinder {
 
     /** Minimum score required for a match to be considered reliable. */
     private const val MIN_SCORE = 30
+
+    /** Acceptance threshold for the enriched [SemanticMatcher] scorer (L0). */
+    private const val SEMANTIC_MIN_SCORE = 70
+
+    /** Bonus added when a node belongs to the target app package. */
+    private const val TARGET_PACKAGE_BONUS = 60
 
     /**
      * Filler words that pollute scoring when the backend sends rich, sentence
@@ -48,6 +56,55 @@ object ElementFinder {
         val score: Int,
         val matchReason: String
     )
+
+    /**
+     * Enriched L0 search: score every on-screen node against [step] using
+     * [SemanticMatcher], with a strong bonus for nodes belonging to
+     * [targetPackage]. Returns the centre (x, y) of the best node that clears
+     * the [SEMANTIC_MIN_SCORE] threshold, or null.
+     */
+    fun findElement(
+        rootNode: AccessibilityNodeInfo,
+        step: StepMetadata,
+        targetPackage: String,
+        screenWidth: Int,
+        screenHeight: Int
+    ): Pair<Int, Int>? {
+        val nodes = mutableListOf<AccessibilityNodeInfo>()
+        collectNodes(rootNode, nodes)
+        Log.e("WAYLO_DOT", "findElement(step): scanning ${nodes.size} nodes for '${step.findDescription}' pkg=$targetPackage")
+
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = -1
+        for (node in nodes) {
+            var score = SemanticMatcher.scoreNode(node, step, screenWidth, screenHeight)
+            if (targetPackage.isNotBlank() && node.packageName?.toString() == targetPackage) {
+                score += TARGET_PACKAGE_BONUS
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = node
+            }
+        }
+
+        return if (best != null && bestScore >= SEMANTIC_MIN_SCORE) {
+            val bounds = getBoundsOnScreen(best)
+            Log.e("WAYLO_DOT", "findElement(step): FOUND score=$bestScore at (${bounds.centerX()},${bounds.centerY()})")
+            Pair(bounds.centerX(), bounds.centerY())
+        } else {
+            Log.e("WAYLO_DOT", "findElement(step): NOT FOUND (best=$bestScore, threshold=$SEMANTIC_MIN_SCORE)")
+            null
+        }
+    }
+
+    /** Depth-first flatten of a node subtree into [out]. */
+    private fun collectNodes(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>) {
+        out.add(node)
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectNodes(child, out)
+        }
+    }
 
     /** Per-field score breakdown, used for verbose logging. */
     private data class ScoreBreakdown(

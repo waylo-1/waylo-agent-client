@@ -15,6 +15,13 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
 
+/** Encode a bitmap as a Base64 JPEG (60% quality — enough for analysis/training). */
+fun Bitmap.toBase64(): String {
+    val stream = ByteArrayOutputStream()
+    this.compress(Bitmap.CompressFormat.JPEG, 60, stream)
+    return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+}
+
 /**
  * Fallback chain used by [GuidanceEngine] when Layer 1 (accessibility tree)
  * fails to locate the target element.
@@ -23,6 +30,10 @@ import kotlin.coroutines.resume
  *   Layer 3a — Gemini Vision LOCATE: "I expect X, where is it?" → coordinates.
  *   Layer 3b — Gemini Vision TROUBLESHOOT: "X is missing, what should the user
  *              do?" → recovery steps that splice into the remaining plan.
+ *
+ * Before escalating to the vision layer (L3), if every local layer (L0/L1/L2)
+ * has missed, a structured [DetectionFailure] is logged via [FailureLogger] so
+ * the miss becomes future YOLO training data instead of a silent wasted call.
  *
  * Implemented as an object so it can be called from the [GuidanceEngine]
  * singleton without dependency injection. Heavy work runs on [Dispatchers.IO].
@@ -54,23 +65,34 @@ object FallbackHandler {
      * @param task        full user task, e.g. "open youtube history".
      * @param stepIndex   current step index (0-based).
      * @param totalSteps  total steps in the plan.
-     * @param findDesc    what we're looking for, e.g. "History tab youtube library".
+     * @param step        rich metadata describing the element we're looking for.
+     * @param targetPackage  the target app package (for failure logging).
+     * @param sessionId   UUID for the current guidance session (for failure logging).
      */
     suspend fun handle(
         context: Context,
         task: String,
         stepIndex: Int,
         totalSteps: Int,
-        findDesc: String
+        step: StepMetadata,
+        targetPackage: String,
+        sessionId: String
     ): FallbackResult = withContext(Dispatchers.IO) {
+        val findDesc = step.findDescription
         Log.d(TAG, "Fallback triggered for step $stepIndex: $findDesc")
 
-        // ── Layer 2: ML Kit OCR ───────────────────────────────────────────
+        // Layer that was last attempted before vision. L0 (accessibility) ran in
+        // the pipeline upstream; here we attempt L1 (OCR). Tracked for the
+        // failure record so the YOLO export knows how far detection got.
+        var lastLayerAttempted = 0
+
+        // ── Layer 2 (L1): ML Kit OCR ──────────────────────────────────────
         speak("Let me look at your screen...")
-        val bitmap = captureBitmap(context)
-        if (bitmap != null) {
+        val ocrBitmap = captureBitmap(context)
+        if (ocrBitmap != null) {
+            lastLayerAttempted = 1
             try {
-                val elements = OcrAnalyzer.analyzeScreen(bitmap)
+                val elements = OcrAnalyzer.analyzeScreen(ocrBitmap)
                 val match = OcrAnalyzer.findBestMatch(elements, findDesc)
                 if (match != null) {
                     Log.d(TAG, "Layer 2 OCR hit '${match.text}' at (${match.centerX},${match.centerY})")
@@ -80,10 +102,35 @@ object FallbackHandler {
             } catch (e: Exception) {
                 Log.e(TAG, "Layer 2 OCR threw", e)
             } finally {
-                if (!bitmap.isRecycled) bitmap.recycle()
+                if (!ocrBitmap.isRecycled) ocrBitmap.recycle()
             }
         } else {
             Log.w(TAG, "Layer 2: couldn't capture screen")
+        }
+
+        // ── All local layers (L0/L1/L2) missed — flag the failure ─────────
+        // Fire-and-forget: never blocks or crashes the guidance flow. We still
+        // proceed to the vision fallback (L3) immediately afterwards.
+        captureBitmap(context)?.let { flagBitmap ->
+            try {
+                val failure = DetectionFailure(
+                    sessionId = sessionId,
+                    taskDescription = task,
+                    stepNumber = step.stepNumber,
+                    findDescription = step.findDescription,
+                    elementType = step.elementType.name,
+                    screenRegion = step.screenRegion.name,
+                    visualDescription = step.visualDescription,
+                    targetPackage = targetPackage,
+                    layerReached = lastLayerAttempted,
+                    screenshotBase64 = flagBitmap.toBase64(),
+                    screenWidth = flagBitmap.width,
+                    screenHeight = flagBitmap.height
+                )
+                FailureLogger.logFailure(failure)
+            } finally {
+                if (!flagBitmap.isRecycled) flagBitmap.recycle()
+            }
         }
 
         // ── Layer 3a: Gemini Vision LOCATE ────────────────────────────────

@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.WindowManager
 import com.waylo.accessibility.ElementFinder
 import com.waylo.ai.GeminiClient
+import com.waylo.ai.PlanParser
 import com.waylo.ai.Step
 import com.waylo.ocr.ScreenAnalysisPipeline
 import com.waylo.overlay.OverlayManager
@@ -17,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.UUID
 
 /**
  * Main orchestrator. Walks the user through a plan one step at a time:
@@ -34,10 +36,16 @@ object GuidanceEngine {
     /** Kept to honour the PRD contract (`GuidanceEngine.instance`). Self-reference. */
     var instance: GuidanceEngine? = this
 
-    private var steps: List<Step> = emptyList()
+    private var steps: List<StepMetadata> = emptyList()
     private var currentIndex = 0
     private var isRunning = false
     private var currentTask: String = ""
+
+    /** Target app package from the plan's appPackage field; biases L0 matching. */
+    private var targetPackage: String = ""
+
+    /** UUID for the current guidance session; attached to logged failures. */
+    private var sessionId: String = ""
 
     // Auto-advance bookkeeping: a window change shortly after the user acts
     // (e.g. tapping the real button under the dot) advances to the next step.
@@ -50,24 +58,34 @@ object GuidanceEngine {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeJob: Job? = null
 
-    /** Begin guidance for [task] using the supplied [stepList]. */
-    fun start(task: String, stepList: List<Step>) {
+    /**
+     * Begin guidance for [task] using the supplied thin [stepList] (demo tasks
+     * and legacy callers). Steps are promoted to [StepMetadata] with safe
+     * defaults. [appPackage] biases L0 matching toward the real app.
+     */
+    fun start(task: String, stepList: List<Step>, appPackage: String = "") {
+        startMeta(task, stepList.map { PlanParser.toMetadata(it) }, appPackage)
+    }
+
+    /** Begin guidance for [task] using enriched [stepList]. */
+    fun startMeta(task: String, stepList: List<StepMetadata>, appPackage: String = "") {
         if (stepList.isEmpty()) {
-            Log.e(TAG, "start() called with no steps.")
+            Log.e(TAG, "startMeta() called with no steps.")
             return
         }
         currentTask = task
         steps = stepList
+        targetPackage = appPackage.ifBlank { guessPackage(task, stepList.firstOrNull()?.findDescription ?: "") ?: "" }
+        sessionId = UUID.randomUUID().toString()
         currentIndex = 0
         isRunning = true
-        Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps.")
+        Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps. pkg=$targetPackage session=$sessionId")
         executeStep(0)
     }
 
     /**
-     * Entry point for real backend calls. Fetches a plan from the backend via
-     * [GeminiClient], then delegates to the [start] overload that takes a
-     * concrete step list.
+     * Entry point for real backend calls. Fetches an enriched plan from the
+     * backend via [GeminiClient], then delegates to [startMeta].
      */
     fun start(task: String) {
         if (isRunning) stop()
@@ -79,9 +97,9 @@ object GuidanceEngine {
 
         scope.launch {
             try {
-                val steps = GeminiClient.getPlan(task) // calls backend /plan
-                Log.e(TAG, "Backend returned ${steps.size} steps")
-                if (steps.isEmpty()) {
+                val plan = GeminiClient.getEnrichedPlan(task) // calls backend /plan
+                Log.e(TAG, "Backend returned ${plan.steps.size} steps, pkg=${plan.appPackage}")
+                if (plan.steps.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         WayloGuidanceService.instance?.speaker
                             ?.speak("Sorry, I couldn't understand that task. Please try again.")
@@ -90,7 +108,7 @@ object GuidanceEngine {
                     return@launch
                 }
                 withContext(Dispatchers.Main) {
-                    start(task, steps) // delegate to the existing List<Step> overload
+                    startMeta(task, plan.steps, plan.appPackage)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Backend call failed: ${e.message}", e)
@@ -142,11 +160,12 @@ object GuidanceEngine {
 
             // Try the pipeline, but never let it hang the loop.
             val result = withTimeoutOrNull(4000) {
+                val (screenW, screenH) = screenSize(service)
                 // Step 1 is almost always "find the app icon on the home screen".
                 if (index == 0) {
-                    val pkg = guessPackage(currentTask, step.findDescription)
+                    val pkg = targetPackage.ifBlank { guessPackage(currentTask, step.findDescription) ?: "" }
                     val home = withContext(Dispatchers.IO) {
-                        ElementFinder.findOnHomeScreen(step.findDescription, pkg)
+                        ElementFinder.findOnHomeScreen(step.findDescription, pkg.ifBlank { null })
                     }
                     if (home != null) {
                         val bounds = ElementFinder.getBoundsOnScreen(home.node)
@@ -159,7 +178,7 @@ object GuidanceEngine {
                         )
                     }
                 }
-                ScreenAnalysisPipeline.find(service, step.findDescription)
+                ScreenAnalysisPipeline.find(service, step, targetPackage, screenW, screenH)
             }
 
             withContext(Dispatchers.Main) {
@@ -183,7 +202,7 @@ object GuidanceEngine {
     private suspend fun runFallback(
         service: WayloGuidanceService,
         index: Int,
-        step: Step,
+        step: StepMetadata,
         spoken: String
     ) {
         val result = withContext(Dispatchers.IO) {
@@ -192,7 +211,9 @@ object GuidanceEngine {
                 task = currentTask,
                 stepIndex = index,
                 totalSteps = steps.size,
-                findDesc = step.findDescription
+                step = step,
+                targetPackage = targetPackage,
+                sessionId = sessionId
             )
         }
 
@@ -206,8 +227,9 @@ object GuidanceEngine {
             is FallbackHandler.FallbackResult.NewSteps -> {
                 Log.e(TAG, "Troubleshoot produced ${result.steps.size} recovery steps.")
                 service.speaker.speak(result.explanation)
-                // Keep completed steps, replace everything from here with recovery steps.
-                steps = steps.take(index) + result.steps
+                // Keep completed steps, replace everything from here with recovery
+                // steps (promoted to enriched metadata with safe defaults).
+                steps = steps.take(index) + result.steps.map { PlanParser.toMetadata(it) }
                 // Re-run the current index (now the first recovery step). A short
                 // delay lets the explanation start speaking first.
                 stepShownAt = android.os.SystemClock.elapsedRealtime()
@@ -301,7 +323,16 @@ object GuidanceEngine {
         Log.e(TAG, "Task complete: '$currentTask'")
     }
 
-    fun getCurrentStep(): Step? = steps.getOrNull(currentIndex)
+    /** Current display size in pixels (width, height). */
+    @Suppress("DEPRECATION")
+    private fun screenSize(context: Context): Pair<Int, Int> {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val size = Point()
+        wm.defaultDisplay.getRealSize(size)
+        return Pair(size.x, size.y)
+    }
+
+    fun getCurrentStep(): StepMetadata? = steps.getOrNull(currentIndex)
 
     fun isActive(): Boolean = isRunning
 }
