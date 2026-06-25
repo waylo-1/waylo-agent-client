@@ -22,6 +22,7 @@ class WayloApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.waylo.data.PlanRepository.init(this)
         createGuidanceNotificationChannel()
         registerLifecycleTracking()
     }

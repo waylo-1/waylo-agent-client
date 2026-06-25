@@ -8,6 +8,7 @@ import android.view.WindowManager
 import com.waylo.accessibility.ElementFinder
 import com.waylo.accessibility.WayloAccessibilityService
 import com.waylo.guidance.StepMetadata
+import com.waylo.ml.YOLOv8Detector
 import com.waylo.overlay.OverlayManager
 import com.waylo.screenshot.ScreenCaptureManager
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +31,23 @@ object ScreenAnalysisPipeline {
 
     private const val TAG = "Waylo"
     private const val ACCESSIBILITY_CONFIDENCE = 50
+
+    // Lazily-created L2 detector. Null if the model asset isn't bundled yet
+    // (L2 is then skipped). We attempt creation once to avoid repeated IO.
+    @Volatile
+    private var yolo: YOLOv8Detector? = null
+    @Volatile
+    private var yoloAttempted = false
+
+    private fun yoloDetector(context: Context): YOLOv8Detector? {
+        if (yoloAttempted) return yolo
+        synchronized(this) {
+            if (yoloAttempted) return yolo
+            yolo = YOLOv8Detector.create(context)
+            yoloAttempted = true
+            return yolo
+        }
+    }
 
     data class PipelineResult(
         val x: Int,
@@ -141,28 +159,41 @@ object ScreenAnalysisPipeline {
             Log.w(TAG, "Pipeline L0: no active window root.")
         }
 
-        // --- L1: screen capture + OCR ---
+        // --- L1: screen capture + OCR, then L2: YOLOv8 on the same frame ---
         val bitmap = captureScreenSuspend(context)
         if (bitmap != null) {
             try {
-                val hit = com.waylo.ocr.OcrAnalyzer.findElement(bitmap, step, screenWidth, screenHeight)
-                if (hit != null) {
-                    Log.e("WAYLO_DOT", "Pipeline L1(semantic OCR) hit at ${hit.first},${hit.second}")
+                val ocrHit = com.waylo.ocr.OcrAnalyzer.findElement(bitmap, step, screenWidth, screenHeight)
+                if (ocrHit != null) {
+                    Log.e("WAYLO_DOT", "Pipeline L1(semantic OCR) hit at ${ocrHit.first},${ocrHit.second}")
                     return@withContext PipelineResult(
-                        x = hit.first, y = hit.second,
+                        x = ocrHit.first, y = ocrHit.second,
                         source = "ocr", confidence = 60f, label = step.findDescription
                     )
                 }
+
+                // L2: on-device YOLOv8-nano (icon-only / custom UI elements).
+                val yolo = yoloDetector(context)
+                if (yolo != null) {
+                    val yoloHit = yolo.findBest(bitmap, step, screenWidth, screenHeight)
+                    if (yoloHit != null) {
+                        Log.e("WAYLO_DOT", "Pipeline L2(YOLO) hit at ${yoloHit.first},${yoloHit.second}")
+                        return@withContext PipelineResult(
+                            x = yoloHit.first, y = yoloHit.second,
+                            source = "yolo", confidence = 50f, label = step.findDescription
+                        )
+                    }
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Pipeline L1(semantic OCR) threw.", e)
+                Log.e(TAG, "Pipeline L1/L2 threw.", e)
             } finally {
                 if (!bitmap.isRecycled) bitmap.recycle()
             }
         } else {
-            Log.e("WAYLO_DOT", "Pipeline L1: capture returned null.")
+            Log.e("WAYLO_DOT", "Pipeline L1/L2: capture returned null.")
         }
 
-        Log.e("WAYLO_DOT", "Pipeline (L0+L1 semantic) failed for: ${step.findDescription}")
+        Log.e("WAYLO_DOT", "Pipeline (L0+L1+L2) failed for: ${step.findDescription}")
         PipelineResult(0, 0, "failed", 0f, step.findDescription)
     }
 

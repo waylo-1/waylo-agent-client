@@ -5,9 +5,9 @@ import android.graphics.Point
 import android.util.Log
 import android.view.WindowManager
 import com.waylo.accessibility.ElementFinder
-import com.waylo.ai.GeminiClient
 import com.waylo.ai.PlanParser
 import com.waylo.ai.Step
+import com.waylo.data.PlanRepository
 import com.waylo.ocr.ScreenAnalysisPipeline
 import com.waylo.overlay.OverlayManager
 import com.waylo.service.WayloGuidanceService
@@ -97,8 +97,8 @@ object GuidanceEngine {
 
         scope.launch {
             try {
-                val plan = GeminiClient.getEnrichedPlan(task) // calls backend /plan
-                Log.e(TAG, "Backend returned ${plan.steps.size} steps, pkg=${plan.appPackage}")
+                val plan = PlanRepository.getPlan(task) // prebuilt → Room cache → backend
+                Log.e(TAG, "Plan resolved: ${plan.steps.size} steps, pkg=${plan.appPackage}")
                 if (plan.steps.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         WayloGuidanceService.instance?.speaker

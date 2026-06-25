@@ -4,6 +4,7 @@ import android.util.Log
 import com.waylo.guidance.ElementType
 import com.waylo.guidance.ScreenRegion
 import com.waylo.guidance.StepMetadata
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -102,4 +103,30 @@ object PlanParser {
             fallbackHint = "scroll down to find the element",
             parentContainer = ""
         )
+
+    /**
+     * Serialise a [Plan] back to the canonical JSON shape that [parse] reads.
+     * Used by the on-device plan cache (Room) and the bundled pre-built guides.
+     */
+    fun toJson(plan: Plan): String {
+        val obj = JSONObject()
+        obj.put("appPackage", plan.appPackage)
+        obj.put("appName", plan.appName)
+        val arr = JSONArray()
+        for (s in plan.steps) {
+            val o = JSONObject()
+            o.put("stepNumber", s.stepNumber)
+            o.put("instruction", s.instruction)
+            o.put("findDescription", s.findDescription)
+            o.put("elementType", s.elementType.name)
+            o.put("screenRegion", s.screenRegion.name.lowercase())
+            o.put("visualDescription", s.visualDescription)
+            o.put("alternateLabels", JSONArray(s.alternateLabels))
+            o.put("fallbackHint", s.fallbackHint)
+            o.put("parentContainer", s.parentContainer)
+            arr.put(o)
+        }
+        obj.put("steps", arr)
+        return obj.toString()
+    }
 }

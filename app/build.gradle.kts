@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.kapt")
 }
 
 android {
@@ -53,8 +54,20 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.fragment:fragment-ktx:1.6.2")
 
-    // ML Kit on-device text recognition (OCR fallback - Layer 2)
+    // ML Kit on-device text recognition (OCR fallback - Layer 1)
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+
+    // TensorFlow Lite — on-device YOLOv8-nano UI element detector (Layer 2).
+    // The model asset (assets/ui_detector.tflite) is bundled separately; the
+    // detector no-ops gracefully if the asset is absent.
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+
+    // Room — on-device plan cache (Layer: caching). Repeat tasks served locally.
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    kapt("androidx.room:room-compiler:2.6.1")
 
     // Retrofit for backend calls
     implementation("com.squareup.retrofit2:retrofit:2.9.0")

@@ -1,0 +1,243 @@
+{
+  "version": 1,
+  "guides": [
+    {
+      "task": "send a message on whatsapp",
+      "matchKeywords": ["whatsapp message", "send whatsapp", "message on whatsapp", "whatsapp msg", "text on whatsapp"],
+      "appPackage": "com.whatsapp",
+      "appName": "WhatsApp",
+      "steps": [
+        {
+          "stepNumber": 1,
+          "instruction": "Find and tap the WhatsApp app",
+          "findDescription": "whatsapp app icon",
+          "elementType": "APP_ICON",
+          "screenRegion": "center",
+          "visualDescription": "green icon with white phone in a speech bubble",
+          "alternateLabels": ["WhatsApp", "WhatsApp Messenger"],
+          "fallbackHint": "if not on home screen, swipe up to open app drawer and search WhatsApp",
+          "parentContainer": "home screen"
+        },
+        {
+          "stepNumber": 2,
+          "instruction": "Tap the green new chat button",
+          "findDescription": "new chat button",
+          "elementType": "FAB",
+          "screenRegion": "bottom_right",
+          "visualDescription": "round green button with a white chat or message plus icon",
+          "alternateLabels": ["New chat", "Naya chat", "Compose"],
+          "fallbackHint": "if not visible, tap the Chats tab at the bottom first",
+          "parentContainer": "chats screen"
+        },
+        {
+          "stepNumber": 3,
+          "instruction": "Tap the name of the person",
+          "findDescription": "contact name list item",
+          "elementType": "LIST_ITEM",
+          "screenRegion": "center",
+          "visualDescription": "a row showing a contact photo and name",
+          "alternateLabels": ["Contact", "Name"],
+          "fallbackHint": "scroll down to find the person you want",
+          "parentContainer": "contacts list"
+        },
+        {
+          "stepNumber": 4,
+          "instruction": "Tap the message box and type",
+          "findDescription": "message input box",
+          "elementType": "TEXT_INPUT",
+          "screenRegion": "bottom",
+          "visualDescription": "white rounded text box at the bottom that says Message",
+          "alternateLabels": ["Type a message", "Message", "Sandesh likhein"],
+          "fallbackHint": "if keyboard does not appear, tap the message box again",
+          "parentContainer": "chat screen"
+        },
+        {
+          "stepNumber": 5,
+          "instruction": "Tap the green send button",
+          "findDescription": "send button",
+          "elementType": "ICON_BUTTON",
+          "screenRegion": "bottom_right",
+          "visualDescription": "round green button with a white paper plane arrow",
+          "alternateLabels": ["Send", "Bhejein"],
+          "fallbackHint": "if there is no send button, make sure you have typed a message",
+          "parentContainer": "chat screen"
+        }
+      ]
+    },
+    {
+      "task": "search a video on youtube",
+      "matchKeywords": ["youtube search", "search youtube", "video on youtube", "watch video", "find video youtube", "youtube video"],
+      "appPackage": "com.google.android.youtube",
+      "appName": "YouTube",
+      "steps": [
+        {
+          "stepNumber": 1,
+          "instruction": "Find and tap the YouTube app",
+          "findDescription": "youtube app icon",
+          "elementType": "APP_ICON",
+          "screenRegion": "center",
+          "visualDescription": "red square icon with a white play triangle",
+          "alternateLabels": ["YouTube", "YT"],
+          "fallbackHint": "if not on home screen, swipe up to open app drawer and search YouTube",
+          "parentContainer": "home screen"
+        },
+        {
+          "stepNumber": 2,
+          "instruction": "Tap the search icon at the top",
+          "findDescription": "search icon",
+          "elementType": "ICON_BUTTON",
+          "screenRegion": "top",
+          "visualDescription": "magnifying glass icon in the top bar",
+          "alternateLabels": ["Search", "Khojein"],
+          "fallbackHint": "the search icon is in the top right corner",
+          "parentContainer": "top app bar"
+        },
+        {
+          "stepNumber": 3,
+          "instruction": "Type what you want to watch",
+          "findDescription": "search bar input",
+          "elementType": "TEXT_INPUT",
+          "screenRegion": "top",
+          "visualDescription": "text box at the top that says Search YouTube",
+          "alternateLabels": ["Search YouTube", "Search bar"],
+          "fallbackHint": "if keyboard does not appear, tap the search box again",
+          "parentContainer": "top app bar"
+        },
+        {
+          "stepNumber": 4,
+          "instruction": "Tap the first video to play",
+          "findDescription": "first video result thumbnail",
+          "elementType": "IMAGE",
+          "screenRegion": "center",
+          "visualDescription": "a large video thumbnail picture in the results",
+          "alternateLabels": ["Video", "Result"],
+          "fallbackHint": "scroll down to see more videos",
+          "parentContainer": "search results"
+        }
+      ]
+    },
+    {
+      "task": "take a photo with the camera",
+      "matchKeywords": ["take photo", "take a picture", "click photo", "open camera", "camera photo", "photo kheecho"],
+      "appPackage": "com.android.camera",
+      "appName": "Camera",
+      "steps": [
+        {
+          "stepNumber": 1,
+          "instruction": "Find and tap the Camera app",
+          "findDescription": "camera app icon",
+          "elementType": "APP_ICON",
+          "screenRegion": "center",
+          "visualDescription": "icon shaped like a camera",
+          "alternateLabels": ["Camera", "Kaimra"],
+          "fallbackHint": "if not on home screen, swipe up to open app drawer and search Camera",
+          "parentContainer": "home screen"
+        },
+        {
+          "stepNumber": 2,
+          "instruction": "Tap the round shutter button",
+          "findDescription": "shutter capture button",
+          "elementType": "ICON_BUTTON",
+          "screenRegion": "bottom",
+          "visualDescription": "large round white button at the bottom center",
+          "alternateLabels": ["Shutter", "Capture", "Take photo"],
+          "fallbackHint": "the shutter button is the big round button at the bottom",
+          "parentContainer": "camera controls"
+        }
+      ]
+    },
+    {
+      "task": "turn on wifi in settings",
+      "matchKeywords": ["wifi", "wi-fi", "turn on wifi", "connect wifi", "wifi settings", "internet settings"],
+      "appPackage": "com.android.settings",
+      "appName": "Settings",
+      "steps": [
+        {
+          "stepNumber": 1,
+          "instruction": "Find and tap the Settings app",
+          "findDescription": "settings app icon",
+          "elementType": "APP_ICON",
+          "screenRegion": "center",
+          "visualDescription": "grey gear or cog wheel icon",
+          "alternateLabels": ["Settings", "Setting"],
+          "fallbackHint": "if not on home screen, swipe up to open app drawer and search Settings",
+          "parentContainer": "home screen"
+        },
+        {
+          "stepNumber": 2,
+          "instruction": "Tap on Network and internet",
+          "findDescription": "network internet settings row",
+          "elementType": "LIST_ITEM",
+          "screenRegion": "top",
+          "visualDescription": "a row near the top that says Network and internet",
+          "alternateLabels": ["Network & internet", "Wi-Fi", "Connections"],
+          "fallbackHint": "scroll down if you do not see it",
+          "parentContainer": "settings list"
+        },
+        {
+          "stepNumber": 3,
+          "instruction": "Tap the Wi-Fi switch to turn it on",
+          "findDescription": "wifi toggle switch",
+          "elementType": "TOGGLE",
+          "screenRegion": "top",
+          "visualDescription": "a switch next to the Wi-Fi label",
+          "alternateLabels": ["Wi-Fi", "WiFi", "Use Wi-Fi"],
+          "fallbackHint": "tap the Wi-Fi row first if there is no switch",
+          "parentContainer": "network settings"
+        }
+      ]
+    },
+    {
+      "task": "compose an email in gmail",
+      "matchKeywords": ["compose email", "send email", "write email", "gmail email", "new email", "mail bhejo"],
+      "appPackage": "com.google.android.gm",
+      "appName": "Gmail",
+      "steps": [
+        {
+          "stepNumber": 1,
+          "instruction": "Find and tap the Gmail app",
+          "findDescription": "gmail app icon",
+          "elementType": "APP_ICON",
+          "screenRegion": "center",
+          "visualDescription": "white icon with a red and white M envelope",
+          "alternateLabels": ["Gmail", "Email"],
+          "fallbackHint": "if not on home screen, swipe up to open app drawer and search Gmail",
+          "parentContainer": "home screen"
+        },
+        {
+          "stepNumber": 2,
+          "instruction": "Tap the Compose button",
+          "findDescription": "compose new email button",
+          "elementType": "FAB",
+          "screenRegion": "bottom_right",
+          "visualDescription": "colorful button with a pencil that says Compose",
+          "alternateLabels": ["Compose", "Likhein", "New"],
+          "fallbackHint": "the compose button is in the bottom right corner",
+          "parentContainer": "inbox"
+        },
+        {
+          "stepNumber": 3,
+          "instruction": "Type the email address in To",
+          "findDescription": "to recipient field",
+          "elementType": "TEXT_INPUT",
+          "screenRegion": "top",
+          "visualDescription": "text box at the top labelled To",
+          "alternateLabels": ["To", "Recipients"],
+          "fallbackHint": "tap the To box to start typing",
+          "parentContainer": "compose screen"
+        },
+        {
+          "stepNumber": 4,
+          "instruction": "Tap the send arrow at the top",
+          "findDescription": "send email button",
+          "elementType": "ICON_BUTTON",
+          "screenRegion": "top",
+          "visualDescription": "paper plane arrow icon in the top bar",
+          "alternateLabels": ["Send", "Bhejein"],
+          "fallbackHint": "make sure you have typed a recipient and message first",
+          "parentContainer": "compose screen"
+        }
+      ]
+    }
+  ]
+}
