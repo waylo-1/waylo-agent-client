@@ -1,0 +1,343 @@
+import SwiftUI
+
+/// The floating task-input panel shown from the menu bar.
+struct HomePanelView: View {
+    @StateObject private var engine = GuidanceEngine.shared
+    @State private var taskText = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    /// Toggles the developer/milestone testing tools.
+    @State private var showDevTools = false
+    @State private var testFindDescription = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            header
+
+            Divider()
+
+            if !engine.isRunning {
+                taskInput
+                if showDevTools { devTools }
+            } else {
+                activeGuidance
+            }
+        }
+        .padding(20)
+        .frame(width: 340)
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack {
+            Image(systemName: "cursorarrow.rays")
+                .foregroundColor(.red)
+                .font(.title2)
+            Text("Waylo")
+                .font(.title2)
+                .fontWeight(.bold)
+            Spacer()
+            if engine.isRunning {
+                Button("Stop") { engine.stopGuidance() }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+            } else {
+                Button {
+                    showDevTools.toggle()
+                } label: {
+                    Image(systemName: "hammer")
+                }
+                .buttonStyle(.borderless)
+                .help("Developer tools")
+            }
+        }
+    }
+
+    // MARK: - Task input
+
+    private var taskInput: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("What do you want to learn?")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 8) {
+                TextField("e.g. How do I make a chart in Excel", text: $taskText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { startTask() }
+
+                Button {
+                    startVoiceInput()
+                } label: {
+                    Image(systemName: "mic.fill")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Button("Start Guide →") { startTask() }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(taskText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
+
+            if isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.8)
+                    Text("Generating your guide...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if let error = errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+        }
+    }
+
+    // MARK: - Active guidance
+
+    private var activeGuidance: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Status row + step counter.
+            HStack {
+                statusDot
+                Text(stateLabel)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Spacer()
+                if engine.stepCount > 0 {
+                    Text("Step \(engine.currentStepIndex + 1) of \(engine.stepCount)")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Progress bar.
+            if engine.stepCount > 0 {
+                ProgressView(value: progressValue)
+                    .tint(.red)
+            }
+
+            // Current instruction.
+            Text(engine.currentInstruction)
+                .font(.body)
+                .fontWeight(.medium)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if engine.state == .locating {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.7)
+                    Text(engine.statusMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else if engine.state == .manual {
+                Text(engine.statusMessage)
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+
+            // Controls.
+            if engine.state == .complete {
+                Button("Done") { engine.stopGuidance() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+            } else {
+                controls
+            }
+        }
+    }
+
+    private var controls: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    engine.previousStep()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .disabled(engine.currentStepIndex == 0 || engine.state == .locating)
+
+                if engine.state == .paused {
+                    Button {
+                        engine.resumeGuide()
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        engine.pauseGuide()
+                    } label: {
+                        Label("Pause", systemImage: "pause.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(engine.state == .locating)
+                }
+
+                Button {
+                    engine.nextStep()
+                } label: {
+                    Label("Next", systemImage: "chevron.right")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(engine.state == .locating || engine.state == .paused)
+            }
+
+            HStack {
+                Button {
+                    engine.debugRelocate()
+                } label: {
+                    Label("That's wrong — re-check", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .tint(.orange)
+                .disabled(engine.state == .locating)
+
+                Spacer()
+
+                Text("⌃⌥N to re-check")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private var statusDot: some View {
+        Circle()
+            .fill(statusColor)
+            .frame(width: 8, height: 8)
+    }
+
+    private var statusColor: Color {
+        switch engine.state {
+        case .locating: return .orange
+        case .paused: return .yellow
+        case .manual: return .orange
+        case .complete: return .green
+        default: return .green
+        }
+    }
+
+    private var stateLabel: String {
+        switch engine.state {
+        case .idle: return "Ready"
+        case .locating: return "Finding element…"
+        case .showing: return "Click the red dot"
+        case .manual: return "Needs your help"
+        case .paused: return "Paused"
+        case .complete: return "Complete"
+        }
+    }
+
+    private var progressValue: Double {
+        guard engine.stepCount > 0 else { return 0 }
+        if engine.state == .complete { return 1 }
+        return Double(engine.currentStepIndex) / Double(engine.stepCount)
+    }
+
+    // MARK: - Developer / milestone tools
+
+    private var devTools: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("Developer Tools")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundColor(.secondary)
+
+            // Milestone 1 — AX tree logger.
+            Button("Log frontmost AX tree to console") {
+                logFrontmostElements()
+            }
+            .buttonStyle(.bordered)
+
+            // Milestone 2 — hardcoded dot.
+            Button("Show test dot at (400, 300)") {
+                OverlayWindowController.shared.showDot(at: CGPoint(x: 400, y: 300))
+            }
+            .buttonStyle(.bordered)
+
+            Button("Hide test dot") {
+                OverlayWindowController.shared.hideDot()
+            }
+            .buttonStyle(.bordered)
+
+            // Milestone 3 — dot on a named element.
+            HStack(spacing: 8) {
+                TextField("Find element, e.g. Bold button", text: $testFindDescription)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { findAndShowDot() }
+                Button("Find") { findAndShowDot() }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    private func startTask() {
+        let task = taskText.trimmingCharacters(in: .whitespaces)
+        guard !task.isEmpty else { return }
+        isLoading = true
+        errorMessage = nil
+
+        NSLog("[Waylo] startTask pressed: '%@'", task)
+        Task {
+            do {
+                let plan = try await WayloAPIClient.shared.generatePlan(task: task)
+                NSLog("[Waylo] generatePlan OK: %d steps", plan.steps.count)
+                isLoading = false
+                GuidanceEngine.shared.startGuidance(plan: plan)
+            } catch {
+                NSLog("[Waylo] generatePlan FAILED: %@", String(describing: error))
+                isLoading = false
+                errorMessage = "Failed to generate guide. Check your internet connection."
+            }
+        }
+    }
+
+    private func startVoiceInput() {
+        MicHandler.shared.listen { result in
+            if let text = result {
+                DispatchQueue.main.async { taskText = text }
+            }
+        }
+    }
+
+    private func logFrontmostElements() {
+        let elements = AccessibilityReader.shared.getTargetAppElements()
+        print("=== Waylo AX tree (target: \(TargetAppTracker.shared.targetName)): \(elements.count) interactive elements ===")
+        for element in elements {
+            print("[\(element.role)] '\(element.title)' desc='\(element.description)' "
+                  + "center=(\(Int(element.center.x)), \(Int(element.center.y)))")
+        }
+        print("=== end ===")
+    }
+
+    private func findAndShowDot() {
+        let query = testFindDescription.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return }
+        if let element = ElementFinder.shared.findElement(description: query) {
+            let cocoa = ScreenCoordinates.axToCocoa(element.center)
+            print("[Waylo] Found '\(element.title)' role=\(element.role)")
+            print("        AX frame=\(element.frame) center=\(element.center)")
+            print("        Cocoa center=\(cocoa)")
+            OverlayWindowController.shared.showDot(at: element.center)
+        } else {
+            print("[Waylo] No element matched '\(query)'")
+        }
+    }
+}
+
+#Preview {
+    HomePanelView()
+}

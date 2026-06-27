@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+
+    <!-- Menu bar app — no Dock icon -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Backend URL is read from config, never hardcoded in source.
+         Override in CI/release builds or via the WAYLO_BACKEND_URL env var. -->
+    <key>WayloBackendURL</key>
+    <string>https://backendinitial-production.up.railway.app</string>
+
+    <!-- Accessibility API usage -->
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Waylo needs Accessibility access to read the UI of apps and guide you step by step.</string>
+
+    <!-- Screen recording for screenshot fallback -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Waylo needs screen capture access to find UI elements when other methods fail.</string>
+
+    <!-- Microphone for voice input -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Waylo can listen to your voice so you can ask questions during a guide.</string>
+
+    <!-- Speech recognition -->
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Waylo uses speech recognition for voice task input and questions.</string>
+</dict>
+</plist>
