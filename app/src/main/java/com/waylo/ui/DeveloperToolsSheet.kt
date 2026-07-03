@@ -109,10 +109,10 @@ class DeveloperToolsSheet : BottomSheetDialogFragment() {
     private fun testBackend() {
         lifecycleScope.launch {
             try {
-                val steps = GeminiClient.getPlan("open YouTube")
+                val plan = GeminiClient.getPlan("open YouTube")
                 Toast.makeText(
                     requireContext(),
-                    "Backend OK: ${steps.size} steps returned",
+                    "Backend OK: ${plan.steps.size} steps returned (appPackage=${plan.appPackage})",
                     Toast.LENGTH_LONG
                 ).show()
             } catch (e: Exception) {

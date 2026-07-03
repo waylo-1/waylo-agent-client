@@ -63,7 +63,11 @@ object ElementFinder {
      * score against. Returns null if no node clears [MIN_SCORE] or the service
      * is not connected.
      */
-    fun findElement(rawDescription: String, targetPackage: String? = null): MatchResult? {
+    fun findElement(
+        rawDescription: String,
+        targetPackage: String? = null,
+        alternateLabels: List<String> = emptyList()
+    ): MatchResult? {
         // Strip filler words, keep only meaningful tokens.
         val tokens = rawDescription.lowercase()
             .replace(Regex("[^a-z0-9 ]"), " ")
@@ -81,7 +85,7 @@ object ElementFinder {
         Log.e("WAYLO_DOT", "findElement: scanning ${allNodes.size} nodes for '$cleanedDescription'")
 
         val scored = allNodes.mapNotNull { node ->
-            val score = scoreNode(node, cleanedDescription, tokens, targetPackage)
+            val score = scoreNode(node, cleanedDescription, tokens, targetPackage, alternateLabels)
             if (score > 0) MatchResult(node, score, cleanedDescription) else null
         }.sortedByDescending { it.score }
 
@@ -108,7 +112,11 @@ object ElementFinder {
      * Like [findElement] but only considers nodes that belong to a known
      * launcher package. Used for Step 1 of a task ("find the app icon").
      */
-    fun findOnHomeScreen(rawDescription: String, targetPackage: String? = null): MatchResult? {
+    fun findOnHomeScreen(
+        rawDescription: String,
+        targetPackage: String? = null,
+        alternateLabels: List<String> = emptyList()
+    ): MatchResult? {
         val tokens = rawDescription.lowercase()
             .replace(Regex("[^a-z0-9 ]"), " ")
             .split(" ")
@@ -132,7 +140,7 @@ object ElementFinder {
         }
 
         val scored = launcherNodes
-            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage)) }
+            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage, alternateLabels)) }
             .sortedByDescending { it.second.total }
 
         scored.take(3).forEachIndexed { i, (node, breakdown) ->
@@ -174,9 +182,10 @@ object ElementFinder {
         node: AccessibilityNodeInfo,
         cleanedDescription: String,
         tokens: List<String>,
-        targetPackage: String? = null
+        targetPackage: String? = null,
+        alternateLabels: List<String> = emptyList()
     ): Int {
-        return scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage).total
+        return scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage, alternateLabels).total
     }
 
     /**
@@ -187,7 +196,8 @@ object ElementFinder {
         node: AccessibilityNodeInfo,
         description: String,
         tokens: List<String>,
-        targetPackage: String? = null
+        targetPackage: String? = null,
+        alternateLabels: List<String> = emptyList()
     ): ScoreBreakdown {
         var score = 0
         val parts = mutableListOf<String>()
@@ -218,6 +228,24 @@ object ElementFinder {
                 score += 50; parts.add("text exact +50")
             } else if (text.contains(desc) || desc.contains(text)) {
                 score += 30; parts.add("text partial +30")
+            }
+        }
+
+        // Backend-supplied alternate labels for this element (small additive
+        // bonus only — the primary contentDesc/text matching above still does
+        // the heavy lifting).
+        if (alternateLabels.isNotEmpty()) {
+            var altHits = 0
+            for (rawLabel in alternateLabels) {
+                val label = rawLabel.lowercase().trim()
+                if (label.isBlank()) continue
+                val matches = (!contentDesc.isNullOrBlank() && (contentDesc == label || contentDesc.contains(label))) ||
+                    (!text.isNullOrBlank() && (text == label || text.contains(label)))
+                if (matches) altHits++
+            }
+            if (altHits > 0) {
+                score += altHits * 15
+                parts.add("alternateLabels x$altHits +${altHits * 15}")
             }
         }
 

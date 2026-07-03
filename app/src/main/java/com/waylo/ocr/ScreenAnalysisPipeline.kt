@@ -39,12 +39,21 @@ object ScreenAnalysisPipeline {
 
     /**
      * Run the full pipeline for [description] and return the best result.
+     * [targetPackage], [alternateLabels] and [visualDescription] are optional
+     * enriched-step hints from the backend plan (may be absent on older/cached
+     * plans) that give Layer 1/Layer 2 a little more to match against.
      */
-    suspend fun analyze(context: Context, description: String): PipelineResult =
+    suspend fun analyze(
+        context: Context,
+        description: String,
+        targetPackage: String? = null,
+        alternateLabels: List<String> = emptyList(),
+        visualDescription: String? = null
+    ): PipelineResult =
         withContext(Dispatchers.IO) {
             // --- Layer 1: accessibility tree ---
             Log.e("WAYLO_DOT", "Pipeline layer 1 starting for: $description")
-            val match = ElementFinder.findElement(description)
+            val match = ElementFinder.findElement(description, targetPackage, alternateLabels)
             Log.e("WAYLO_DOT", "Layer 1 result: ${match?.score} score, node: ${match?.node?.contentDescription}")
             if (match != null && match.score > ACCESSIBILITY_CONFIDENCE) {
                 val bounds = ElementFinder.getBoundsOnScreen(match.node)
@@ -70,7 +79,7 @@ object ScreenAnalysisPipeline {
             if (bitmap != null) {
                 try {
                     val elements = OcrAnalyzer.analyzeScreen(bitmap)
-                    val ocrMatch = OcrAnalyzer.findBestMatch(elements, description)
+                    val ocrMatch = OcrAnalyzer.findBestMatch(elements, description, visualDescription)
                     Log.e("WAYLO_DOT", "Layer 2 result: ${ocrMatch?.text} at ${ocrMatch?.centerX},${ocrMatch?.centerY}")
                     if (ocrMatch != null) {
                         Log.d(TAG, "Pipeline: Layer 2 (OCR) hit '${ocrMatch.text}'.")
@@ -108,15 +117,27 @@ object ScreenAnalysisPipeline {
      * Convenience alias used by GuidanceEngine: run the pipeline and return the
      * result (does not place the dot).
      */
-    suspend fun find(context: Context, description: String): PipelineResult =
-        analyze(context, description)
+    suspend fun find(
+        context: Context,
+        description: String,
+        targetPackage: String? = null,
+        alternateLabels: List<String> = emptyList(),
+        visualDescription: String? = null
+    ): PipelineResult =
+        analyze(context, description, targetPackage, alternateLabels, visualDescription)
 
     /**
      * Convenience: run the pipeline then place/move the dot on the result.
      * Returns the result so the caller can surface a toast/log.
      */
-    suspend fun findAndShow(context: Context, description: String): PipelineResult {
-        val result = analyze(context, description)
+    suspend fun findAndShow(
+        context: Context,
+        description: String,
+        targetPackage: String? = null,
+        alternateLabels: List<String> = emptyList(),
+        visualDescription: String? = null
+    ): PipelineResult {
+        val result = analyze(context, description, targetPackage, alternateLabels, visualDescription)
         if (result.source != "failed") {
             withContext(Dispatchers.Main) {
                 OverlayManager.showDotAtResult(result)

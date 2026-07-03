@@ -32,10 +32,10 @@ object GeminiClient {
     /**
      * POST /plan with the user's task. Retries up to [maxRetries] times on
      * transient backend errors (5xx / empty responses / network exceptions),
-     * with a short delay between attempts. Returns the parsed steps, or an
-     * empty list if every attempt fails.
+     * with a short delay between attempts. Returns the parsed plan, or an
+     * empty plan (no steps) if every attempt fails.
      */
-    suspend fun getPlan(task: String): List<Step> = withContext(Dispatchers.IO) {
+    suspend fun getPlan(task: String): Plan = withContext(Dispatchers.IO) {
         val maxRetries = 3
         val retryDelayMs = 2000L
 
@@ -59,8 +59,8 @@ object GeminiClient {
                 Log.e("WAYLO_DOT", "GeminiClient: code=${response.code} body=$responseBody")
 
                 if (response.isSuccessful) {
-                    val steps = parseSteps(responseBody)
-                    if (steps.isNotEmpty()) return@withContext steps
+                    val plan = PlanParser.parse(responseBody)
+                    if (plan != null && plan.steps.isNotEmpty()) return@withContext plan
                 }
 
                 // 500 or empty — tell the user and wait before retrying.
@@ -82,34 +82,6 @@ object GeminiClient {
         }
 
         Log.e("WAYLO_DOT", "GeminiClient: all $maxRetries attempts failed")
-        return@withContext emptyList()
-    }
-
-    private fun parseSteps(json: String): List<Step> {
-        return try {
-            val obj = JSONObject(json)
-            if (!obj.optBoolean("success", false)) {
-                Log.e("WAYLO_DOT", "parseSteps: backend returned success=false: $json")
-                return emptyList()
-            }
-            val stepsArray = obj.getJSONArray("steps")
-            val result = mutableListOf<Step>()
-            for (i in 0 until stepsArray.length()) {
-                val s = stepsArray.getJSONObject(i)
-                result.add(
-                    Step(
-                        index = s.optInt("stepNumber", i + 1),
-                        instruction = s.optString("instruction", "Follow the dot"),
-                        findDescription = s.optString("findDescription", "")
-                    )
-                )
-            }
-            Log.e("WAYLO_DOT", "parseSteps: got ${result.size} steps")
-            result.forEach { Log.e("WAYLO_DOT", "  Step ${it.index}: ${it.instruction} | find: ${it.findDescription}") }
-            result
-        } catch (e: Exception) {
-            Log.e("WAYLO_DOT", "parseSteps FAILED: ${e.message} | json: $json", e)
-            emptyList()
-        }
+        return@withContext Plan(appPackage = null, appName = null, steps = emptyList())
     }
 }

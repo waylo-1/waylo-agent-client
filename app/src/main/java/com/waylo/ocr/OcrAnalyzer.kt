@@ -77,14 +77,26 @@ object OcrAnalyzer {
         }
 
     /**
-     * Find the best OCR element matching [description].
+     * Find the best OCR element matching [description]. If [visualDescription]
+     * is supplied (backend's free-text look of the element), its words are
+     * folded into the per-word token pass too — small additive help only, the
+     * exact/partial match on [description] still drives the bulk of the score.
      * Scoring: exact match +60, partial (substring) +35, per word match +15.
      * Returns the highest scorer if it has any positive score, else null.
      */
-    fun findBestMatch(elements: List<OcrElement>, description: String): OcrElement? {
+    fun findBestMatch(
+        elements: List<OcrElement>,
+        description: String,
+        visualDescription: String? = null
+    ): OcrElement? {
         if (elements.isEmpty()) return null
         val desc = description.lowercase().trim()
-        val tokens = desc.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val tokens = desc.split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()
+        if (!visualDescription.isNullOrBlank()) {
+            tokens += visualDescription.lowercase().trim()
+                .split(Regex("\\s+"))
+                .filter { it.length > 2 }
+        }
 
         var best: OcrElement? = null
         var bestScore = 0

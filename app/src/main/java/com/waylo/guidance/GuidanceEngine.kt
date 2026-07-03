@@ -39,6 +39,11 @@ object GuidanceEngine {
     private var isRunning = false
     private var currentTask: String = ""
 
+    // App package the backend resolved for this plan (enriched /plan response).
+    // Null for older/cached plans or the hardcoded demo tasks; falls back to
+    // the local guessPackage() heuristic in that case.
+    private var currentAppPackage: String? = null
+
     // Auto-advance bookkeeping: a window change shortly after the user acts
     // (e.g. tapping the real button under the dot) advances to the next step.
     private var stepShownAt = 0L
@@ -50,8 +55,12 @@ object GuidanceEngine {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeJob: Job? = null
 
-    /** Begin guidance for [task] using the supplied [stepList]. */
-    fun start(task: String, stepList: List<Step>) {
+    /**
+     * Begin guidance for [task] using the supplied [stepList]. [appPackage] is
+     * the backend-resolved target app (from the enriched /plan response), if
+     * known; null for demo tasks or older/cached plans.
+     */
+    fun start(task: String, stepList: List<Step>, appPackage: String? = null) {
         if (stepList.isEmpty()) {
             Log.e(TAG, "start() called with no steps.")
             return
@@ -59,8 +68,9 @@ object GuidanceEngine {
         currentTask = task
         steps = stepList
         currentIndex = 0
+        currentAppPackage = appPackage
         isRunning = true
-        Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps.")
+        Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps. appPackage=$appPackage")
         executeStep(0)
     }
 
@@ -79,9 +89,9 @@ object GuidanceEngine {
 
         scope.launch {
             try {
-                val steps = GeminiClient.getPlan(task) // calls backend /plan
-                Log.e(TAG, "Backend returned ${steps.size} steps")
-                if (steps.isEmpty()) {
+                val plan = GeminiClient.getPlan(task) // calls backend /plan
+                Log.e(TAG, "Backend returned ${plan.steps.size} steps, appPackage=${plan.appPackage}")
+                if (plan.steps.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         WayloGuidanceService.instance?.speaker
                             ?.speak("Sorry, I couldn't understand that task. Please try again.")
@@ -90,7 +100,7 @@ object GuidanceEngine {
                     return@launch
                 }
                 withContext(Dispatchers.Main) {
-                    start(task, steps) // delegate to the existing List<Step> overload
+                    start(task, plan.steps, plan.appPackage) // delegate to the existing overload
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Backend call failed: ${e.message}", e)
@@ -140,13 +150,16 @@ object GuidanceEngine {
                 return@launch
             }
 
+            // Prefer the backend-resolved package; fall back to the local
+            // keyword heuristic for demo tasks or older/cached plans.
+            val pkg = currentAppPackage ?: guessPackage(currentTask, step.findDescription)
+
             // Try the pipeline, but never let it hang the loop.
             val result = withTimeoutOrNull(4000) {
                 // Step 1 is almost always "find the app icon on the home screen".
                 if (index == 0) {
-                    val pkg = guessPackage(currentTask, step.findDescription)
                     val home = withContext(Dispatchers.IO) {
-                        ElementFinder.findOnHomeScreen(step.findDescription, pkg)
+                        ElementFinder.findOnHomeScreen(step.findDescription, pkg, step.alternateLabels)
                     }
                     if (home != null) {
                         val bounds = ElementFinder.getBoundsOnScreen(home.node)
@@ -159,7 +172,7 @@ object GuidanceEngine {
                         )
                     }
                 }
-                ScreenAnalysisPipeline.find(service, step.findDescription)
+                ScreenAnalysisPipeline.find(service, step.findDescription, pkg, step.alternateLabels, step.visualDescription)
             }
 
             withContext(Dispatchers.Main) {
