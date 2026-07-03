@@ -18,11 +18,11 @@ import java.util.concurrent.TimeUnit
  * Talks to the deployed Waylo backend, which in turn calls Gemini. The app
  * never holds the Gemini API key directly.
  *
- * Backend: https://backendinitial-production.up.railway.app
+ * Backend: http://13.127.137.249:3000
  */
 object GeminiClient {
 
-    private const val BACKEND_URL = "https://backendinitial-production.up.railway.app"
+    private const val BACKEND_URL = "http://13.127.137.249:3000"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)

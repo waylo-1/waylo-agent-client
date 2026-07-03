@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
 object GeminiVisionClient {
 
     private const val TAG = "WAYLO_DOT"
-    private const val BACKEND_URL = "https://backendinitial-production.up.railway.app/vision"
+    private const val BACKEND_URL = "http://13.127.137.249:3000/vision"
     private const val MAX_RETRIES = 2
     private const val RETRY_DELAY_MS = 3000L
 

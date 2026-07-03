@@ -17,7 +17,9 @@ import kotlin.coroutines.resume
  *
  *  Layer 1 — accessibility tree (ElementFinder). Used if score > 50.
  *  Layer 2 — screen capture + ML Kit OCR.
- *  Layer 3 — Gemini Vision (stubbed until Week 2).
+ *  Layer 3 — Gemini Vision. Not called from this file: when both layers here
+ *  miss, GuidanceEngine escalates to FallbackHandler.kt, which re-checks OCR
+ *  and then calls GeminiVisionClient (locate/troubleshoot) against the backend.
  *
  * All heavy work runs on [Dispatchers.IO]; callers marshal the result back to
  * the main thread as needed.
@@ -92,8 +94,10 @@ object ScreenAnalysisPipeline {
                 Log.e("WAYLO_DOT", "Layer 2 capture returned null (no screen-capture permission?).")
             }
 
-            // --- Layer 3: Gemini Vision (stub) ---
-            // TODO: Week 2 — send the screenshot to Gemini Vision via the backend.
+            // --- Layer 3: Gemini Vision ---
+            // Implemented, but not invoked from this pipeline. GuidanceEngine calls
+            // FallbackHandler.handle() (see FallbackHandler.kt) when this function
+            // returns "failed", and that's where the Gemini Vision calls happen.
             Log.e("WAYLO_DOT", "All layers failed for: $description")
             val failed = PipelineResult(0, 0, "failed", 0f, description)
             Log.e("WAYLO_DOT", "Final pipeline result: source=${failed.source} x=${failed.x} y=${failed.y}")
