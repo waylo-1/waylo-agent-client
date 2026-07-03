@@ -8,7 +8,7 @@ enum ConversationState {
     case awaitingResume
 }
 
-/// Mid-session voice Q&A. Press the Ask hotkey (Ctrl+Option+A) during a guide to
+/// Mid-session voice Q&A. Press the Ask hotkey (⌃⌥⌘A) during a guide to
 /// ask a question by voice. Concept questions get a spoken answer; "where is X"
 /// questions place the red dot; "continue / back / repeat" resume the guide.
 @MainActor
@@ -20,22 +20,8 @@ final class ConversationEngine: ObservableObject {
     @Published var lastAnswer = ""
 
     private let classifier = QuestionClassifier()
-    private var askKeyMonitor: Any?
 
     private init() {}
-
-    // MARK: - Hotkey
-
-    /// Installs the global Ctrl+Option+A "ask" hotkey.
-    func start() {
-        guard askKeyMonitor == nil else { return }
-        askKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Ctrl + Option + A (keyCode 0 = A)
-            if event.modifierFlags.contains([.control, .option]) && event.keyCode == 0 {
-                Task { @MainActor in self?.activate() }
-            }
-        }
-    }
 
     // MARK: - Flow
 
@@ -60,7 +46,7 @@ final class ConversationEngine: ObservableObject {
         guard state == .listening else { return }
         guard let text = text, !text.trimmingCharacters(in: .whitespaces).isEmpty else {
             state = .awaitingResume
-            OverlayWindowController.shared.showBanner("I didn't catch that. Press ⌃⌥A to try again.")
+            OverlayWindowController.shared.showBanner("I didn't catch that. Press ⌃⌥⌘A to try again.", autoDismissAfter: 6)
             return
         }
 
@@ -84,7 +70,7 @@ final class ConversationEngine: ObservableObject {
     // MARK: - Handlers
 
     private func handleNavigation(_ direction: String) async {
-        if direction.contains("continue") || direction.contains("carry on") || direction.contains("next") {
+        if direction.contains("continue") || direction.contains("carry on") {
             Speaker.shared.speak("Continuing.")
             finishAndResume()
         } else if direction.contains("back") || direction.contains("previous") {
@@ -97,6 +83,13 @@ final class ConversationEngine: ObservableObject {
             state = .idle
             OverlayWindowController.shared.hideDot()
             GuidanceEngine.shared.relocate()
+        } else if direction.contains("next") || direction.contains("skip") {
+            // "Next step" must ADVANCE, not just resume the same step (the old
+            // code routed it to resume, which re-showed the step being skipped).
+            Speaker.shared.speak("Skipping ahead.")
+            state = .idle
+            OverlayWindowController.shared.hideDot()
+            GuidanceEngine.shared.nextStep()
         } else {
             state = .awaitingResume
         }
@@ -112,9 +105,19 @@ final class ConversationEngine: ObservableObject {
             answer = "I had trouble answering that. Please try again."
         }
         lastAnswer = answer
-        OverlayWindowController.shared.showBanner(answer)
+        showAnswerBanner(answer)
         Speaker.shared.speak(answer)
         state = .awaitingResume
+    }
+
+    /// Shows an answer banner that dismisses itself, with a resume hint when a
+    /// guide is paused underneath (otherwise the guide looked stuck after Q&A).
+    private func showAnswerBanner(_ answer: String) {
+        var text = answer
+        if GuidanceEngine.shared.isRunning {
+            text += "\n\nSay “continue” (⌃⌥⌘A) or press Resume to keep going."
+        }
+        OverlayWindowController.shared.showBanner(text, autoDismissAfter: 14)
     }
 
     private func handleLocation(targetLabel: String, region: ScreenRegion) async {
@@ -154,5 +157,60 @@ final class ConversationEngine: ObservableObject {
         if GuidanceEngine.shared.isRunning {
             GuidanceEngine.shared.resumeGuide()
         }
+    }
+
+    // MARK: - Screen Q&A (Ctrl+Option+Cmd+Q) — vision answer, no pointer
+
+    /// Ask a free-form question answered from what's on screen (for learning).
+    /// Listens for the question, screenshots the screen, and speaks/shows the
+    /// answer. Does not place a dot or touch a running guide.
+    func askAboutScreen() {
+        guard state == .idle || state == .awaitingResume else { return }
+        state = .listening
+        OverlayWindowController.shared.showBanner("Listening… ask about what's on your screen")
+        Speaker.shared.stop()
+        DebugLogger.log("QA", "screen question — listening")
+
+        MicHandler.shared.listen { [weak self] transcript in
+            DispatchQueue.main.async {
+                Task { @MainActor in await self?.handleScreenQuestion(transcript) }
+            }
+        }
+    }
+
+    private func handleScreenQuestion(_ transcript: String?) async {
+        guard state == .listening else { return }
+        let q = (transcript ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else {
+            state = .awaitingResume
+            OverlayWindowController.shared.showBanner("I didn't catch that. Press ⌃⌥⌘Q to try again.", autoDismissAfter: 6)
+            return
+        }
+        state = .processing
+        lastQuestion = q
+        OverlayWindowController.shared.showBanner("“\(q)”  — looking at your screen…")
+        DebugLogger.log("QA", "screen question: '\(q)'")
+
+        guard ScreenRecordingPermission.isGranted,
+              let capture = await ScreenCapturer.shared.captureActiveScreen(),
+              let (b64, _) = ScreenCapturer.compressedJPEGBase64(capture.image, maxWidth: 1280) else {
+            Speaker.shared.speak("I couldn't read your screen. Please try again.")
+            OverlayWindowController.shared.showBanner("I couldn't read your screen.", autoDismissAfter: 6)
+            state = .awaitingResume
+            return
+        }
+
+        let appName = TargetAppTracker.shared.targetName
+        let answer: String
+        do {
+            answer = try await WayloAPIClient.shared.askScreen(question: q, imageBase64: b64, appName: appName)
+        } catch {
+            answer = "I had trouble answering that. Please try again."
+            DebugLogger.log("QA", "ask-screen failed: \(error.localizedDescription)")
+        }
+        lastAnswer = answer
+        showAnswerBanner(answer)
+        Speaker.shared.speak(answer)
+        state = .awaitingResume
     }
 }

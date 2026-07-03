@@ -7,8 +7,13 @@ import AppKit
 final class ElementFinder {
     static let shared = ElementFinder()
 
-    /// Elements scoring below this threshold are rejected so a fallback can trigger.
+    /// Elements scoring below this are rejected outright so a fallback can trigger.
     private let minimumScore = 40
+
+    /// Matches scoring in the [minimumScore, confidentScore) band are treated as
+    /// LOW CONFIDENCE: logged and NOT returned, so a (often better) OCR result can
+    /// win instead of a wrong-but-close AX match blocking it.
+    private let confidentScore = 55
 
     /// Words that carry no matching signal — they appear in almost every
     /// findDescription and would otherwise inflate scores for wrong elements.
@@ -29,7 +34,12 @@ final class ElementFinder {
     }
 
     /// Testable variant that scores against a provided element list.
-    func findElement(description: String, in elements: [AXElementInfo]) -> AXElementInfo? {
+    /// `preferredRole`: a controlKind ("button","menuItem",…) the target should
+    /// be — real controls beat plain header/label text. `anchor`: a nearby text
+    /// location + relative position ("below"/"right"/…) to disambiguate.
+    func findElement(description: String, in elements: [AXElementInfo],
+                     preferredRole: String? = nil,
+                     anchor: (point: CGPoint, position: String)? = nil) -> AXElementInfo? {
         guard !elements.isEmpty else { return nil }
 
         let query = description.lowercased()
@@ -37,12 +47,13 @@ final class ElementFinder {
             .filter { !$0.isEmpty }
         // Keywords used for word-level scoring exclude generic stop words.
         let keywords = allWords.filter { !Self.stopWords.contains($0) }
+        let roleSet = Self.rolesFor(preferredRole)
 
         var bestMatch: AXElementInfo?
         var bestScore = 0
 
         for element in elements {
-            let score = scoreElement(element, query: query, keywords: keywords)
+            let score = scoreElement(element, query: query, keywords: keywords, roleSet: roleSet, anchor: anchor)
             if score > bestScore {
                 bestScore = score
                 bestMatch = element
@@ -55,10 +66,36 @@ final class ElementFinder {
             }
         }
 
-        return bestScore >= minimumScore ? bestMatch : nil
+        return bestScore >= confidentScore ? bestMatch : lowConfidence(bestMatch, bestScore)
     }
 
-    func scoreElement(_ element: AXElementInfo, query: String, keywords: [String]) -> Int {
+    /// Maps a controlKind string to the set of acceptable AX roles.
+    private static func rolesFor(_ kind: String?) -> Set<String> {
+        switch (kind ?? "").lowercased() {
+        case "button":   return ["AXButton", "AXMenuButton", "AXToolbarButton", "AXPopUpButton"]
+        case "menuitem": return ["AXMenuItem", "AXMenuBarItem"]
+        case "checkbox": return ["AXCheckBox", "AXRadioButton"]
+        case "tab":      return ["AXTab"]
+        case "link":     return ["AXLink"]
+        case "field":    return ["AXTextField", "AXComboBox"]
+        default:         return []
+        }
+    }
+
+    /// True when the controlKind names a real interactive control (not plain text).
+    static func isControlKind(_ kind: String) -> Bool { !rolesFor(kind).isEmpty }
+
+    /// Logs a low-confidence match and returns nil so the resolver falls through
+    /// to OCR; returns nil silently for sub-threshold scores.
+    private func lowConfidence(_ match: AXElementInfo?, _ score: Int) -> AXElementInfo? {
+        if score >= minimumScore, let match = match {
+            DebugLogger.log("AX", "LOW_CONFIDENCE_MATCH: '\(match.title.isEmpty ? match.description : match.title)' score=\(score) — falling through to OCR")
+        }
+        return nil
+    }
+
+    func scoreElement(_ element: AXElementInfo, query: String, keywords: [String],
+                      roleSet: Set<String> = [], anchor: (point: CGPoint, position: String)? = nil) -> Int {
         // Reject elements that are invisible, zero-size, or off every screen.
         guard isOnScreen(element.frame) else { return Int.min }
 
@@ -66,35 +103,87 @@ final class ElementFinder {
         let elementText = element.allText
         let titleLower = element.title.lowercased()
         let descLower = element.description.lowercased()
+        let titleWords = wordSet(titleLower)
+        let descWords = wordSet(descLower)
+        let textWords = wordSet(elementText)
 
         // Exact full match on title or description — strongest signal.
         if titleLower == query || descLower == query { score += 120 }
         else if elementText.contains(query) { score += 80 }
 
-        // Keyword matches. Title hits are worth far more than generic text hits.
+        // Keyword matches. Whole-word hits beat substring hits (so "file" no
+        // longer scores against "profile"), and title hits beat generic text.
+        var titleWordHits = 0
         for word in keywords {
-            if titleLower.contains(word) {
-                score += 30
+            if titleWords.contains(word) {
+                score += 35; titleWordHits += 1
+            } else if titleLower.contains(word) {
+                score += 16
+            } else if descWords.contains(word) {
+                score += 22
             } else if descLower.contains(word) {
-                score += 18
+                score += 12
+            } else if textWords.contains(word) {
+                score += 12
             } else if elementText.contains(word) {
-                score += 10
+                score += 6
             }
         }
+        // Full coverage: every query keyword appears as a whole word in the title.
+        if !keywords.isEmpty && titleWordHits == keywords.count { score += 40 }
 
         // Role boost based on intent words in the query.
         if query.contains("button") && (element.role == "AXButton" || element.role == "AXMenuButton" || element.role == "AXToolbarButton") { score += 15 }
-        if query.contains("menu") && element.role == "AXMenuItem" { score += 15 }
+        if query.contains("menu") && (element.role == "AXMenuItem" || element.role == "AXMenuBarItem") { score += 15 }
         if (query.contains("field") || query.contains("input") || query.contains("text box")) && element.role == "AXTextField" { score += 15 }
         if query.contains("tab") && element.role == "AXTab" { score += 15 }
         if query.contains("checkbox") && element.role == "AXCheckBox" { score += 15 }
         if query.contains("link") && element.role == "AXLink" { score += 15 }
+        // Dock / app-icon intent.
+        if (query.contains("dock") || query.contains("icon") || query.contains("app")) && element.role == "AXDockItem" { score += 18 }
 
         // Slightly prefer small, control-sized elements (real buttons) over
         // very large ones (panels/containers).
         if area(element.frame) > 0 && area(element.frame) < 40_000 { score += 8 }
 
+        // Control-kind preference: a real control should win over plain header /
+        // label text. Big boost when the role matches; penalize static text/rows
+        // when an actual control was requested (so we don't click a header).
+        if !roleSet.isEmpty {
+            if roleSet.contains(element.role) {
+                score += 45
+            } else if element.role == "AXStaticText" || element.role == "AXRow" || element.role == "AXCell" {
+                score -= 30
+            }
+        }
+
+        // Anchor: prefer elements in the requested direction near a known text.
+        if let anchor = anchor {
+            let dx = element.center.x - anchor.point.x
+            let dy = element.center.y - anchor.point.y   // AX: +y is downward
+            let correctDirection: Bool
+            switch anchor.position {
+            case "below": correctDirection = dy > -10
+            case "above": correctDirection = dy < 10
+            case "left":  correctDirection = dx < 10
+            case "right": correctDirection = dx > -10
+            default:      correctDirection = true        // "near" / unspecified
+            }
+            let dist = (dx * dx + dy * dy).squareRoot()
+            if correctDirection {
+                // Up to +35, fading with distance (within ~400pt of the anchor).
+                score += Int(max(0, 35 - dist / 12))
+            } else {
+                score -= 25
+            }
+        }
+
         return score
+    }
+
+    /// Lowercased alphanumeric word tokens of a string, for whole-word matching.
+    private func wordSet(_ text: String) -> Set<String> {
+        Set(text.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
     }
 
     // MARK: - Geometry helpers

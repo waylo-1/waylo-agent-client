@@ -10,14 +10,17 @@ struct NotchRootView: View {
         ZStack(alignment: .top) {
             if expansion.expanded {
                 expandedPanel
+                    .transition(.move(edge: .top).combined(with: .opacity))
             } else if engine.isRunning {
                 runningIndicator
+                    .transition(.opacity)
             } else {
                 idleHug
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .contentShape(Rectangle())
+        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: expansion.expanded)
+        .animation(.easeInOut(duration: 0.2), value: engine.isRunning)
         .preferredColorScheme(.dark)
     }
 
@@ -50,7 +53,8 @@ struct NotchRootView: View {
             EqualizerView(active: engine.state == .locating || engine.state == .showing)
                 .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .frame(height: max(NotchMetrics.current().height, 28))
         .background(BottomRoundedRectangle(radius: 11).fill(Color.black))
     }
 
@@ -76,7 +80,8 @@ struct NotchRootView: View {
             HomePanelView()
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(width: 360)
+        .fixedSize(horizontal: false, vertical: true)
         .background(BottomRoundedRectangle(radius: 18).fill(Color.black.opacity(0.95)))
         .overlay(BottomRoundedRectangle(radius: 18).stroke(Color.white.opacity(0.08), lineWidth: 1))
         .onTapGesture {

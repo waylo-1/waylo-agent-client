@@ -22,7 +22,21 @@ final class OverlayWindowController: NSWindowController {
     /// Show the pulsing dot centered on the given point, with an optional caption
     /// shown just below it. `axPoint` is in AX (top-left origin) global coordinates.
     func showDot(at axPoint: CGPoint, caption: String = "") {
-        present(view: AnyView(DotWithCaption(caption: caption)), at: axPoint, size: CGSize(width: 280, height: 120))
+        let primary = ScreenCoordinates.primaryScreen?.frame ?? .zero
+
+        // Clamp to the union of all displays (AX space) so a stray/out-of-bounds
+        // point is never drawn off every screen. Multi-monitor points stay valid.
+        let clamped = ScreenCoordinates.clampToScreens(axPoint)
+        if clamped != axPoint {
+            DebugLogger.log("DOT", String(format: "WARNING out-of-bounds axPoint=(%.1f,%.1f) clamped=(%.1f,%.1f) bounds=%@",
+                axPoint.x, axPoint.y, clamped.x, clamped.y, "\(ScreenCoordinates.axGlobalBounds)"))
+        }
+
+        let inBounds = ScreenCoordinates.axGlobalBounds.insetBy(dx: -1, dy: -1).contains(axPoint)
+        DebugLogger.logCoordinate("DOT", point: clamped,
+            context: "primaryScreen=\(Int(primary.width))x\(Int(primary.height)) inBounds=\(inBounds)")
+        DebugState.shared.update(dot: clamped, screen: primary)
+        present(view: AnyView(DotWithCaption(caption: caption)), at: clamped, size: CGSize(width: 280, height: 120))
     }
 
     /// Show a loading spinner at the given point while a fallback is running.
@@ -30,9 +44,22 @@ final class OverlayWindowController: NSWindowController {
         present(view: AnyView(LoadingDotView()), at: axPoint, size: CGSize(width: 44, height: 44))
     }
 
+    /// Show a bouncing up/down arrow at the scroll bar, prompting the user to
+    /// scroll to reveal an off-screen target. `axPoint` is the scroll-bar anchor.
+    func showScrollArrow(at axPoint: CGPoint, down: Bool, caption: String) {
+        let clamped = ScreenCoordinates.clampToScreens(axPoint)
+        DebugLogger.logCoordinate("SCROLL", point: clamped, context: "arrow down=\(down)")
+        DebugState.shared.update(dot: clamped)
+        present(view: AnyView(ScrollArrowView(down: down, caption: caption)),
+                at: clamped, size: CGSize(width: 240, height: 130))
+    }
+
     /// Show a centered instruction banner near the top of the active screen
     /// (used for non-click steps like "type the name" or "press Enter").
-    func showBanner(_ text: String) {
+    /// Pass `autoDismissAfter` for transient banners (errors, spoken answers)
+    /// that would otherwise linger on screen forever; step banners omit it and
+    /// stay until the next step replaces them.
+    func showBanner(_ text: String, autoDismissAfter seconds: TimeInterval? = nil) {
         guard let window = window, let contentView = window.contentView else { return }
         window.setFrame(ScreenCoordinates.globalFrame, display: true)
         dotHostingView?.removeFromSuperview()
@@ -57,6 +84,16 @@ final class OverlayWindowController: NSWindowController {
         contentView.addSubview(host)
         dotHostingView = host
         window.orderFrontRegardless()
+
+        if let seconds = seconds {
+            Task { @MainActor [weak self, weak host] in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                // Only dismiss if THIS banner is still the visible overlay —
+                // a newer dot/banner must not be torn down by a stale timer.
+                guard let self = self, let host = host, self.dotHostingView === host else { return }
+                self.hideDot()
+            }
+        }
     }
 
     /// Places a SwiftUI overlay view centered horizontally on an AX point, with
@@ -97,6 +134,7 @@ final class OverlayWindowController: NSWindowController {
         contentView.addSubview(hostingView)
         dotHostingView = hostingView
         window.orderFrontRegardless()
+        DebugLogger.log("DOT", "present frame=\(frame.integral) winVisible=\(window.isVisible) winFrame=\(window.frame.integral)")
     }
 
     /// Hide the dot and remove the overlay window from screen.

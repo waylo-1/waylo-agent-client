@@ -28,7 +28,24 @@
     <!-- Backend URL is read from config, never hardcoded in source.
          Override in CI/release builds or via the WAYLO_BACKEND_URL env var. -->
     <key>WayloBackendURL</key>
-    <string>https://backendinitial-production.up.railway.app</string>
+    <string>http://13.127.137.249:3000</string>
+
+    <!-- The EC2 backend is served over plain HTTP, so allow a cleartext
+         exception for that host (App Transport Security blocks HTTP by default).
+         Scoped to the single backend IP rather than allowing arbitrary loads. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>13.127.137.249</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <false/>
+            </dict>
+        </dict>
+    </dict>
 
     <!-- Accessibility API usage -->
     <key>NSAccessibilityUsageDescription</key>

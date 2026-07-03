@@ -6,13 +6,28 @@ import AppKit
 /// Fast (~80ms), free, private — handles the majority of text-labelled UI.
 final class LocalVisionDetector {
 
-    /// Minimum fuzzy-match score (0...1) to accept a hit.
-    private let threshold = 0.7
+    /// Minimum fuzzy-match score (0...1) to accept a hit. Raised so OCR no longer
+    /// accepts weak partial matches — we'd rather escalate to vision than guess.
+    private let threshold = 0.8
+
+    /// A scored OCR match: the location plus how confident we are (0...1).
+    struct OCRMatch {
+        let point: CGPoint
+        let score: Double
+    }
+
+    /// Thin wrapper: returns a point only if the best match clears `threshold`.
+    func findLabel(_ targetLabel: String, in image: CGImage, on screen: NSScreen, region: ScreenRegion = .fullScreen) async -> CGPoint? {
+        guard let match = await findLabelScored(targetLabel, in: image, on: screen, region: region),
+              match.score >= threshold else { return nil }
+        return match.point
+    }
 
     /// Finds `targetLabel` in the captured image of `screen`, optionally cropping
     /// to `region` first so e.g. a toolbar "Bold" doesn't compete with a dialog "Bold".
-    /// Returns an AX global point (top-left origin, points) or nil.
-    func findLabel(_ targetLabel: String, in image: CGImage, on screen: NSScreen, region: ScreenRegion = .fullScreen) async -> CGPoint? {
+    /// Returns the best match with its confidence score (caller decides whether to
+    /// accept), or nil if no text matched at all. Coords are AX global (top-left).
+    func findLabelScored(_ targetLabel: String, in image: CGImage, on screen: NSScreen, region: ScreenRegion = .fullScreen) async -> OCRMatch? {
         let trimmed = targetLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let lowerTarget = trimmed.lowercased()
@@ -56,7 +71,7 @@ final class LocalVisionDetector {
             }
         }
 
-        guard bestScore >= threshold, let obs = bestObs else { return nil }
+        guard bestScore > 0, let obs = bestObs else { return nil }
 
         // Precise location: bounding box of just the matched substring if present.
         var box = obs.boundingBox
@@ -69,12 +84,18 @@ final class LocalVisionDetector {
         // box is normalized within the OCR (cropped) image, bottom-left origin.
         let localX = box.midX * cropSizeLocal.width
         let localYFromTop = (1.0 - box.midY) * cropSizeLocal.height
+        // Add the crop origin back so coords are relative to the full screen,
+        // not the crop. This is the classic "found inside the crop but reported
+        // crop-relative" bug — guarded here by always summing cropOriginLocal.
         let screenLocalX = cropOriginLocal.x + localX
         let screenLocalY = cropOriginLocal.y + localYFromTop
 
         // Screen-local (top-left) → AX global (top-left).
         let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
-        return CGPoint(x: screen.frame.minX + screenLocalX, y: axTop + screenLocalY)
+        let result = CGPoint(x: screen.frame.minX + screenLocalX, y: axTop + screenLocalY)
+        DebugLogger.log("OCR", String(format: "best '%@' score=%.2f cropOrigin=(%.0f,%.0f) → ax=(%.0f,%.0f)",
+            trimmed, bestScore, cropOriginLocal.x, cropOriginLocal.y, result.x, result.y))
+        return OCRMatch(point: result, score: bestScore)
     }
 
     // MARK: - OCR
@@ -99,17 +120,51 @@ final class LocalVisionDetector {
 
     // MARK: - Fuzzy matching
 
-    /// Exact = 1.0, containment = 0.85, otherwise Levenshtein ratio.
-    private func similarityScore(_ a: String, _ b: String) -> Double {
-        if a.isEmpty || b.isEmpty { return 0 }
-        if a == b { return 1.0 }
-        // Word-level containment: "file" matches an observation "File" exactly,
-        // and a multi-word target token appearing in the text scores high.
-        if b.contains(a) || a.contains(b) { return 0.85 }
-        let distance = levenshtein(a, b)
-        let maxLen = max(a.count, b.count)
-        guard maxLen > 0 else { return 1.0 }
-        return 1.0 - (Double(distance) / Double(maxLen))
+    /// Recall-biased word-set similarity (0...1). The key idea: a match is strong
+    /// when ALL target words are present in the observed text, even if the OCR
+    /// line has extra words around it (OCR groups text into lines). A fragment
+    /// like "Empty" still fails to match a longer target "Empty Bin" because a
+    /// target word ("Bin") is MISSING.
+    ///   - exact string match                          → 1.0
+    ///   - same words, different order                 → 0.97
+    ///   - all target words present (extras allowed)    → 0.82…0.95 (tighter = higher)
+    ///   - some target words missing                    → low, recall-scaled
+    ///   - single-word typos                            → Levenshtein ratio
+    private func similarityScore(_ target: String, _ observed: String) -> Double {
+        if target.isEmpty || observed.isEmpty { return 0 }
+        if target == observed { return 1.0 }
+
+        let aWords = words(target)   // target
+        let bWords = words(observed) // observed on screen
+        guard !aWords.isEmpty, !bWords.isEmpty else { return 0 }
+
+        let aSet = Set(aWords), bSet = Set(bWords)
+        if aSet == bSet { return 0.97 }
+
+        let presentCount = aSet.filter { bSet.contains($0) }.count
+        let recall = Double(presentCount) / Double(aSet.count)  // how much of target is found
+
+        if recall >= 1.0 {
+            // Every target word is present. Strong match regardless of extra
+            // words in the OCR line. A mild precision term rewards tighter
+            // matches so an exact-words observation outranks a longer line.
+            let precision = Double(aSet.count) / Double(bSet.count)
+            return 0.82 + 0.13 * precision   // 0.82 … 0.95
+        }
+
+        // A target word is missing — the dangerous "Empty Bin" vs "Empty" case.
+        if aWords.count == 1 && bWords.count == 1 {
+            // Single token on both sides: tolerate typos via Levenshtein.
+            let distance = levenshtein(target, observed)
+            let maxLen = max(target.count, observed.count)
+            return maxLen > 0 ? max(0, 1.0 - Double(distance) / Double(maxLen)) : 0
+        }
+        return 0.45 * recall  // partial recall stays below threshold
+    }
+
+    /// Lowercased alphanumeric word tokens.
+    private func words(_ s: String) -> [String] {
+        s.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
     }
 
     private func levenshtein(_ s: String, _ t: String) -> Int {

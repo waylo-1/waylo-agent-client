@@ -25,6 +25,7 @@ final class TargetAppTracker {
         if let front = workspace.frontmostApplication, front.processIdentifier != selfPID {
             targetPID = front.processIdentifier
             targetName = front.localizedName ?? ""
+            DebugLogger.log("TRACKER", "seed target='\(targetName)' pid=\(targetPID ?? -1)")
         }
 
         observer = workspace.notificationCenter.addObserver(
@@ -35,11 +36,20 @@ final class TargetAppTracker {
             guard let self = self,
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             else { return }
-            // Ignore activations of Waylo itself.
-            if app.processIdentifier != self.selfPID {
-                self.targetPID = app.processIdentifier
-                self.targetName = app.localizedName ?? ""
+
+            let bid = (app.bundleIdentifier ?? "").lowercased()
+            let isSelf = app.processIdentifier == self.selfPID
+                || bid.contains("waylo") || bid.contains("sahayak")
+
+            if isSelf {
+                DebugLogger.log("TRACKER", "WARNING ignoring activation of self/app '\(app.localizedName ?? "?")' (\(bid)) — keeping target='\(self.targetName)'")
+                return
             }
+
+            let old = self.targetName
+            self.targetPID = app.processIdentifier
+            self.targetName = app.localizedName ?? ""
+            DebugLogger.log("TRACKER", "target changed: '\(old)' -> '\(self.targetName)' pid=\(self.targetPID ?? -1)")
         }
     }
 }

@@ -13,6 +13,12 @@ final class NovaVisionFallback {
         let axPoint: CGPoint?
         let updatedInstruction: String
         let updatedFindDescription: String
+        /// The label Nova reports for the located element — cached so the next
+        /// run of this step can try AX (L0) directly and skip the vision call.
+        let novaLabel: String
+        /// Raw bounding box [xMin,yMin,xMax,yMax] on the 0–1000 scale, surfaced
+        /// for YOLO training-data collection.
+        let rawBBox: [Double]?
     }
 
     /// `image`/`screen`: the captured display image and its screen.
@@ -28,9 +34,10 @@ final class NovaVisionFallback {
     ) async -> Result? {
         // Nova 2 Lite normalises coordinates, so compression ratio is irrelevant.
         // Downscale only to keep the upload payload small/fast.
-        guard let (base64, _) = ScreenCapturer.compressedJPEGBase64(image, maxWidth: 1280) else {
+        guard let (base64, sentSize) = ScreenCapturer.compressedJPEGBase64(image, maxWidth: 1280) else {
             return nil
         }
+        DebugLogger.log("NOVA", "sending image \(Int(sentSize.width))x\(Int(sentSize.height)) (orig \(image.width)x\(image.height)) screen=\(Int(screen.frame.width))x\(Int(screen.frame.height)) scale=\(screen.backingScaleFactor) target='\(targetLabel)'")
 
         // Use the most descriptive label available for the detection target.
         let label = [targetLabel, elementDescription]
@@ -43,12 +50,18 @@ final class NovaVisionFallback {
                 stepInstruction: stepInstruction
             )
             guard response.found, let bbox = response.bbox, bbox.count == 4 else {
-                return Result(axPoint: nil, updatedInstruction: "", updatedFindDescription: "")
+                DebugLogger.log("NOVA", "not found (found=\(response.found))")
+                return Result(axPoint: nil, updatedInstruction: "", updatedFindDescription: "", novaLabel: "", rawBBox: nil)
             }
+            DebugLogger.log("NOVA", "raw bbox=[\(bbox.map { Int($0) }.map(String.init).joined(separator: ","))] (0-1000)")
             let axPoint = bboxToAX(bbox, screen: screen)
-            return Result(axPoint: axPoint, updatedInstruction: "", updatedFindDescription: "")
+            DebugLogger.log("NOVA", "computed axPoint=\(axPoint.map { String(format: "(%.1f,%.1f)", $0.x, $0.y) } ?? "nil")")
+            // Prefer the label Nova returns; fall back to the label we sent.
+            let resolvedLabel = (response.label?.isEmpty == false) ? response.label! : label
+            return Result(axPoint: axPoint, updatedInstruction: "", updatedFindDescription: "", novaLabel: resolvedLabel, rawBBox: bbox)
         } catch {
             print("[NovaVisionFallback] request failed: \(error)")
+            DebugLogger.log("NOVA", "request failed: \(error.localizedDescription)")
             return nil
         }
     }

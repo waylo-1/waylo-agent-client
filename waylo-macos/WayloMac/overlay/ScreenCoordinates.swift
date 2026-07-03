@@ -14,7 +14,9 @@ import AppKit
 /// setups.
 enum ScreenCoordinates {
 
-    /// The primary display (origin at (0,0)). Falls back to the first screen.
+    /// The primary display (origin at (0,0)) — never NSScreen.main, so it's
+    /// stable regardless of cursor position or which screen is "main".
+    /// Falls back to the first screen.
     static var primaryScreen: NSScreen? {
         NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.screens.first
     }
@@ -28,6 +30,28 @@ enum ScreenCoordinates {
     /// overlay window is sized to this so the dot can appear on any display.
     static var globalFrame: CGRect {
         NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
+    }
+
+    /// The union of every display expressed in AX/Quartz coordinates (top-left
+    /// origin, y down). Used to clamp dot placement so a stray point can never be
+    /// drawn off every screen — while still supporting valid multi-monitor points
+    /// (a dot on a display to the right/above the primary stays valid).
+    static var axGlobalBounds: CGRect {
+        let h = primaryHeight
+        return NSScreen.screens.reduce(CGRect.null) { acc, screen in
+            let f = screen.frame
+            // Cocoa (bottom-left) → AX (top-left): axY = primaryHeight - f.maxY.
+            let axRect = CGRect(x: f.minX, y: h - f.maxY, width: f.width, height: f.height)
+            return acc.union(axRect)
+        }
+    }
+
+    /// Clamps an AX point to the union of all displays (AX space).
+    static func clampToScreens(_ p: CGPoint) -> CGPoint {
+        let b = axGlobalBounds
+        guard !b.isNull else { return p }
+        return CGPoint(x: min(max(p.x, b.minX), b.maxX),
+                       y: min(max(p.y, b.minY), b.maxY))
     }
 
     /// AX/Quartz point (top-left origin) → Cocoa global point (bottom-left origin).

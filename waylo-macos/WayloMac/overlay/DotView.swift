@@ -34,6 +34,44 @@ struct DotView: View {
         .background(Color.white)
 }
 
+/// An up/down arrow shown at the scroll bar when the target is off-screen,
+/// prompting the user to scroll. Bounces in the scroll direction.
+struct ScrollArrowView: View {
+    let down: Bool
+    let caption: String
+    @State private var bounce = false
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(Color.red.opacity(0.92))
+                    .frame(width: 46, height: 46)
+                    .shadow(color: .red.opacity(0.5), radius: 8)
+                Image(systemName: down ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
+            }
+            .offset(y: bounce ? (down ? 9 : -9) : 0)
+            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: bounce)
+
+            if !caption.isEmpty {
+                Text(caption)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(Color.black.opacity(0.82)))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 220)
+            }
+        }
+        .frame(width: 240, height: 130, alignment: .top)
+        .onAppear { bounce = true }
+    }
+}
+
 /// The red dot with an instruction caption shown just below it.
 struct DotWithCaption: View {
     let caption: String
@@ -58,7 +96,11 @@ struct DotWithCaption: View {
                     .frame(maxWidth: 260)
             }
         }
-        .frame(width: 280, alignment: .center)
+        // Pin to the TOP of the host frame so the dot's center sits exactly
+        // 22pt below the frame's top edge — OverlayWindowController.present()
+        // relies on this fixed anchor. Without an explicit height + .top
+        // alignment SwiftUI centers the VStack vertically, shifting the dot down.
+        .frame(width: 280, height: 120, alignment: .top)
     }
 }
 

@@ -20,7 +20,9 @@ final class WayloAPIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
+        // Plan generation is a full LLM call; a cold Claude/Bedrock response can
+        // exceed 30s, which used to abort real (slow but successful) plans.
+        request.timeoutInterval = 90
 
         let body = ["task": task, "platform": "macos"]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -29,10 +31,24 @@ final class WayloAPIClient {
 
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
+            // The backend reports actionable failures as {error, details}
+            // (e.g. the Bedrock daily token quota being exhausted). Surface
+            // that instead of a generic "server error".
+            if let detail = Self.serverErrorDetail(from: data) {
+                throw APIError.serverMessage(detail)
+            }
             throw APIError.serverError
         }
 
         return try PlanParser.parsePlan(from: data, fallbackTask: task)
+    }
+
+    /// Extracts a human-readable failure reason from an error response body.
+    private static func serverErrorDetail(from data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let detail = (obj["details"] as? String) ?? (obj["error"] as? String) ?? ""
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     // MARK: - POST /vision-fallback
@@ -88,10 +104,9 @@ final class WayloAPIClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 8
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+        guard let body = try? JSONSerialization.data(withJSONObject: [
             "appName": appName, "stepDescription": stepDescription
-        ])
-        guard let body = request.httpBody else { return nil }
+        ]) else { return nil }
         request.httpBody = body
         do {
             let (data, _) = try await session.data(for: request)
@@ -117,6 +132,26 @@ final class WayloAPIClient {
         request.httpBody = body
         let session = self.session
         Task { _ = try? await session.data(for: request) }
+    }
+
+    // MARK: - POST /ask-screen (vision Q&A about the current screen)
+
+    /// Answers a free-form question using a screenshot of the current screen.
+    func askScreen(question: String, imageBase64: String, appName: String) async throws -> String {
+        guard let url = URL(string: "\(baseURL)/ask-screen") else { throw APIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        let body: [String: Any] = ["question": question, "screenshot": imageBase64, "appName": appName]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let answer = obj["answer"] as? String else {
+            throw APIError.serverError
+        }
+        return answer
     }
 
     // MARK: - POST /qa (concept question answer)
@@ -178,6 +213,81 @@ final class WayloAPIClient {
         return NovaVisionResponse(found: found, bbox: bbox, label: label)
     }
 
+    // MARK: - POST /plan/learn (remember a corrected plan)
+
+    /// After a guide completes whose plan was corrected mid-run, persist the
+    /// corrected steps keyed by the original task so it's right next time.
+    /// Fire-and-forget.
+    func learnPlan(task: String, steps: [Step]) {
+        guard !task.isEmpty, !steps.isEmpty,
+              let url = URL(string: "\(baseURL)/plan/learn") else { return }
+        let stepDicts: [[String: Any]] = steps.map { s in
+            [
+                "index": s.index,
+                "action": s.action.rawValue,
+                "instruction": s.instruction,
+                "targetLabel": s.targetLabel,
+                "elementDescription": s.elementDescription,
+                "findDescription": s.findDescription,
+                "screenRegion": s.screenRegion.rawValue,
+                "targetType": s.targetType.rawValue,
+                "key": s.key as Any
+            ]
+        }
+        let body: [String: Any] = ["task": task, "platform": "macos", "steps": stepDicts]
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
+    }
+
+    /// Marks a plan wrong — removes it from the cache so it isn't reused. Fire-and-forget.
+    func forgetPlan(task: String) {
+        guard !task.isEmpty, let url = URL(string: "\(baseURL)/plan/forget"),
+              let data = try? JSONSerialization.data(withJSONObject: ["task": task, "platform": "macos"]) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
+    }
+
+    // MARK: - POST /detect-elements (Layer 2.5 dual-model YOLO)
+
+    /// Sends a screenshot to the Railway proxy → Python YOLO microservice.
+    /// Returns merged OmniParser + Screen2AX detections (normalized 0–1 boxes).
+    func detectElements(
+        imageBase64: String,
+        targetLabel: String,
+        stepInstruction: String,
+        screenRegion: String
+    ) async throws -> YOLODetectResponse {
+        guard let url = URL(string: "\(baseURL)/detect-elements") else { throw APIError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 8
+
+        let body: [String: Any] = [
+            "screenshot_b64": imageBase64,
+            "target_label": targetLabel,
+            "step_instruction": stepInstruction,
+            "screen_region": screenRegion
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw APIError.serverError
+        }
+        return try JSONDecoder().decode(YOLODetectResponse.self, from: data)
+    }
+
     // MARK: - POST /recover (self-healing)
 
     /// Sends a screenshot when local detection fails. The model can correct the
@@ -190,7 +300,8 @@ final class WayloAPIClient {
         stepIndex: Int,
         totalSteps: Int,
         instruction: String,
-        targetLabel: String
+        targetLabel: String,
+        userMessage: String = ""
     ) async throws -> RecoverResult {
         guard let url = URL(string: "\(baseURL)/recover") else { throw APIError.invalidURL }
 
@@ -208,6 +319,7 @@ final class WayloAPIClient {
             "totalSteps": totalSteps,
             "instruction": instruction,
             "targetLabel": targetLabel,
+            "userMessage": userMessage,
             "platform": "macos"
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -256,6 +368,7 @@ struct RecoverResult {
     let updatedInstruction: String
     let replan: Bool
     let steps: [Step]
+    let scrollDirection: String   // "up" | "down" | "left" | "right" | ""
 }
 
 /// Nova 2 Lite object-detection response.
@@ -283,12 +396,16 @@ struct SavedGuide: Codable {
 enum APIError: Error, LocalizedError {
     case invalidURL
     case serverError
+    /// A server failure with a human-readable reason from the backend
+    /// (e.g. "Too many tokens per day, please wait before trying again.").
+    case serverMessage(String)
     case decodingError
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "The backend URL is invalid."
         case .serverError: return "The server returned an error."
+        case .serverMessage(let detail): return detail
         case .decodingError: return "Could not decode the server response."
         }
     }

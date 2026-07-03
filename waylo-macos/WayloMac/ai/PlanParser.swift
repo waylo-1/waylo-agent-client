@@ -33,7 +33,7 @@ enum PlanParser {
         }
 
         guard !steps.isEmpty else { throw APIError.decodingError }
-        return GuidePlan(task: task, app: app, steps: steps)
+        return GuidePlan(task: task, app: app, steps: steps, demo: (object["demo"] as? Bool) ?? false)
     }
 
     /// Builds a Step from a loosely-typed dictionary (shared by plan + replan).
@@ -55,6 +55,15 @@ enum PlanParser {
         let action = StepAction(rawValue: actionRaw) ?? .click
         let key = dict["key"] as? String
         let region = ScreenRegion(lenient: dict["screenRegion"] as? String)
+        let targetTypeRaw = (dict["targetType"] as? String)?.lowercased() ?? "text"
+        let targetType = StepTargetType(rawValue: targetTypeRaw) ?? .text
+        let controlKind = ((dict["controlKind"] as? String) ?? "").lowercased()
+        let anchorText = (dict["anchorText"] as? String) ?? ""
+        let anchorPosition = ((dict["anchorPosition"] as? String) ?? "").lowercased()
+        let autoAdvanceSeconds = (dict["autoAdvanceSeconds"] as? Double)
+            ?? (dict["autoAdvanceSeconds"] as? NSNumber)?.doubleValue ?? 0
+        let silent = (dict["silent"] as? Bool) ?? false
+        let advanceOnAnyClick = (dict["advanceOnAnyClick"] as? Bool) ?? false
 
         return Step(
             index: index,
@@ -64,7 +73,14 @@ enum PlanParser {
             elementDescription: elementDescription,
             action: action,
             key: key,
-            screenRegion: region
+            screenRegion: region,
+            targetType: targetType,
+            controlKind: controlKind,
+            anchorText: anchorText,
+            anchorPosition: anchorPosition,
+            autoAdvanceSeconds: autoAdvanceSeconds,
+            silent: silent,
+            advanceOnAnyClick: advanceOnAnyClick
         )
     }
 
@@ -86,11 +102,12 @@ enum PlanParser {
     /// replan (new steps from the current point onward).
     static func parseRecover(from data: Data) -> RecoverResult {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return RecoverResult(visibleLabel: "", updatedInstruction: "", replan: false, steps: [])
+            return RecoverResult(visibleLabel: "", updatedInstruction: "", replan: false, steps: [], scrollDirection: "")
         }
         let visibleLabel = (object["visibleLabel"] as? String) ?? (object["targetLabel"] as? String) ?? ""
         let instruction = (object["instruction"] as? String) ?? ""
         let replan = (object["replan"] as? Bool) ?? false
+        let scrollDirection = (object["scrollDirection"] as? String) ?? ""
         let rawSteps = (object["steps"] as? [[String: Any]]) ?? []
         let steps = rawSteps.enumerated().compactMap { offset, dict in
             stepFromDict(dict, fallbackIndex: offset + 1)
@@ -99,7 +116,8 @@ enum PlanParser {
             visibleLabel: visibleLabel,
             updatedInstruction: instruction,
             replan: replan && !steps.isEmpty,
-            steps: steps
+            steps: steps,
+            scrollDirection: ["up", "down", "left", "right"].contains(scrollDirection) ? scrollDirection : ""
         )
     }
 

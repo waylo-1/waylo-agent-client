@@ -3,6 +3,7 @@ import SwiftUI
 /// The floating task-input panel shown from the menu bar.
 struct HomePanelView: View {
     @StateObject private var engine = GuidanceEngine.shared
+    @ObservedObject private var history = TaskHistory.shared
     @State private var taskText = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -20,6 +21,7 @@ struct HomePanelView: View {
             if !engine.isRunning {
                 taskInput
                 if showDevTools { devTools }
+                recentHistory
             } else {
                 activeGuidance
             }
@@ -39,6 +41,13 @@ struct HomePanelView: View {
                 .font(.title2)
                 .fontWeight(.bold)
             Spacer()
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                Image(systemName: "power")
+            }
+            .buttonStyle(.borderless)
+            .help("Quit Waylo")
             if engine.isRunning {
                 Button("Stop") { engine.stopGuidance() }
                     .buttonStyle(.bordered)
@@ -51,6 +60,50 @@ struct HomePanelView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Developer tools")
+            }
+        }
+    }
+
+    // MARK: - Recent history (rate each guide: ✓ correct / ✗ wrong)
+
+    @ViewBuilder
+    private var recentHistory: some View {
+        if !history.entries.isEmpty {
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Recent")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                ForEach(Array(history.entries.prefix(4))) { entry in
+                    HStack(spacing: 8) {
+                        Text(entry.task)
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 6)
+                        switch entry.feedback {
+                        case .none:
+                            Button { history.markCorrect(entry) } label: {
+                                Image(systemName: "checkmark.circle").foregroundColor(.green)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Correct — remember this for next time")
+                            Button { history.markWrong(entry) } label: {
+                                Image(systemName: "xmark.circle").foregroundColor(.red)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Wrong — forget this path")
+                        case .correct:
+                            Label("Saved", systemImage: "checkmark.circle.fill")
+                                .labelStyle(.iconOnly)
+                                .foregroundColor(.green)
+                        case .wrong:
+                            Label("Forgotten", systemImage: "xmark.circle.fill")
+                                .labelStyle(.iconOnly)
+                                .foregroundColor(.red)
+                        }
+                    }
+                }
             }
         }
     }
@@ -204,7 +257,7 @@ struct HomePanelView: View {
 
                 Spacer()
 
-                Text("⌃⌥N to re-check")
+                Text("⌃⌥⌘N to re-check")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -300,7 +353,11 @@ struct HomePanelView: View {
             } catch {
                 NSLog("[Waylo] generatePlan FAILED: %@", String(describing: error))
                 isLoading = false
-                errorMessage = "Failed to generate guide. Check your internet connection."
+                if case let APIError.serverMessage(detail) = error {
+                    errorMessage = "The server couldn't make a guide: \(detail)"
+                } else {
+                    errorMessage = "Failed to generate guide. Check your internet connection."
+                }
             }
         }
     }
