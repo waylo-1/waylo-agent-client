@@ -19,6 +19,10 @@ struct HomePanelView: View {
             Divider()
 
             if !engine.isRunning {
+                // isRunning flips false the moment a guide finishes, so the
+                // completion state must be shown here — the .complete branch
+                // inside activeGuidance is never reached.
+                if engine.state == .complete { completionBanner }
                 taskInput
                 if showDevTools { devTools }
                 recentHistory
@@ -62,6 +66,35 @@ struct HomePanelView: View {
                 .help("Developer tools")
             }
         }
+    }
+
+    // MARK: - Completion banner (shown after a guide finishes)
+
+    private var completionBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Task complete! 🎉")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text("Rate it under Recent so it's right next time.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Button {
+                engine.stopGuidance() // resets state to .idle, dismissing this
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .padding(10)
+        .background(Color.green.opacity(0.12))
+        .cornerRadius(10)
     }
 
     // MARK: - Recent history (rate each guide: ✓ correct / ✗ wrong)

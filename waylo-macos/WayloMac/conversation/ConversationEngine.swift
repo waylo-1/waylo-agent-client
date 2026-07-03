@@ -78,7 +78,7 @@ final class ConversationEngine: ObservableObject {
             state = .idle
             OverlayWindowController.shared.hideDot()
             GuidanceEngine.shared.previousStep()
-        } else if direction.contains("repeat") || direction.contains("again") {
+        } else if direction.contains("repeat") || direction.contains("again") || direction.contains("one more time") {
             Speaker.shared.speak("Here it is again.")
             state = .idle
             OverlayWindowController.shared.hideDot()

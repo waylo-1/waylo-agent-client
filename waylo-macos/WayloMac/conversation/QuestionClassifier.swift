@@ -17,9 +17,13 @@ final class QuestionClassifier {
         "i don't see", "i can't see", "not seeing", "don't see"
     ]
 
+    // Note: bare "again" is deliberately NOT a keyword — it appears in genuine
+    // questions ("where is the Bold button again?") and would misroute them to
+    // navigation. Only unambiguous repeat phrasings count.
     private let navigationKeywords = [
         "continue", "carry on", "go back", "previous", "next step", "skip",
-        "repeat", "say again", "again", "start over", "restart"
+        "repeat", "say again", "once again", "one more time", "show me again",
+        "start over", "restart"
     ]
 
     func classify(_ text: String) -> QuestionType {

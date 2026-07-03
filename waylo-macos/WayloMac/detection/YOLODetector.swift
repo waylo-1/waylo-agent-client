@@ -163,6 +163,20 @@ final class YOLODetector {
         guard let winner = candidates.max(by: { $0.score < $1.score }), winner.score >= minScore else {
             return nil
         }
+
+        // YOLO boxes carry no text, so beyond the AX class there is nothing tying
+        // a detection to THIS step's target. Without this guard, any confident
+        // box in the region "wins" and a wrong dot blocks the far more accurate
+        // Nova fallback. Only accept when there is a real semantic signal:
+        //   - the expected AX class matched, or
+        //   - the region narrowed the field to a single unambiguous candidate.
+        let classMatched = expectedAXClass != nil
+            && winner.element.axClass == expectedAXClass
+        let unambiguous = candidates.count == 1 && winner.element.confidence >= 0.5
+        guard classMatched || unambiguous else {
+            DebugLogger.log("L2.5", "best candidate rejected (no class match, \(candidates.count) candidates) — deferring to L3 Nova")
+            return nil
+        }
         return winner
     }
 
