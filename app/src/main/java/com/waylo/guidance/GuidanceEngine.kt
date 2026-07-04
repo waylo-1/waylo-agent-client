@@ -4,8 +4,10 @@ import android.content.Context
 import android.graphics.Point
 import android.util.Log
 import android.view.WindowManager
+import android.widget.Toast
 import com.waylo.accessibility.ElementFinder
 import com.waylo.ai.GeminiClient
+import com.waylo.ai.Plan
 import com.waylo.ai.Step
 import com.waylo.ocr.ScreenAnalysisPipeline
 import com.waylo.overlay.OverlayManager
@@ -102,9 +104,12 @@ object GuidanceEngine {
                 val plan = GeminiClient.getPlan(task) // calls backend /plan
                 Log.e(TAG, "Backend returned ${plan.steps.size} steps, appPackage=${plan.appPackage}")
                 if (plan.steps.isEmpty()) {
+                    // Full technical detail to Logcat; only a short, elderly-friendly
+                    // phrase gets spoken/shown to the user.
+                    Log.e(TAG, "Plan fetch failed: error='${plan.error}' detail='${plan.errorDetail}'")
+                    val message = friendlyErrorMessage(plan)
                     withContext(Dispatchers.Main) {
-                        WayloGuidanceService.instance?.speaker
-                            ?.speak("Sorry, I couldn't understand that task. Please try again.")
+                        reportError(message)
                         isRunning = false
                     }
                     return@launch
@@ -115,11 +120,37 @@ object GuidanceEngine {
             } catch (e: Exception) {
                 Log.e(TAG, "Backend call failed: ${e.message}", e)
                 withContext(Dispatchers.Main) {
-                    WayloGuidanceService.instance?.speaker
-                        ?.speak("Network error. Please check your internet and try again.")
+                    reportError("Please check your internet connection and try again.")
                     isRunning = false
                 }
             }
+        }
+    }
+
+    /**
+     * Turn a failed [Plan] into a short, elderly-friendly phrase. The raw
+     * backend text ([Plan.error]/[Plan.errorDetail]) is never shown directly —
+     * it's already been logged to Logcat by the caller.
+     */
+    private fun friendlyErrorMessage(plan: Plan): String {
+        if (plan.error == GeminiClient.NETWORK_ERROR) {
+            return "Please check your internet connection and try again."
+        }
+        val text = "${plan.error.orEmpty()} ${plan.errorDetail.orEmpty()}".lowercase()
+        val isBusy = listOf("token", "quota", "rate limit", "busy", "too many", "429", "503")
+            .any { text.contains(it) }
+        return if (isBusy) {
+            "The service is busy right now. Please try again in a few minutes."
+        } else {
+            "Sorry, something went wrong. Please try again."
+        }
+    }
+
+    /** Speak [message] and show it as a Toast — works even after we've minimized to home. */
+    private fun reportError(message: String) {
+        WayloGuidanceService.instance?.let { service ->
+            Toast.makeText(service, message, Toast.LENGTH_LONG).show()
+            service.speaker.speak(message)
         }
     }
 

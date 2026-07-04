@@ -29,15 +29,21 @@ object GeminiClient {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    /** Sentinel [Plan.error] value meaning "no response at all" (thrown exception, not a backend error body). */
+    const val NETWORK_ERROR = "network_error"
+
     /**
      * POST /plan with the user's task. Retries up to [maxRetries] times on
      * transient backend errors (5xx / empty responses / network exceptions),
-     * with a short delay between attempts. Returns the parsed plan, or an
-     * empty plan (no steps) if every attempt fails.
+     * with a short delay between attempts. Returns the parsed plan; on total
+     * failure, returns the last error-carrying [Plan] seen (backend text) or,
+     * if every attempt threw before getting a response, a [Plan] flagged with
+     * [NETWORK_ERROR].
      */
     suspend fun getPlan(task: String): Plan = withContext(Dispatchers.IO) {
         val maxRetries = 3
         val retryDelayMs = 2000L
+        var lastErrorPlan: Plan? = null
 
         repeat(maxRetries) { attempt ->
             Log.e("WAYLO_DOT", "GeminiClient: attempt ${attempt + 1}/$maxRetries for task: $task")
@@ -58,9 +64,21 @@ object GeminiClient {
                 val responseBody = response.body?.string() ?: ""
                 Log.e("WAYLO_DOT", "GeminiClient: code=${response.code} body=$responseBody")
 
-                if (response.isSuccessful) {
-                    val plan = PlanParser.parse(responseBody)
-                    if (plan != null && plan.steps.isNotEmpty()) return@withContext plan
+                // Parse regardless of HTTP status: the backend sends a JSON
+                // error body ({"success":false,"error":...,"details":...}) on
+                // failures too, and we want that text for the user message.
+                val plan = PlanParser.parse(responseBody)
+                if (plan != null) {
+                    if (plan.steps.isNotEmpty()) return@withContext plan
+                    lastErrorPlan = plan
+                } else {
+                    lastErrorPlan = Plan(
+                        appPackage = null,
+                        appName = null,
+                        steps = emptyList(),
+                        error = "bad_response",
+                        errorDetail = "HTTP ${response.code}: ${responseBody.take(200)}"
+                    )
                 }
 
                 // 500 or empty — tell the user and wait before retrying.
@@ -76,12 +94,25 @@ object GeminiClient {
                     delay(retryDelayMs)
                 }
             } catch (e: Exception) {
-                Log.e("WAYLO_DOT", "GeminiClient: exception on attempt ${attempt + 1}: ${e.message}")
+                Log.e("WAYLO_DOT", "GeminiClient: exception on attempt ${attempt + 1}: ${e.message}", e)
+                lastErrorPlan = Plan(
+                    appPackage = null,
+                    appName = null,
+                    steps = emptyList(),
+                    error = NETWORK_ERROR,
+                    errorDetail = e.message
+                )
                 if (attempt < maxRetries - 1) delay(retryDelayMs)
             }
         }
 
         Log.e("WAYLO_DOT", "GeminiClient: all $maxRetries attempts failed")
-        return@withContext Plan(appPackage = null, appName = null, steps = emptyList())
+        return@withContext lastErrorPlan ?: Plan(
+            appPackage = null,
+            appName = null,
+            steps = emptyList(),
+            error = NETWORK_ERROR,
+            errorDetail = "No response from backend"
+        )
     }
 }

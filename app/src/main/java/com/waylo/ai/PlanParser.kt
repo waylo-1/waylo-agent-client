@@ -30,11 +30,19 @@ data class Step(
 
 /**
  * A parsed backend plan: which app it targets, plus the ordered steps.
+ *
+ * [error]/[errorDetail] are only populated when the backend reported failure
+ * (`success: false`) — [steps] is empty in that case. They carry the raw
+ * backend text (e.g. "Failed to generate plan" / "Too many tokens per day...")
+ * so the caller can decide how to phrase this for the user; this class does
+ * not do any user-facing message classification itself.
  */
 data class Plan(
     val appPackage: String?,
     val appName: String?,
-    val steps: List<Step>
+    val steps: List<Step>,
+    val error: String? = null,
+    val errorDetail: String? = null
 )
 
 /**
@@ -45,8 +53,11 @@ object PlanParser {
     private const val TAG = "WAYLO_DOT"
 
     /**
-     * Parse the full `/plan` response body. Returns null if the backend
-     * reported failure (`success: false`) or the JSON couldn't be parsed.
+     * Parse the full `/plan` response body. Returns null only if the JSON
+     * itself couldn't be parsed at all. A backend failure (`success: false`)
+     * still returns a [Plan] — with empty [Plan.steps] and [Plan.error]/
+     * [Plan.errorDetail] populated from the response — so callers can surface
+     * the real reason instead of a generic message.
      * Enriched per-step fields are optional so an older/cached response
      * without them still parses instead of crashing.
      */
@@ -54,8 +65,10 @@ object PlanParser {
         return try {
             val obj = JSONObject(json)
             if (!obj.optBoolean("success", false)) {
+                val error = obj.optString("error").takeIf { it.isNotBlank() }
+                val detail = obj.optString("details").takeIf { it.isNotBlank() }
                 Log.e(TAG, "PlanParser: backend returned success=false: $json")
-                return null
+                return Plan(appPackage = null, appName = null, steps = emptyList(), error = error, errorDetail = detail)
             }
             val stepsArray = obj.optJSONArray("steps") ?: return null
             val steps = mutableListOf<Step>()
