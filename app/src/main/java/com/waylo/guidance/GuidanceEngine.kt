@@ -84,6 +84,16 @@ object GuidanceEngine {
         isRunning = true
         currentTask = task
         currentIndex = 0
+        // Defensive reset: without this, a stale/default stepShownAt (0L) makes
+        // the ADVANCE_GUARD_MS dwell check in onWindowChanged() trivially pass
+        // (elapsed since boot is always huge), so a window-change event that
+        // fires while we're still waiting on the backend can slip through.
+        // steps is cleared too so the new onWindowChanged steps.isEmpty() guard
+        // also covers repeat runs (otherwise a stale non-empty list from the
+        // previous task would defeat that guard during this task's fetch).
+        steps = emptyList()
+        stepShownAt = android.os.SystemClock.elapsedRealtime()
+        advancing = false
         Log.e(TAG, "GuidanceEngine.start: calling backend for task: $task")
         WayloGuidanceService.instance?.speaker?.speak("Got it. Finding the steps for you.")
 
@@ -253,7 +263,9 @@ object GuidanceEngine {
      * target for a seamless transition.
      */
     fun onWindowChanged(pkg: String) {
-        if (!isRunning || advancing) return
+        // steps.isEmpty() means no plan has been loaded yet (still waiting on
+        // the backend) — there is no step to have "acted on", so don't advance.
+        if (!isRunning || advancing || steps.isEmpty()) return
         val elapsed = android.os.SystemClock.elapsedRealtime() - stepShownAt
         if (elapsed < ADVANCE_GUARD_MS) {
             Log.e(TAG, "onWindowChanged($pkg): ignored, only ${elapsed}ms since step shown.")
