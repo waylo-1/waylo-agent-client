@@ -79,7 +79,7 @@ object ScreenAnalysisPipeline {
             if (bitmap != null) {
                 try {
                     val elements = OcrAnalyzer.analyzeScreen(bitmap)
-                    val ocrMatch = OcrAnalyzer.findBestMatch(elements, description, visualDescription)
+                    val ocrMatch = OcrAnalyzer.findBestMatch(elements, description, visualDescription, alternateLabels)
                     Log.e("WAYLO_DOT", "Layer 2 result: ${ocrMatch?.text} at ${ocrMatch?.centerX},${ocrMatch?.centerY}")
                     if (ocrMatch != null) {
                         Log.d(TAG, "Pipeline: Layer 2 (OCR) hit '${ocrMatch.text}'.")

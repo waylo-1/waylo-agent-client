@@ -81,13 +81,18 @@ object OcrAnalyzer {
      * is supplied (backend's free-text look of the element), its words are
      * folded into the per-word token pass too — small additive help only, the
      * exact/partial match on [description] still drives the bulk of the score.
-     * Scoring: exact match +60, partial (substring) +35, per word match +15.
+     * If [alternateLabels] is supplied, each label that exactly or partially
+     * matches a text block adds a further small bonus (mirrors the bonus
+     * ElementFinder gives alternate labels over the accessibility tree).
+     * Scoring: exact match +60, partial (substring) +35, per word match +15,
+     * per alternate-label hit +15.
      * Returns the highest scorer if it has any positive score, else null.
      */
     fun findBestMatch(
         elements: List<OcrElement>,
         description: String,
-        visualDescription: String? = null
+        visualDescription: String? = null,
+        alternateLabels: List<String> = emptyList()
     ): OcrElement? {
         if (elements.isEmpty()) return null
         val desc = description.lowercase().trim()
@@ -97,6 +102,7 @@ object OcrAnalyzer {
                 .split(Regex("\\s+"))
                 .filter { it.length > 2 }
         }
+        val cleanedAlternates = alternateLabels.map { it.lowercase().trim() }.filter { it.isNotBlank() }
 
         var best: OcrElement? = null
         var bestScore = 0
@@ -112,6 +118,11 @@ object OcrAnalyzer {
             for (token in tokens) {
                 if (text.contains(token)) score += 15
             }
+            var altHits = 0
+            for (alt in cleanedAlternates) {
+                if (text == alt || text.contains(alt)) altHits++
+            }
+            if (altHits > 0) score += altHits * 15
 
             if (score > bestScore) {
                 bestScore = score

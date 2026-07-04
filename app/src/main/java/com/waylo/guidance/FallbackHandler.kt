@@ -6,6 +6,7 @@ import android.util.Base64
 import android.util.Log
 import com.waylo.ai.GeminiVisionClient
 import com.waylo.ai.Step
+import com.waylo.ai.YoloDetectionClient
 import com.waylo.ocr.OcrAnalyzer
 import com.waylo.screenshot.ScreenCaptureManager
 import com.waylo.service.WayloGuidanceService
@@ -20,6 +21,9 @@ import kotlin.coroutines.resume
  * fails to locate the target element.
  *
  *   Layer 2  — ML Kit OCR over a screenshot (via existing [OcrAnalyzer]).
+ *   Layer 2b — YOLO object detector on EC2 (via [YoloDetectionClient]), gated
+ *              by [YoloDetectionClient.YOLO_LAYER_ENABLED]. Tried after OCR
+ *              misses, before the (slower, paid) Gemini Vision call below.
  *   Layer 3a — Gemini Vision LOCATE: "I expect X, where is it?" → coordinates.
  *   Layer 3b — Gemini Vision TROUBLESHOOT: "X is missing, what should the user
  *              do?" → recovery steps that splice into the remaining plan.
@@ -50,18 +54,22 @@ object FallbackHandler {
     /**
      * Run the fallback chain.
      *
-     * @param context     used for screen capture.
-     * @param task        full user task, e.g. "open youtube history".
-     * @param stepIndex   current step index (0-based).
-     * @param totalSteps  total steps in the plan.
-     * @param findDesc    what we're looking for, e.g. "History tab youtube library".
+     * @param context            used for screen capture.
+     * @param task               full user task, e.g. "open youtube history".
+     * @param stepIndex          current step index (0-based).
+     * @param totalSteps         total steps in the plan.
+     * @param findDesc           what we're looking for, e.g. "History tab youtube library".
+     * @param alternateLabels    extra labels from the step's enriched metadata (may be empty).
+     * @param visualDescription  free-text visual description from the step's enriched metadata (may be null).
      */
     suspend fun handle(
         context: Context,
         task: String,
         stepIndex: Int,
         totalSteps: Int,
-        findDesc: String
+        findDesc: String,
+        alternateLabels: List<String> = emptyList(),
+        visualDescription: String? = null
     ): FallbackResult = withContext(Dispatchers.IO) {
         Log.d(TAG, "Fallback triggered for step $stepIndex: $findDesc")
 
@@ -71,7 +79,7 @@ object FallbackHandler {
         if (bitmap != null) {
             try {
                 val elements = OcrAnalyzer.analyzeScreen(bitmap)
-                val match = OcrAnalyzer.findBestMatch(elements, findDesc)
+                val match = OcrAnalyzer.findBestMatch(elements, findDesc, visualDescription, alternateLabels)
                 if (match != null) {
                     Log.d(TAG, "Layer 2 OCR hit '${match.text}' at (${match.centerX},${match.centerY})")
                     return@withContext FallbackResult.Found(match.centerX, match.centerY, null)
@@ -84,6 +92,33 @@ object FallbackHandler {
             }
         } else {
             Log.w(TAG, "Layer 2: couldn't capture screen")
+        }
+
+        // ── Layer 2b: YOLO object detector (EC2) ──────────────────────────
+        if (YoloDetectionClient.YOLO_LAYER_ENABLED) {
+            speak("Let me take a closer look...")
+            val yoloBitmap = captureBitmap(context)
+            if (yoloBitmap != null) {
+                try {
+                    val yoloMatch = YoloDetectionClient.detectAndMatch(
+                        bitmap = yoloBitmap,
+                        findDescription = findDesc,
+                        alternateLabels = alternateLabels,
+                        visualDescription = visualDescription
+                    )
+                    if (yoloMatch != null) {
+                        Log.d(TAG, "Layer 2b YOLO hit '${yoloMatch.label}' at (${yoloMatch.centerX},${yoloMatch.centerY})")
+                        return@withContext FallbackResult.Found(yoloMatch.centerX, yoloMatch.centerY, null)
+                    }
+                    Log.d(TAG, "Layer 2b YOLO miss for '$findDesc'")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Layer 2b YOLO threw", e)
+                } finally {
+                    if (!yoloBitmap.isRecycled) yoloBitmap.recycle()
+                }
+            } else {
+                Log.w(TAG, "Layer 2b: couldn't capture screen")
+            }
         }
 
         // ── Layer 3a: Gemini Vision LOCATE ────────────────────────────────

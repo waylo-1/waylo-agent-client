@@ -246,7 +246,9 @@ object GuidanceEngine {
                 task = currentTask,
                 stepIndex = index,
                 totalSteps = steps.size,
-                findDesc = step.findDescription
+                findDesc = step.findDescription,
+                alternateLabels = step.alternateLabels,
+                visualDescription = step.visualDescription
             )
         }
 
