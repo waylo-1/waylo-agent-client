@@ -19,15 +19,13 @@ import java.util.concurrent.TimeUnit
  * the fallback chain (see [com.waylo.guidance.FallbackHandler]): cheaper and
  * faster than a Gemini Vision call, tried first when OCR misses.
  *
- * UNVERIFIED CONTRACT: [YOLO_DETECT_PATH] and the request/response JSON shape
- * below are a best-effort guess (no FastAPI spec was available at
- * implementation time) — see UNATTENDED_REPORT.md for what needs confirming
- * before this layer can actually fire in practice. Every failure mode (wrong
- * path → 404, wrong shape → parse exception, timeout, network error) resolves
- * to `null` from [detectAndMatch], so a bad guess here just means this layer
- * silently never contributes and the pipeline falls through to Gemini
- * Vision exactly as it did before this layer existed — it cannot make things
- * worse than they were.
+ * Contract verified against the service's `openapi.json` (`POST /detect`,
+ * `DetectRequest`/`DetectResponse`). Unlike the earlier guessed contract, the
+ * service does its own matching server-side from `target_label`/
+ * `step_instruction`/`screen_region` — each returned element has no label/
+ * text field, so there is no client-side label scoring here (unlike
+ * ElementFinder/OcrAnalyzer). We just take the highest-confidence element and
+ * accept it if it clears [MIN_CONFIDENCE].
  */
 object YoloDetectionClient {
 
@@ -37,14 +35,12 @@ object YoloDetectionClient {
     const val YOLO_LAYER_ENABLED = true
 
     private const val YOLO_BASE_URL = "http://13.127.137.249:8000"
-
-    /** UNVERIFIED — confirm the real path against the FastAPI service. */
     private const val YOLO_DETECT_PATH = "/detect"
 
     private const val TIMEOUT_MS = 3000L
 
-    /** Minimum score required for a match to be considered reliable (mirrors ElementFinder.MIN_SCORE). */
-    private const val MIN_SCORE = 30
+    /** Minimum confidence (0-1) required to trust the top detection. */
+    private const val MIN_CONFIDENCE = 0.5f
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
@@ -53,36 +49,49 @@ object YoloDetectionClient {
         .build()
 
     data class Detection(
-        val label: String,
-        val confidence: Float,
         val centerX: Int,
-        val centerY: Int
+        val centerY: Int,
+        val confidence: Float
     )
 
     /**
-     * Detect on-screen elements in [bitmap] and return the best match for
-     * [findDescription] (plus optional [alternateLabels]/[visualDescription]
-     * hints from the step), using the same scoring shape as
-     * [com.waylo.accessibility.ElementFinder]/[com.waylo.ocr.OcrAnalyzer]:
-     * exact label match, partial/substring match, then small per-token and
-     * per-alternate-label bonuses. Bounded to [TIMEOUT_MS] total. Returns null
-     * on any failure, timeout, or if nothing clears [MIN_SCORE] — the caller
-     * should fall through to Gemini Vision in that case.
+     * Detect the target element in [bitmap] and return its screen position if
+     * the service's top-confidence element clears [MIN_CONFIDENCE].
+     * [findDescription]/[instruction]/[screenRegion] are sent as
+     * `target_label`/`step_instruction`/`screen_region` so the *service*
+     * matches server-side — there is nothing to score client-side. Bounded to
+     * [TIMEOUT_MS] total. Returns null on any failure, timeout, empty
+     * element list, or low confidence — the caller should fall through to
+     * Gemini Vision in that case.
      */
     suspend fun detectAndMatch(
         bitmap: Bitmap,
         findDescription: String,
-        alternateLabels: List<String> = emptyList(),
-        visualDescription: String? = null
+        instruction: String? = null,
+        screenRegion: String? = null
     ): Detection? = withTimeoutOrNull(TIMEOUT_MS) {
         withContext(Dispatchers.IO) {
             try {
-                val detections = requestDetections(bitmap)
-                if (detections == null) {
-                    Log.w(TAG, "YoloDetectionClient: no detections (bad response or non-2xx)")
+                val elements = requestDetections(bitmap, findDescription, instruction, screenRegion)
+                if (elements == null) {
+                    Log.w(TAG, "YoloDetectionClient: no response (bad response or non-2xx)")
                     return@withContext null
                 }
-                findBestMatch(detections, findDescription, alternateLabels, visualDescription)
+                val best = elements.maxByOrNull { it.confidence }
+                when {
+                    best == null -> {
+                        Log.d(TAG, "YoloDetectionClient: elements list empty")
+                        null
+                    }
+                    best.confidence >= MIN_CONFIDENCE -> {
+                        Log.d(TAG, "YoloDetectionClient: best confidence=${best.confidence} at (${best.centerX},${best.centerY})")
+                        best
+                    }
+                    else -> {
+                        Log.d(TAG, "YoloDetectionClient: best confidence=${best.confidence} below threshold $MIN_CONFIDENCE")
+                        null
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "YoloDetectionClient: detectAndMatch failed: ${e.message}", e)
                 null
@@ -90,13 +99,22 @@ object YoloDetectionClient {
         }
     }
 
-    private fun requestDetections(bitmap: Bitmap): List<Detection>? {
+    private fun requestDetections(
+        bitmap: Bitmap,
+        targetLabel: String,
+        stepInstruction: String?,
+        screenRegion: String?
+    ): List<Detection>? {
         val baos = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
         val base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
 
-        // UNVERIFIED: assumed request shape {"image": "<base64 jpeg>"}.
-        val body = JSONObject().apply { put("image", base64) }
+        val body = JSONObject().apply {
+            put("screenshot_b64", base64)
+            if (targetLabel.isNotBlank()) put("target_label", targetLabel)
+            if (!stepInstruction.isNullOrBlank()) put("step_instruction", stepInstruction)
+            if (!screenRegion.isNullOrBlank()) put("screen_region", screenRegion)
+        }
         val requestBody = body.toString().toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url("$YOLO_BASE_URL$YOLO_DETECT_PATH")
@@ -109,87 +127,56 @@ object YoloDetectionClient {
             Log.w(TAG, "YoloDetectionClient: HTTP ${response.code}")
             return null
         }
-        return parseDetections(responseBody)
+        // The screenshot we send is exactly bitmap.width x bitmap.height, so
+        // that's also the right frame to de-normalize into (matches whatever
+        // resolution OverlayManager expects for this bitmap's coordinates).
+        return parseElements(responseBody, bitmap.width, bitmap.height)
     }
 
     /**
-     * UNVERIFIED: assumed response shape
-     * `{"detections":[{"label":"...","confidence":0.9,"box":{"x1":0,"y1":0,"x2":0,"y2":0}}]}`.
-     * Any shape mismatch throws, which detectAndMatch catches and treats as a
-     * miss (falls through to Gemini Vision) rather than crashing guidance.
+     * Parses `DetectResponse.elements`. Coordinates may be normalized (0-1)
+     * or pixel-based — the schema doesn't say which. Per-element heuristic:
+     * if x, y, w, h are all <= 1.0, treat that element as normalized and
+     * scale cx/cy by [bitmapWidth]/[bitmapHeight]; otherwise treat cx/cy as
+     * already being pixels. Logs which branch was taken.
      */
-    private fun parseDetections(json: String): List<Detection> {
+    private fun parseElements(json: String, bitmapWidth: Int, bitmapHeight: Int): List<Detection> {
         val obj = JSONObject(json)
-        val array = obj.optJSONArray("detections") ?: return emptyList()
+        val array = obj.optJSONArray("elements") ?: return emptyList()
+        Log.d(
+            TAG,
+            "YoloDetectionClient: elements=${array.length()} omni_count=${obj.optInt("omni_count")} " +
+                "macos_count=${obj.optInt("macos_count")} merged_count=${obj.optInt("merged_count")}"
+        )
+
         val result = mutableListOf<Detection>()
         for (i in 0 until array.length()) {
-            val d = array.optJSONObject(i) ?: continue
-            val box = d.optJSONObject("box") ?: continue
-            val x1 = box.optInt("x1")
-            val y1 = box.optInt("y1")
-            val x2 = box.optInt("x2")
-            val y2 = box.optInt("y2")
-            val label = d.optString("label")
-            if (label.isBlank()) continue
+            val e = array.optJSONObject(i) ?: continue
+            val x = e.optDouble("x", Double.NaN)
+            val y = e.optDouble("y", Double.NaN)
+            val w = e.optDouble("w", Double.NaN)
+            val h = e.optDouble("h", Double.NaN)
+            var cx = e.optDouble("cx", Double.NaN)
+            var cy = e.optDouble("cy", Double.NaN)
+            if (cx.isNaN() || cy.isNaN()) continue
+
+            val normalized = listOf(x, y, w, h).all { !it.isNaN() && it <= 1.0 }
+            if (normalized) {
+                Log.d(TAG, "YoloDetectionClient: element $i is normalized (x=$x y=$y w=$w h=$h) -> scaling by ${bitmapWidth}x$bitmapHeight")
+                cx *= bitmapWidth
+                cy *= bitmapHeight
+            } else {
+                Log.d(TAG, "YoloDetectionClient: element $i is pixel coordinates (x=$x y=$y w=$w h=$h)")
+            }
+
             result.add(
                 Detection(
-                    label = label,
-                    confidence = d.optDouble("confidence", 0.0).toFloat(),
-                    centerX = (x1 + x2) / 2,
-                    centerY = (y1 + y2) / 2
+                    centerX = cx.toInt(),
+                    centerY = cy.toInt(),
+                    confidence = e.optDouble("confidence", 0.0).toFloat()
                 )
             )
         }
         return result
-    }
-
-    /** Same scoring shape as ElementFinder/OcrAnalyzer: exact +60, partial +35, per-token +15, per-alternate-label +15. */
-    private fun findBestMatch(
-        detections: List<Detection>,
-        findDescription: String,
-        alternateLabels: List<String>,
-        visualDescription: String?
-    ): Detection? {
-        if (detections.isEmpty()) return null
-        val desc = findDescription.lowercase().trim()
-        val tokens = desc.split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()
-        if (!visualDescription.isNullOrBlank()) {
-            tokens += visualDescription.lowercase().trim().split(Regex("\\s+")).filter { it.length > 2 }
-        }
-        val cleanedAlternates = alternateLabels.map { it.lowercase().trim() }.filter { it.isNotBlank() }
-
-        var best: Detection? = null
-        var bestScore = 0
-        for (d in detections) {
-            val label = d.label.lowercase().trim()
-            if (label.isBlank()) continue
-            var score = 0
-            if (label == desc) {
-                score += 60
-            } else if (label.contains(desc) || desc.contains(label)) {
-                score += 35
-            }
-            for (token in tokens) {
-                if (label.contains(token)) score += 15
-            }
-            var altHits = 0
-            for (alt in cleanedAlternates) {
-                if (label == alt || label.contains(alt)) altHits++
-            }
-            if (altHits > 0) score += altHits * 15
-
-            if (score > bestScore) {
-                bestScore = score
-                best = d
-            }
-        }
-
-        return if (best != null && bestScore > MIN_SCORE) {
-            Log.d(TAG, "YoloDetectionClient: best match '${best.label}' score=$bestScore")
-            best
-        } else {
-            Log.d(TAG, "YoloDetectionClient: no match cleared MIN_SCORE for '$findDescription'")
-            null
-        }
     }
 }

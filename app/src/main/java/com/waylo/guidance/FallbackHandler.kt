@@ -59,8 +59,10 @@ object FallbackHandler {
      * @param stepIndex          current step index (0-based).
      * @param totalSteps         total steps in the plan.
      * @param findDesc           what we're looking for, e.g. "History tab youtube library".
-     * @param alternateLabels    extra labels from the step's enriched metadata (may be empty).
-     * @param visualDescription  free-text visual description from the step's enriched metadata (may be null).
+     * @param alternateLabels    extra labels from the step's enriched metadata (may be empty) — used by the OCR pass only; the YOLO service matches server-side instead.
+     * @param visualDescription  free-text visual description from the step's enriched metadata (may be null) — used by the OCR pass only.
+     * @param instruction        the step's plain-English instruction — sent to the YOLO service as `step_instruction`.
+     * @param screenRegion       the step's enriched screen-region hint (may be null) — sent to the YOLO service as `screen_region`.
      */
     suspend fun handle(
         context: Context,
@@ -69,7 +71,9 @@ object FallbackHandler {
         totalSteps: Int,
         findDesc: String,
         alternateLabels: List<String> = emptyList(),
-        visualDescription: String? = null
+        visualDescription: String? = null,
+        instruction: String? = null,
+        screenRegion: String? = null
     ): FallbackResult = withContext(Dispatchers.IO) {
         Log.d(TAG, "Fallback triggered for step $stepIndex: $findDesc")
 
@@ -103,14 +107,14 @@ object FallbackHandler {
                     val yoloMatch = YoloDetectionClient.detectAndMatch(
                         bitmap = yoloBitmap,
                         findDescription = findDesc,
-                        alternateLabels = alternateLabels,
-                        visualDescription = visualDescription
+                        instruction = instruction,
+                        screenRegion = screenRegion
                     )
                     if (yoloMatch != null) {
-                        Log.d(TAG, "Layer 2b YOLO hit '${yoloMatch.label}' at (${yoloMatch.centerX},${yoloMatch.centerY})")
+                        Log.d(TAG, "Layer 2b YOLO hit confidence=${yoloMatch.confidence} at (${yoloMatch.centerX},${yoloMatch.centerY})")
                         return@withContext FallbackResult.Found(yoloMatch.centerX, yoloMatch.centerY, null)
                     }
-                    Log.d(TAG, "Layer 2b YOLO miss for '$findDesc'")
+                    Log.d(TAG, "Layer 2b YOLO miss/low-confidence for '$findDesc'")
                 } catch (e: Exception) {
                     Log.e(TAG, "Layer 2b YOLO threw", e)
                 } finally {
