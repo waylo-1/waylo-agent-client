@@ -6,7 +6,10 @@ struct HomePanelView: View {
     @ObservedObject private var history = TaskHistory.shared
     @State private var taskText = ""
     @State private var isLoading = false
+    @State private var isListening = false
     @State private var errorMessage: String?
+    /// History entry whose share link was just copied (shows a ✓ briefly).
+    @State private var copiedEntryID: UUID?
 
     /// Toggles the developer/milestone testing tools.
     @State private var showDevTools = false
@@ -114,6 +117,13 @@ struct HomePanelView: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Spacer(minLength: 6)
+                        Button { shareGuide(entry) } label: {
+                            Image(systemName: copiedEntryID == entry.id
+                                  ? "checkmark" : "square.and.arrow.up")
+                                .foregroundColor(copiedEntryID == entry.id ? .green : .secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help(copiedEntryID == entry.id ? "Link copied!" : "Copy a shareable link")
                         switch entry.feedback {
                         case .none:
                             Button { history.markCorrect(entry) } label: {
@@ -153,13 +163,23 @@ struct HomePanelView: View {
                 TextField("e.g. How do I make a chart in Excel", text: $taskText)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { startTask() }
+                    .onChange(of: taskText) { errorMessage = nil }
 
                 Button {
                     startVoiceInput()
                 } label: {
-                    Image(systemName: "mic.fill")
+                    Image(systemName: isListening ? "waveform" : "mic.fill")
+                        .foregroundColor(isListening ? .red : nil)
                 }
                 .buttonStyle(.bordered)
+                .disabled(isListening)
+                .help(isListening ? "Listening…" : "Speak your task")
+            }
+
+            if isListening {
+                Text("Listening… speak now")
+                    .font(.caption)
+                    .foregroundColor(.red)
             }
 
             Button("Start Guide →") { startTask() }
@@ -382,6 +402,7 @@ struct HomePanelView: View {
                 let plan = try await WayloAPIClient.shared.generatePlan(task: task)
                 NSLog("[Waylo] generatePlan OK: %d steps", plan.steps.count)
                 isLoading = false
+                taskText = ""
                 GuidanceEngine.shared.startGuidance(plan: plan)
             } catch {
                 NSLog("[Waylo] generatePlan FAILED: %@", String(describing: error))
@@ -395,10 +416,31 @@ struct HomePanelView: View {
         }
     }
 
+    /// Saves the guide to the backend and copies the shareable link.
+    private func shareGuide(_ entry: TaskHistory.Entry) {
+        Task {
+            do {
+                let saved = try await WayloAPIClient.shared.saveGuide(task: entry.task, steps: entry.steps)
+                let link = saved.url.isEmpty ? saved.id : saved.url
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(link, forType: .string)
+                copiedEntryID = entry.id
+                DebugLogger.log("SHARE", "guide saved id=\(saved.id) — link copied")
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                if copiedEntryID == entry.id { copiedEntryID = nil }
+            } catch {
+                DebugLogger.log("SHARE", "saveGuide failed: \(error.localizedDescription)")
+                errorMessage = "Couldn't create a share link. Please try again."
+            }
+        }
+    }
+
     private func startVoiceInput() {
+        isListening = true
         MicHandler.shared.listen { result in
-            if let text = result {
-                DispatchQueue.main.async { taskText = text }
+            DispatchQueue.main.async {
+                isListening = false
+                if let text = result { taskText = text }
             }
         }
     }

@@ -198,8 +198,20 @@ final class GuidanceEngine: ObservableObject {
                         "return", "enter", "spacebar", "space", "spotlight", "escape", " esc", "tab"]
         guard keyWords.contains(where: { text.contains($0) }) else { return nil }
 
+        let hasModifier = ["command", "cmd", "⌘", "control", "ctrl", "⌃",
+                           "option", "opt", "⌥", "shift", "⇧"].contains { text.contains($0) }
+
         let key: String?
-        if text.contains("space") || text.contains("spotlight") { key = "space" }
+        if hasModifier, Self.letterAfterModifier(in: text) != nil {
+            // A modifier+letter combo ("Command+T") — leave key nil so
+            // keyComboForStep parses the exact combo. Scanning named keys here
+            // would misfire on incidental words ("…to open a new tab").
+            key = nil
+        }
+        // "backspace"/"delete" must be checked BEFORE "space" — "backspace"
+        // contains "space" and used to parse as the spacebar.
+        else if text.contains("backspace") || text.contains("delete") { key = "delete" }
+        else if text.contains("space") || text.contains("spotlight") { key = "space" }
         else if text.contains("return") || text.contains("enter") { key = "return" }
         else if text.contains("escape") || text.contains(" esc") { key = "escape" }
         else if text.contains("tab") { key = "tab" }
@@ -208,8 +220,6 @@ final class GuidanceEngine: ObservableObject {
         // If there's a modifier (⌘/⌥/⌃/⇧) we can still detect the exact combo even
         // without a named key, so route to .key; only fall back to .info when
         // there's nothing detectable to listen for.
-        let hasModifier = ["command", "cmd", "⌘", "control", "ctrl", "⌃",
-                           "option", "opt", "⌥", "shift", "⇧"].contains { text.contains($0) }
         let action: StepAction = (key != nil || hasModifier) ? .key : .info
 
         DebugLogger.log("ENGINE", "rerouting keystroke step '\(step.instruction)' → \(action == .key ? "key=\(key ?? "combo")" : "info")")
@@ -295,6 +305,7 @@ final class GuidanceEngine: ObservableObject {
         case "tab": return "Tab"
         case "space": return "Space"
         case "escape", "esc": return "Esc"
+        case "delete", "backspace": return "Delete"
         default: return "Enter"
         }
     }
@@ -876,14 +887,21 @@ final class GuidanceEngine: ObservableObject {
         if text.contains("control") || text.contains("ctrl") || text.contains("⌃") { flags.insert(.maskControl) }
         if text.contains("shift") || text.contains("⇧") { flags.insert(.maskShift) }
 
-        // Main key: prefer the explicit `key` field, then named keys in the text,
-        // then a single-letter combo (e.g. "Command + S").
+        // Main key: prefer the explicit `key` field, then a modifier+letter
+        // combo (e.g. "Command + S"), then named keys in the text. The combo
+        // letter must be checked before named-key words: "Press ⌘T to open a
+        // new tab" is ⌘T, not ⌘Tab. Delete/backspace before space, because
+        // "backspace" contains "space".
         if let code = Self.namedKeyCode(step.key ?? "") { return (code, flags) }
+        if !flags.isEmpty, let letter = Self.letterAfterModifier(in: text),
+           let code = Self.letterKeyCode(letter) {
+            return (code, flags)
+        }
+        if text.contains("backspace") || text.contains("delete") { return (51, flags) }
         if text.contains("spotlight") || text.contains("space") { return (49, flags) }
         if text.contains("return") || text.contains("enter") { return (36, flags) }
         if text.contains("escape") || text.contains(" esc") { return (53, flags) }
         if text.contains("tab") { return (48, flags) }
-        if text.contains("delete") || text.contains("backspace") { return (51, flags) }
         if let letter = Self.letterAfterModifier(in: text), let code = Self.letterKeyCode(letter) {
             return (code, flags)
         }
@@ -904,16 +922,25 @@ final class GuidanceEngine: ObservableObject {
         }
     }
 
-    /// Finds a single letter that follows a modifier word (e.g. "command + s").
+    /// Finds the single letter that follows a modifier word (e.g. "command + s",
+    /// "command shift t"). Skips chained modifier words, and only accepts the
+    /// token IMMEDIATELY after them — scanning further would latch onto stray
+    /// articles ("…to open a file" must not become ⌘A). The old version took
+    /// the first letter of the next word, so "Command+Option+N" parsed as ⌘O.
     private static func letterAfterModifier(in text: String) -> Character? {
-        let mods = ["command", "cmd", "⌘", "control", "ctrl", "⌃", "option", "opt", "⌥", "shift", "⇧"]
-        for mod in mods {
+        let modList = ["command", "cmd", "⌘", "control", "ctrl", "⌃",
+                       "option", "opt", "⌥", "shift", "⇧", "alt"]
+        let mods = Set(modList)
+        outer: for mod in modList {
             guard let r = text.range(of: mod) else { continue }
-            let tail = text[r.upperBound...]
-                .replacingOccurrences(of: "+", with: " ")
-                .replacingOccurrences(of: "-", with: " ")
-                .trimmingCharacters(in: .whitespaces)
-            if let first = tail.first, first.isLetter { return first }
+            let tail = String(text[r.upperBound...])
+            let tokens = tail.components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+            for token in tokens {
+                if mods.contains(token) { continue }        // chained modifier
+                if token.count == 1, let c = token.first, c.isLetter { return c }
+                continue outer  // next word isn't a combo letter — try another modifier
+            }
         }
         return nil
     }
@@ -993,6 +1020,7 @@ final class GuidanceEngine: ObservableObject {
         case "tab": commit = [48]
         case "space": commit = [49]
         case "escape", "esc": commit = [53]
+        case "delete", "backspace": commit = [51]
         default: commit = [36, 76] // Return and keypad Enter
         }
         guard commit.contains(code) else { return }
