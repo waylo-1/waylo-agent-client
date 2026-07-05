@@ -34,6 +34,7 @@
     <string name="ob_capture_button">Allow Screen Capture</string>
     <string name="ob_skip">Skip for now</string>
     <string name="ob_finish">All Done →</string>
+    <string name="ob_next">Next →</string>
 
     <!-- Status badges -->
     <string name="status_granted">Granted</string>

@@ -111,7 +111,17 @@ class PermissionFragment : Fragment() {
                     binding.btnSkip.visibility = View.GONE
                 }
                 else -> {
-                    // Auto-advance after a short beat once granted.
+                    // Bug fix: the button used to keep saying "Grant Permission"
+                    // (and keep re-opening the settings screen if tapped) for the
+                    // whole auto-advance delay below. Flip it to "Next" and make
+                    // it actually advance immediately so there's no stale/wrong
+                    // action visible even for that brief window.
+                    binding.btnAction.setText(R.string.ob_next)
+                    binding.btnAction.setOnClickListener {
+                        (activity as? OnboardingHost)?.goToNext()
+                    }
+                    // Auto-advance after a short beat once granted, so most users
+                    // never even need to tap "Next".
                     binding.statusText.postDelayed({
                         (activity as? OnboardingHost)?.goToNext()
                     }, 1000)
