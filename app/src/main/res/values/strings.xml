@@ -43,6 +43,7 @@
     <!-- Main screen -->
     <string name="main_prompt_label">What would you like to do?</string>
     <string name="main_task_hint">Describe the task…</string>
+    <string name="main_mic_content_description">Speak your task</string>
     <string name="main_start_guidance">Start Guidance →</string>
     <string name="main_recent">Recent</string>
     <string name="main_active">Waylo is active</string>

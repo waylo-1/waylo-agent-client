@@ -78,21 +78,39 @@
             android:textColor="@color/white_60"
             android:textSize="14sp" />
 
-        <EditText
-            android:id="@+id/editTask"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
             android:background="@drawable/edit_underline"
-            android:fontFamily="@font/outfit"
-            android:hint="@string/main_task_hint"
-            android:importantForAutofill="no"
-            android:inputType="text"
-            android:paddingVertical="8dp"
-            android:textColor="@color/white"
-            android:textColorHint="@color/white_50"
-            android:textCursorDrawable="@null"
-            android:textSize="18sp" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/editTask"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@null"
+                android:fontFamily="@font/outfit"
+                android:hint="@string/main_task_hint"
+                android:importantForAutofill="no"
+                android:inputType="text"
+                android:paddingVertical="8dp"
+                android:textColor="@color/white"
+                android:textColorHint="@color/white_50"
+                android:textCursorDrawable="@null"
+                android:textSize="18sp" />
+
+            <ImageButton
+                android:id="@+id/btnMic"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/main_mic_content_description"
+                android:padding="6dp"
+                android:src="@drawable/ic_mic" />
+        </LinearLayout>
 
         <Button
             android:id="@+id/btnStartGuidance"

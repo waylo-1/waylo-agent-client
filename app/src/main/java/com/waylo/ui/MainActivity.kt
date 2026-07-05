@@ -1,5 +1,6 @@
 package com.waylo.ui
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -10,6 +11,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.waylo.R
@@ -20,6 +22,7 @@ import com.waylo.guidance.GuidanceEngine
 import com.waylo.permissions.PermissionManager
 import com.waylo.screenshot.ScreenCaptureManager
 import com.waylo.service.WayloGuidanceService
+import com.waylo.voice.MicHandler
 
 /**
  * Production home screen. The overlay dot and TTS are owned by
@@ -37,6 +40,16 @@ class MainActivity : AppCompatActivity() {
 
     // Task waiting to start once screen-capture permission is granted.
     private var pendingTask: String? = null
+
+    // Must be registered unconditionally during Activity init (before STARTED).
+    private val speechRecognitionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                MicHandler.extractTranscript(result.data)?.let { transcript ->
+                    binding.editTask.setText(transcript)
+                }
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,8 +71,19 @@ class MainActivity : AppCompatActivity() {
             onStartGuidanceClicked()
         }
 
+        binding.btnMic.setOnClickListener { startVoiceInput() }
+
         setupRecentList()
         setupQuickTasks()
+    }
+
+    /** Launch Android's built-in speech-recognition UI; the result lands in [speechRecognitionLauncher]. */
+    private fun startVoiceInput() {
+        try {
+            speechRecognitionLauncher.launch(MicHandler.buildRecognizerIntent(this))
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, "Voice input isn't available on this device", Toast.LENGTH_SHORT).show()
+        }
     }
 
     override fun onResume() {
