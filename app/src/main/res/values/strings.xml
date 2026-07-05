@@ -48,6 +48,13 @@
     <string name="main_active">Waylo is active</string>
     <string name="main_inactive">Waylo is inactive</string>
 
+    <!-- Quick task cards (shown on first launch, before there are any recents) -->
+    <string name="main_quick_tasks">Try one of these</string>
+    <string name="quick_task_whatsapp_photo">Send a photo on WhatsApp</string>
+    <string name="quick_task_video_call">Make a video call</string>
+    <string name="quick_task_youtube_search">Search on YouTube</string>
+    <string name="quick_task_text_size">Increase text size</string>
+
     <!-- Permissions bottom sheet -->
     <string name="perm_sheet_title">Permissions</string>
     <string name="perm_overlay">Draw over apps</string>

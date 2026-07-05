@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -58,6 +59,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         setupRecentList()
+        setupQuickTasks()
     }
 
     override fun onResume() {
@@ -189,12 +191,37 @@ class MainActivity : AppCompatActivity() {
         refreshRecentList()
     }
 
-    /** Re-reads persisted recents and rebinds the list — call after a task is run. */
+    /**
+     * Re-reads persisted recents and rebinds the list — call after a task is
+     * run. Shows the recent list once there is at least one real recent task;
+     * otherwise shows the curated quick-task cards instead (first launch).
+     */
     private fun refreshRecentList() {
         val recents = RecentTasksStore.getRecents(this)
         binding.recentList.adapter = RecentTasksAdapter(recents) { task ->
             binding.editTask.setText(task)
             onStartGuidanceClicked()
+        }
+
+        val hasRecents = recents.isNotEmpty()
+        binding.recentHeader.visibility = if (hasRecents) View.VISIBLE else View.GONE
+        binding.recentList.visibility = if (hasRecents) View.VISIBLE else View.GONE
+        binding.quickTasksSection.visibility = if (hasRecents) View.GONE else View.VISIBLE
+    }
+
+    /** Wire the four curated quick-task cards — tapping one starts guidance the same way typing does. */
+    private fun setupQuickTasks() {
+        val tasks = mapOf(
+            binding.quickTask1 to getString(R.string.quick_task_whatsapp_photo),
+            binding.quickTask2 to getString(R.string.quick_task_video_call),
+            binding.quickTask3 to getString(R.string.quick_task_youtube_search),
+            binding.quickTask4 to getString(R.string.quick_task_text_size)
+        )
+        tasks.forEach { (card, task) ->
+            card.setOnClickListener {
+                binding.editTask.setText(task)
+                onStartGuidanceClicked()
+            }
         }
     }
 
