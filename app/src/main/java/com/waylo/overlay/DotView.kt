@@ -25,26 +25,28 @@ class DotView(context: Context) : View(context) {
     private var instructionText: String = "Tap here"
 
     // Very translucent so the underlying button stays visible/pressable.
+    // Colors match the app's coral/navy palette (colors.xml) rather than raw
+    // red/black/white, so the dot reads as part of the same brand identity.
     private val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(110, 255, 40, 40)  // see-through red core
+        color = Color.argb(150, 217, 83, 31)  // see-through warm coral core (#D9531F)
         style = Paint.Style.FILL
     }
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(45, 255, 40, 40)   // faint pulsing halo
+        color = Color.argb(60, 217, 83, 31)   // faint pulsing halo
         style = Paint.Style.FILL
     }
 
     private val textBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(140, 0, 0, 0)      // semi-transparent black pill
+        color = Color.argb(170, 13, 27, 42)   // semi-transparent navy pill (#0D1B2A), not pure black
         style = Paint.Style.FILL
     }
 
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = Color.rgb(245, 245, 240)      // soft off-white (#F5F5F0), not pure white
         textSize = 24f
         textAlign = Paint.Align.CENTER
-        setShadowLayer(3f, 0f, 1f, Color.BLACK)
+        setShadowLayer(3f, 0f, 1f, Color.argb(200, 13, 27, 42)) // navy shadow, not pure black
     }
 
     private val dp = resources.displayMetrics.density

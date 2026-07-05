@@ -5,6 +5,6 @@
     android:viewportHeight="24">
     <!-- "Format size" / text-scale glyph: big A, small a, baseline -->
     <path
-        android:fillColor="#FF5733"
+        android:fillColor="@color/coral"
         android:pathData="M9,4v3h5v12h3V7h5V4H9zM3,12h3v7h3v-7h3V9H3v3z" />
 </vector>
