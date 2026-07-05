@@ -8,11 +8,12 @@ import androidx.recyclerview.widget.RecyclerView
 import com.waylo.R
 
 /**
- * Placeholder "ghost" list of recent tasks. Real persistence arrives in Week 3;
- * for now these are static skeleton rows.
+ * List of the user's real recent tasks (see [com.waylo.data.RecentTasksStore]).
+ * Tapping a row starts guidance for that task again via [onItemClick].
  */
 class RecentTasksAdapter(
-    private val items: List<String>
+    private val items: List<String>,
+    private val onItemClick: (String) -> Unit
 ) : RecyclerView.Adapter<RecentTasksAdapter.VH>() {
 
     class VH(view: View) : RecyclerView.ViewHolder(view) {
@@ -21,12 +22,14 @@ class RecentTasksAdapter(
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
         val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_recent_skeleton, parent, false)
+            .inflate(R.layout.item_recent_task, parent, false)
         return VH(view)
     }
 
     override fun onBindViewHolder(holder: VH, position: Int) {
-        holder.title.text = items[position]
+        val task = items[position]
+        holder.title.text = task
+        holder.itemView.setOnClickListener { onItemClick(task) }
     }
 
     override fun getItemCount(): Int = items.size

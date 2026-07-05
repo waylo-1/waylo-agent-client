@@ -13,6 +13,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.waylo.R
 import com.waylo.accessibility.WayloAccessibilityService
+import com.waylo.data.RecentTasksStore
 import com.waylo.databinding.ActivityMainBinding
 import com.waylo.guidance.GuidanceEngine
 import com.waylo.permissions.PermissionManager
@@ -63,6 +64,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshStatusCluster()
         refreshActiveStatus()
+        refreshRecentList()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -165,6 +167,7 @@ class MainActivity : AppCompatActivity() {
     private fun launchGuidance(task: String) {
         startGuidanceService()
         Toast.makeText(this, "Starting guidance for: $task", Toast.LENGTH_SHORT).show()
+        RecentTasksStore.addRecent(this, task)
         GuidanceEngine.start(task) // calls backend, gets real steps
 
         // Minimize to home so the user can open the target app and follow the
@@ -181,10 +184,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupRecentList() {
-        val placeholders = listOf("Instagram Reel", "PhonePe Transfer", "YouTube search")
         binding.recentList.layoutManager = LinearLayoutManager(this)
-        binding.recentList.adapter = RecentTasksAdapter(placeholders)
         binding.recentList.isNestedScrollingEnabled = false
+        refreshRecentList()
+    }
+
+    /** Re-reads persisted recents and rebinds the list — call after a task is run. */
+    private fun refreshRecentList() {
+        val recents = RecentTasksStore.getRecents(this)
+        binding.recentList.adapter = RecentTasksAdapter(recents) { task ->
+            binding.editTask.setText(task)
+            onStartGuidanceClicked()
+        }
     }
 
     private fun refreshStatusCluster() {
