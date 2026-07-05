@@ -39,7 +39,7 @@
         android:fontFamily="@font/outfit"
         android:lineSpacingExtra="4dp"
         android:textColor="@color/white_70"
-        android:textSize="16sp"
+        android:textSize="18sp"
         app:layout_constraintTop_toBottomOf="@id/title"
         tools:text="Waylo places a dot on your screen to show exactly what to tap." />
 
