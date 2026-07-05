@@ -51,6 +51,10 @@ object GuidanceEngine {
     private var stepShownAt = 0L
     private var advancing = false
 
+    // Set by FinancialAppGuard while a known financial app is in the
+    // foreground. Never place the dot or advance steps while true.
+    private var pausedForFinancialApp = false
+
     /** Minimum dwell before a window change is allowed to advance the step. */
     private const val ADVANCE_GUARD_MS = 1200L
 
@@ -82,6 +86,12 @@ object GuidanceEngine {
      * concrete step list.
      */
     fun start(task: String) {
+        if (FinancialAppGuard.mentionsFinancialApp(task)) {
+            Log.e(TAG, "start(): task mentions a financial app/service, refusing without calling the backend: $task")
+            reportError(FinancialAppGuard.refusalMessage())
+            return
+        }
+
         if (isRunning) stop()
         isRunning = true
         currentTask = task
@@ -162,6 +172,28 @@ object GuidanceEngine {
         OverlayManager.hideDot()
         WayloGuidanceService.instance?.speaker?.stop()
         Log.e(TAG, "Guidance stopped.")
+    }
+
+    /**
+     * Called by [FinancialAppGuard] the moment a known financial app comes to
+     * the foreground. Cancels any in-flight step work and hides the dot, but
+     * keeps [steps]/[currentIndex] intact so [resumeAfterFinancialApp] can
+     * pick back up where guidance left off.
+     */
+    fun pauseForFinancialApp() {
+        if (!isRunning || pausedForFinancialApp) return
+        pausedForFinancialApp = true
+        activeJob?.cancel()
+        OverlayManager.hideDot()
+        Log.e(TAG, "Guidance paused for financial app.")
+    }
+
+    /** Called by [FinancialAppGuard] once the user has left the financial app. */
+    fun resumeAfterFinancialApp() {
+        if (!pausedForFinancialApp) return
+        pausedForFinancialApp = false
+        Log.e(TAG, "Guidance resuming after financial app.")
+        if (isRunning) executeStep(currentIndex)
     }
 
     private fun executeStep(index: Int) {
@@ -300,7 +332,8 @@ object GuidanceEngine {
     fun onWindowChanged(pkg: String) {
         // steps.isEmpty() means no plan has been loaded yet (still waiting on
         // the backend) — there is no step to have "acted on", so don't advance.
-        if (!isRunning || advancing || steps.isEmpty()) return
+        // pausedForFinancialApp: never advance while paused inside/entering one.
+        if (!isRunning || advancing || steps.isEmpty() || pausedForFinancialApp) return
         val elapsed = android.os.SystemClock.elapsedRealtime() - stepShownAt
         if (elapsed < ADVANCE_GUARD_MS) {
             Log.e(TAG, "onWindowChanged($pkg): ignored, only ${elapsed}ms since step shown.")

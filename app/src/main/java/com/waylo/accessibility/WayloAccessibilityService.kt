@@ -53,8 +53,11 @@ class WayloAccessibilityService : AccessibilityService() {
         Log.d(TAG, "Event from [$pkg] type=$type")
 
         // A window state change means the user navigated (likely by tapping the
-        // real button under the dot). Let guidance advance to the next step.
+        // real button under the dot). Let guidance advance to the next step —
+        // but check the financial-app guard first, so entering/leaving a
+        // banking app pauses/resumes guidance before onWindowChanged acts on it.
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            com.waylo.guidance.FinancialAppGuard.onForegroundPackageChanged(pkg)
             com.waylo.guidance.GuidanceEngine.onWindowChanged(pkg)
         }
     }
