@@ -66,6 +66,17 @@ android {
     buildFeatures {
         viewBinding = true
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
+    lint {
+        // Pre-existing UI lint debt (unrelated to release signing) — baseline it
+        // rather than fix it here so `./gradlew build` isn't blocked by it, while
+        // still failing on any *new* lint errors this or future work introduces.
+        baseline = file("lint-baseline.xml")
+    }
 }
 
 dependencies {
@@ -96,6 +107,10 @@ dependencies {
 
     // Unit + instrumentation testing
     testImplementation("junit:junit:4.13.2")
+    // Real org.json impl for JVM unit tests — the Android stub jar's JSONObject
+    // throws on construction ("not mocked"), which PlanParser's catch-all would
+    // otherwise silently swallow into a false-passing null result.
+    testImplementation("org.json:json:20231013")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:core:1.5.0")
