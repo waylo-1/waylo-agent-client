@@ -21,6 +21,11 @@ proguard/
 .navigation/
 output.json
 
+# ---- Release signing (never commit keys/credentials) ----
+*.keystore
+*.jks
+keystore.properties
+
 # Kotlin
 .kotlin/
 
