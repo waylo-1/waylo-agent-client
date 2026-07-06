@@ -323,6 +323,7 @@ final class GuidanceEngine: ObservableObject {
                       !self.clickIsOnWayloUI(axPoint) else { return }
                 self.removeClickMonitor()
                 DebugLogger.log("ENGINE", "any-click sensed → advancing step \(stepIndex + 1) after \(bufferSeconds)s buffer")
+                self.snapshotWindows()
                 OverlayWindowController.shared.hideDot()
                 try? await Task.sleep(nanoseconds: UInt64(bufferSeconds * 1_000_000_000))
                 guard self.isRunning, self.currentStepIndex == stepIndex else { return }
@@ -1250,6 +1251,9 @@ final class GuidanceEngine: ObservableObject {
 
     private func advanceAfterKey(stepIndex: Int) {
         removeKeyAdvanceMonitor()
+        // A keypress (Return in a dialog, ⌘N…) can open a window too — snapshot
+        // so the next step can detect it, same as the click path.
+        snapshotWindows()
         OverlayWindowController.shared.hideDot()
         let next = stepIndex + 1
         Task { @MainActor in

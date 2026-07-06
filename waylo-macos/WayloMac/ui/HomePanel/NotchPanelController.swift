@@ -117,8 +117,10 @@ final class NotchPanelController: NSWindowController {
         window.orderFrontRegardless()
 
         if expanded {
+            // Nonactivating panel: becoming key is enough for the text field.
+            // Do NOT activate the app — that would steal focus from the target
+            // app mid-guide (closing its menus), which clicky also avoids.
             window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
             installClickOutsideMonitor()
         } else {
             removeClickOutsideMonitor()
