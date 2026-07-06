@@ -311,4 +311,7 @@ object ElementFinder {
         node.getBoundsInScreen(rect)
         return rect
     }
+
+    /** True if [pkg] is a known home-screen launcher package. */
+    fun isLauncherPackage(pkg: String): Boolean = LAUNCHER_PACKAGES.contains(pkg)
 }

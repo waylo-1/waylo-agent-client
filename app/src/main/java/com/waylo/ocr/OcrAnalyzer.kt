@@ -31,6 +31,14 @@ object OcrAnalyzer {
 
     private const val TAG = "Waylo"
 
+    /**
+     * A single ambiguous token match (score 15) is too weak to trust for
+     * placing the dot — require at least a real partial/text match or a
+     * couple of token hits, mirroring [com.waylo.accessibility.ElementFinder]'s
+     * own confidence floor.
+     */
+    private const val MIN_MATCH_SCORE = 30
+
     private val recognizer: TextRecognizer by lazy {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
@@ -130,11 +138,11 @@ object OcrAnalyzer {
             }
         }
 
-        return if (best != null && bestScore > 0) {
+        return if (best != null && bestScore >= MIN_MATCH_SCORE) {
             Log.d(TAG, "OCR best match: '${best.text}' score=$bestScore center=(${best.centerX},${best.centerY})")
             best
         } else {
-            Log.d(TAG, "OCR found no match for '$description'.")
+            Log.d(TAG, "OCR found no match for '$description' (best score $bestScore, floor $MIN_MATCH_SCORE).")
             null
         }
     }

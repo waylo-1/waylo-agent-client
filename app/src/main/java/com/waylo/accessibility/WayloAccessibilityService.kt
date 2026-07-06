@@ -52,13 +52,27 @@ class WayloAccessibilityService : AccessibilityService() {
         val type = AccessibilityEvent.eventTypeToString(event.eventType)
         Log.d(TAG, "Event from [$pkg] type=$type")
 
-        // A window state change means the user navigated (likely by tapping the
-        // real button under the dot). Let guidance advance to the next step —
-        // but check the financial-app guard first, so entering/leaving a
-        // banking app pauses/resumes guidance before onWindowChanged acts on it.
-        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            com.waylo.guidance.FinancialAppGuard.onForegroundPackageChanged(pkg)
-            com.waylo.guidance.GuidanceEngine.onWindowChanged(pkg)
+        // GuidanceEngine picks which of these signals actually matter for the
+        // current step's verification mode (APP_ICON/opening steps care about
+        // window-state changes, tap-in-app steps about clicks/content changes,
+        // TEXT_INPUT steps about text changes) — this service just forwards
+        // the raw signal, checking the financial-app guard first so
+        // entering/leaving a banking app pauses/resumes guidance before
+        // GuidanceEngine acts on the same event.
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                com.waylo.guidance.FinancialAppGuard.onForegroundPackageChanged(pkg)
+                com.waylo.guidance.GuidanceEngine.onWindowStateChanged(pkg)
+            }
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                com.waylo.guidance.GuidanceEngine.onContentChanged(pkg)
+            }
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                com.waylo.guidance.GuidanceEngine.onViewClicked(event.source)
+            }
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                com.waylo.guidance.GuidanceEngine.onTextChanged(event.source)
+            }
         }
     }
 
