@@ -32,8 +32,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         checkAccessibilityPermission()
         registerHotkeys()
 
-        // Show the always-visible pill at the notch.
-        showPanel()
+        // Open the panel once at launch (clicky-style) so the user sees the
+        // task input immediately; afterwards it's click-driven via the
+        // menu-bar icon / ⌃⌥⌘W / the notch pill while a guide runs.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.expandPanel()
+        }
+    }
+
+    /// Opens the notch panel expanded.
+    func expandPanel() {
+        if notchPanel == nil {
+            notchPanel = NotchPanelController()
+        }
+        notchPanel?.expand()
     }
 
     func applicationWillTerminate(_ notification: Notification) {}

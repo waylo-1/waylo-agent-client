@@ -90,10 +90,8 @@ final class GuidanceEngine: ObservableObject {
         installDebugHotkey()
         if planLocked { DebugLogger.log("ENGINE", "plan LOCKED (demo) — corrections relabel only, no replan") }
 
-        // Retract the panel up into the notch — the guide lives in the notch now.
-        NotchPanelController.expansion.pinned = false
-        NotchPanelController.expansion.hovering = false
-        NotchPanelController.expansion.recompute()
+        // Collapse the panel to the notch pill — the guide lives in the notch now.
+        NotchPanelController.expansion.expanded = false
 
         Task { await executeStep(index: 0) }
     }
@@ -1016,20 +1014,24 @@ final class GuidanceEngine: ObservableObject {
         DebugLogger.log("CLICK", String(format: "%@ at (%.0f,%.0f) target=(%.0f,%.0f) dist=%.0f tol=%.0f",
             isRight ? "right" : "left", clickAX.x, clickAX.y, target.x, target.y, dist, clickToleranceAX))
 
-        if secondary {
-            // A right-click (or control-click) anywhere completes a right-click step.
-            guard isRight else { return }
-            DebugLogger.log("ENGINE", "right-click detected → advancing step \(stepIndex + 1)")
+        // A click anywhere inside the highlighted REGION (when known) counts —
+        // that's the point of the region box — else within the classic radius
+        // of the dot. This is the PRIMARY path for every step, left-click
+        // included: the previous code required a right-click for "secondary"
+        // steps and so a normal left-click on the dot never advanced them.
+        let insideRect = targetRect.map { $0.insetBy(dx: -12, dy: -12).contains(clickAX) } ?? false
+        let inTarget = insideRect || dist <= clickToleranceAX
+        if inTarget {
             advanceAfterClick(stepIndex: stepIndex)
             return
         }
 
-        // Normal step: a left-click anywhere inside the highlighted REGION
-        // (when known) counts — that's the whole point of the region box —
-        // else within the classic radius of the dot.
-        let insideRect = targetRect.map { $0.insetBy(dx: -12, dy: -12).contains(clickAX) } ?? false
-        guard insideRect || dist <= clickToleranceAX else { return }
-        advanceAfterClick(stepIndex: stepIndex)
+        // Right-click steps ALSO complete on a right-click anywhere (the user
+        // opens a context menu away from the dot) — an extra path, not the only one.
+        if secondary && isRight {
+            DebugLogger.log("ENGINE", "right-click detected → advancing step \(stepIndex + 1)")
+            advanceAfterClick(stepIndex: stepIndex)
+        }
     }
 
     /// Shared "click landed → move on" handler. Shows an immediate spinner at

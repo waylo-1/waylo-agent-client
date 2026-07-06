@@ -3,29 +3,30 @@ import SwiftUI
 import Combine
 
 /// Hosts a Dynamic-Island / Boring-Notch style UI hanging from the Mac notch.
-/// Collapsed it hugs the notch (just an activity indicator during a guide);
-/// hovering or clicking expands it into the full panel. Sizes are explicit per
-/// state (no auto-size feedback loop).
+///
+/// Interaction is CLICK-DRIVEN (modeled on farzaa/clicky's MenuBarPanelManager),
+/// not hover-polling — the old 20Hz cursor poll + fixed oversized window was
+/// the source of the lag and the "stuck / swallows clicks" bugs. Instead:
+///   - collapsed while a guide runs → a small click-through-ish pill at the
+///     notch showing progress; clicking it opens the full panel;
+///   - not running & not open → the window is hidden (the menu-bar icon opens it);
+///   - open → the window is sized to FIT the content (no dead transparent area),
+///     takes key focus for typing, and a click-outside monitor dismisses it
+///     (exactly like an NSPopover).
 @MainActor
 final class NotchPanelController: NSWindowController {
 
     static let expansion = NotchExpansion()
 
-    /// The window is a FIXED size pinned to the top and is NEVER resized — that
-    /// is what kills the hover glitch. Only its click-through flag and the
-    /// SwiftUI content (which animates) change between states.
     private let panelWidth: CGFloat = 380
-    private let panelMaxHeight: CGFloat = 470
 
     private var cancellables = Set<AnyCancellable>()
-    private var hoverTimer: Timer?
-    /// Debounce: number of consecutive ticks the cursor has been outside the
-    /// expanded panel. Collapsing only after a couple of ticks stops flicker.
-    private var outsideTicks = 0
+    private var clickOutsideMonitor: Any?
+    private var hostingController: NSHostingController<NotchRootView>!
 
     convenience init() {
         let panel = NotchWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 200, height: 40),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 40),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -45,8 +46,10 @@ final class NotchPanelController: NSWindowController {
         panel.contentViewController = hosting
 
         self.init(window: panel)
+        self.hostingController = hosting
 
-        // Re-size/position when expand or running state changes.
+        // Re-layout when the open state or the running state changes. These are
+        // discrete events (a click, a guide starting/finishing) — no polling.
         NotchPanelController.expansion.$expanded
             .removeDuplicates()
             .sink { [weak self] _ in Task { @MainActor in self?.applyState() } }
@@ -55,95 +58,11 @@ final class NotchPanelController: NSWindowController {
             .removeDuplicates()
             .sink { [weak self] _ in Task { @MainActor in self?.applyState() } }
             .store(in: &cancellables)
-
-        startHoverWatcher()
-    }
-
-    /// Polls the cursor: when it reaches the notch region, drop the panel down;
-    /// when it leaves the expanded panel, retract. This is more reliable than
-    /// SwiftUI .onHover, which doesn't fire under the menu bar / notch.
-    /// 0.05s (20Hz) so expansion feels instant — the old 0.12s poll plus a
-    /// 2-tick debounce made the panel feel laggy.
-    private func startHoverWatcher() {
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updateHover() }
-        }
-    }
-
-    /// Ticks the cursor must be outside before collapsing (~0.25s grace).
-    private var collapseTicks: Int { 5 }
-
-    private func updateHover() {
-        guard let window = window, let screen = NSScreen.main else { return }
-        let exp = NotchPanelController.expansion
-
-        let mouse = NSEvent.mouseLocation
-        let frame = screen.frame
-        let winX = frame.midX - panelWidth / 2
-
-        if exp.expanded {
-            let h = contentHeight(expanded: true)
-            let active = CGRect(x: winX, y: frame.maxY - h, width: panelWidth, height: h)
-                .insetBy(dx: -12, dy: -12)
-
-            // The user is "actively editing" only when the field editor has
-            // focus (typing in the task field). Being key alone must NOT hold
-            // the panel open — a nonactivating panel stays key after any
-            // button click, which made the panel never retract.
-            let editingText = window.isKeyWindow && window.firstResponder is NSTextView
-
-            // Interactive ONLY over the visible content (or while typing). The
-            // fixed window is taller than the content; without this the
-            // transparent remainder swallowed clicks meant for whatever sat
-            // underneath — a big part of the "buggy" feel.
-            window.ignoresMouseEvents = !(active.contains(mouse) || editingText)
-
-            // Stay open while pinned, while typing, or while hovered. Collapse
-            // after a short grace once none of those hold.
-            if exp.pinned || editingText || active.contains(mouse) {
-                outsideTicks = 0
-            } else {
-                outsideTicks += 1
-                if outsideTicks >= collapseTicks {
-                    outsideTicks = 0
-                    exp.hovering = false
-                    exp.recompute()
-                }
-            }
-        } else {
-            // Expand only from the small notch zone at the very top edge. This
-            // zone sits INSIDE the expanded content rect, so expanding can never
-            // immediately move the cursor "outside" → no flicker loop.
-            let m = NotchMetrics.current()
-            let triggerW = (m.hasNotch ? m.width : 180) + 40
-            let triggerH = max(m.height, 30) + 6
-            let trigger = CGRect(
-                x: frame.midX - triggerW / 2,
-                y: frame.maxY - triggerH,
-                width: triggerW,
-                height: triggerH
-            )
-            // After an explicit collapse (chevron), wait for the cursor to
-            // LEAVE the notch zone before hover can expand again — else the
-            // collapse is immediately undone by the very cursor that clicked.
-            if exp.explicitCollapse {
-                if !trigger.contains(mouse) { exp.explicitCollapse = false }
-                return
-            }
-            if trigger.contains(mouse) {
-                outsideTicks = 0
-                exp.hovering = true
-                exp.recompute()
-            }
-        }
-    }
-
-    /// Visible content height for the current state (used only for hit-testing;
-    /// the window stays fixed at panelMaxHeight).
-    private func contentHeight(expanded: Bool) -> CGFloat {
-        let m = NotchMetrics.current()
-        if expanded { return GuidanceEngine.shared.isRunning ? panelMaxHeight : 320 }
-        return max(m.height, 32)
+        // The running indicator changes height between states; keep it snug.
+        GuidanceEngine.shared.$state
+            .removeDuplicates()
+            .sink { [weak self] _ in Task { @MainActor in if !NotchPanelController.expansion.expanded { self?.applyState() } } }
+            .store(in: &cancellables)
     }
 
     override init(window: NSWindow?) {
@@ -154,76 +73,95 @@ final class NotchPanelController: NSWindowController {
 
     func show() { applyState() }
 
-    /// Menu-bar icon / hotkey: pin the panel open (or close it).
+    /// Menu-bar icon / ⌃⌥⌘W: toggle the full panel open/closed.
     func toggle() {
-        NotchPanelController.expansion.pinned.toggle()
-        NotchPanelController.expansion.recompute()
+        NotchPanelController.expansion.expanded.toggle()
         applyState()
     }
 
     func expand() {
-        NotchPanelController.expansion.pinned = true
-        NotchPanelController.expansion.recompute()
+        NotchPanelController.expansion.expanded = true
         applyState()
     }
 
-    /// Positions the FIXED-size window at the top and toggles interactivity.
-    /// The window is never resized — content animates inside it instead — which
-    /// is what eliminates the hover glitch. Click-through when collapsed so it
-    /// never blocks the menu bar / notch.
+    // MARK: - Layout (content-sized, no fixed oversized window)
+
     private func applyState() {
         guard let window = window, let screen = NSScreen.main else { return }
         let expanded = NotchPanelController.expansion.expanded
-        let pinned = NotchPanelController.expansion.pinned
+        let running = GuidanceEngine.shared.isRunning
 
-        let frame = screen.frame
+        // Neither open nor guiding → hide entirely; the menu-bar icon reopens it.
+        if !expanded && !running {
+            hidePanel()
+            return
+        }
+
+        // Size the window to the SwiftUI content's natural height so there is no
+        // transparent dead zone to swallow clicks (the old bug).
+        window.setContentSize(NSSize(width: panelWidth, height: 10)) // let it grow from small
+        let fitting = hostingController.view.fittingSize
+        let height = max(28, min(fitting.height, screen.frame.height - 40))
+
         let rect = NSRect(
-            x: frame.midX - panelWidth / 2,
-            y: frame.maxY - panelMaxHeight,
+            x: screen.frame.midX - panelWidth / 2,
+            y: screen.frame.maxY - height,
             width: panelWidth,
-            height: panelMaxHeight
+            height: height
         )
-        if window.frame != rect {
-            window.setFrame(rect, display: true)
-        }
+        window.setFrame(rect, display: true)
 
-        // Click-through unless expanded → the wide window never blocks the menu
-        // bar, and collapsing/expanding only flips this flag (no geometry change).
-        // (While expanded, the hover watcher refines this per-tick so only the
-        // visible content is interactive.)
-        window.ignoresMouseEvents = !expanded
-
-        // On collapse, drop keyboard focus — a still-key invisible panel would
-        // keep the "stay open while interacting" rule satisfied forever.
-        if !expanded, window.isKeyWindow {
-            window.orderOut(nil) // resigns key; re-ordered front just below
-        }
+        // Collapsed pill is clickable (small window → no dead zone). Expanded
+        // panel is interactive and takes key focus for the text field.
+        window.ignoresMouseEvents = false
         window.orderFrontRegardless()
 
-        // Only take keyboard focus once the user has pinned it open (clicked in),
-        // never on a passive hover — passive focus-stealing was part of the glitch.
-        if expanded && pinned {
+        if expanded {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            installClickOutsideMonitor()
+        } else {
+            removeClickOutsideMonitor()
+        }
+    }
+
+    private func hidePanel() {
+        removeClickOutsideMonitor()
+        window?.orderOut(nil)
+    }
+
+    // MARK: - Click-outside dismissal (NSPopover-style, like clicky)
+
+    private func installClickOutsideMonitor() {
+        removeClickOutsideMonitor()
+        // Global monitor fires only for clicks in OTHER apps (not our panel),
+        // so any click outside collapses the panel — clicks inside are handled
+        // by SwiftUI and never reach here.
+        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, let window = self.window else { return }
+                let click = NSEvent.mouseLocation
+                if window.frame.contains(click) { return }
+                NotchPanelController.expansion.expanded = false
+                self.applyState()
+            }
+        }
+    }
+
+    private func removeClickOutsideMonitor() {
+        if let m = clickOutsideMonitor {
+            NSEvent.removeMonitor(m)
+            clickOutsideMonitor = nil
         }
     }
 }
 
-/// Shared expand state. `expanded` is what the controller sizes against; it is
-/// derived from hover (set by the view) OR pinned (set by click / menu toggle).
+/// Shared open state. `expanded` drives the full panel; the collapsed pill is
+/// shown automatically while a guide runs. No hover state — interaction is
+/// click-driven (open via menu-bar icon / hotkey / clicking the pill; close
+/// via the chevron or a click outside).
 final class NotchExpansion: ObservableObject {
     @Published var expanded = false
-    @Published var pinned = false
-    var hovering = false
-    /// Set when the user explicitly collapses (chevron). The hover watcher
-    /// must NOT re-expand until the cursor leaves the notch zone once —
-    /// otherwise the chevron collapse is undone 50ms later (the cursor is
-    /// inside the trigger zone at the moment of the click), which made the
-    /// chevron look completely dead.
-    var explicitCollapse = false
-
-    func recompute() {
-        let next = hovering || pinned
-        if next != expanded { expanded = next }
-    }
 }

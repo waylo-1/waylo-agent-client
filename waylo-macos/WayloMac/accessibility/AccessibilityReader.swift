@@ -123,28 +123,54 @@ final class AccessibilityReader {
         return frame.width > 1 && frame.height > 1 ? frame : nil
     }
 
-    /// Frame (AX coords) of the target app's focused window ONLY when it is a
-    /// modal surface — a dialog, sheet, or system alert. Used to prefer AX
-    /// candidates inside it over identical elements behind it (a confirmation
-    /// dialog's "Empty Bin" vs the toolbar "Empty" underneath). Returns nil
-    /// for normal windows so menu-bar / dropdown-menu targets aren't filtered.
+    /// Frame (AX coords) of a modal surface in the target app — a sheet,
+    /// dialog, or system alert — if one is currently up. Used to hard-restrict
+    /// detection to the modal's contents (a confirmation's "Empty Bin" button
+    /// vs the toolbar "Empty" behind it). Returns nil when there is no modal so
+    /// menu-bar / dropdown targets aren't filtered.
+    ///
+    /// Detects BOTH styles: a sheet attached to a window (via kAXSheetsAttribute
+    /// — how Finder's "Empty the Trash?" confirmation appears) and a standalone
+    /// dialog window (subrole AXDialog / AXSystemDialog).
     func targetFocusedDialogFrame() -> CGRect? {
         let pid = TargetAppTracker.shared.targetPID
             ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
         guard let pid = pid else { return nil }
         let app = AXUIElementCreateApplication(pid)
 
-        var winRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
-              let winRef = winRef else { return nil }
-        let win = winRef as! AXUIElement
-        let role = copyStringAttribute(win, kAXRoleAttribute)
-        let subrole = copyStringAttribute(win, kAXSubroleAttribute)
-        let isModal = role == "AXSheet"
-            || subrole == "AXDialog" || subrole == "AXSystemDialog" || subrole == "AXSheet"
-        guard isModal else { return nil }
-        let frame = copyFrame(win)
-        return frame.width > 1 && frame.height > 1 ? frame : nil
+        // Any window's attached sheet wins first (it's modal over its parent).
+        var winsRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &winsRef)
+        let windows = (winsRef as? [AXUIElement]) ?? []
+        for win in windows {
+            var sheetsRef: CFTypeRef?
+            // No kAXSheetsAttribute constant in the SDK — the attribute is "AXSheets".
+            AXUIElementCopyAttributeValue(win, "AXSheets" as CFString, &sheetsRef)
+            if let sheet = (sheetsRef as? [AXUIElement])?.first {
+                let f = copyFrame(sheet)
+                if f.width > 1, f.height > 1 {
+                    DebugLogger.log("AX", "modal sheet detected \(Int(f.width))x\(Int(f.height))")
+                    return f
+                }
+            }
+        }
+
+        // Else a standalone dialog window (focused, else any).
+        var focusedRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focusedRef)
+        let candidates = [focusedRef].compactMap { $0 as! AXUIElement? } + windows
+        for win in candidates {
+            let role = copyStringAttribute(win, kAXRoleAttribute)
+            let subrole = copyStringAttribute(win, kAXSubroleAttribute)
+            if role == "AXSheet" || subrole == "AXDialog" || subrole == "AXSystemDialog" || subrole == "AXSheet" {
+                let f = copyFrame(win)
+                if f.width > 1, f.height > 1 {
+                    DebugLogger.log("AX", "modal dialog detected \(Int(f.width))x\(Int(f.height))")
+                    return f
+                }
+            }
+        }
+        return nil
     }
 
     /// Every window of the target app with its frame (AX coords) and subrole.

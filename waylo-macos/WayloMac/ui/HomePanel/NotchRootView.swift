@@ -10,27 +10,16 @@ struct NotchRootView: View {
         ZStack(alignment: .top) {
             if expansion.expanded {
                 expandedPanel
-                    .transition(.move(edge: .top).combined(with: .opacity))
             } else if engine.isRunning {
                 runningIndicator
-                    .transition(.opacity)
-            } else {
-                idleHug
+                    // Click the pill to open the full panel.
+                    .contentShape(Rectangle())
+                    .onTapGesture { expansion.expanded = true }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: expansion.expanded)
-        .animation(.easeInOut(duration: 0.2), value: engine.isRunning)
+        .frame(width: 380)
+        .fixedSize(horizontal: false, vertical: true)
         .preferredColorScheme(.dark)
-    }
-
-    // MARK: - Idle: fully transparent so the REAL notch shows (no black box)
-
-    private var idleHug: some View {
-        // Invisible but still hoverable, so hovering the notch expands the panel.
-        Color.clear
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
     }
 
     // MARK: - Running: compact indicator that looks like the notch widened
@@ -65,10 +54,7 @@ struct NotchRootView: View {
             HStack {
                 Spacer()
                 Button {
-                    expansion.pinned = false
-                    expansion.hovering = false
-                    expansion.explicitCollapse = true
-                    expansion.recompute()
+                    expansion.expanded = false
                 } label: {
                     Image(systemName: "chevron.up")
                         .font(.system(size: 11, weight: .bold))
@@ -80,15 +66,11 @@ struct NotchRootView: View {
             .padding(.top, 8)
 
             HomePanelView()
-            Spacer(minLength: 0)
         }
         .frame(width: 360)
         .fixedSize(horizontal: false, vertical: true)
         .background(BottomRoundedRectangle(radius: 18).fill(Color.black.opacity(0.95)))
         .overlay(BottomRoundedRectangle(radius: 18).stroke(Color.white.opacity(0.08), lineWidth: 1))
-        // No tap-to-pin: it made the panel stick open until the chevron was
-        // found. The controller keeps the panel open while the window is key
-        // (typing) or hovered, and it retracts naturally otherwise.
     }
 }
 

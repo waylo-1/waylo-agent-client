@@ -59,6 +59,12 @@ final class CoordinateResolver {
         DebugLogger.log("RESOLVE", "start target='\(targetLabel)' desc='\(elementDescription)' region=\(screenRegion) step=\(stepIndex)/\(totalSteps)")
         DebugState.shared.update(targetApp: TargetAppTracker.shared.targetName, layer: "resolving…", screen: screen.frame)
 
+        // If a modal sheet/dialog is up (e.g. the "Empty the Trash?" confirm),
+        // its frame focuses BOTH AX (candidate filter) and OCR (crop) on the
+        // modal, so we never point at an identical label behind it. An explicit
+        // caller preferRect (a freshly-opened window) still takes precedence.
+        let effectivePreferRect = preferRect ?? AccessibilityReader.shared.targetFocusedDialogFrame()
+
         // Resolve an anchor location (nearby text the planner gave) once, so AX
         // can prefer the target in the right direction from it.
         var anchorInfo: (point: CGPoint, position: String)?
@@ -79,7 +85,7 @@ final class CoordinateResolver {
         if targetType == .text && !isControl {
             if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
-                                           region: screenRegion, preferRect: preferRect) {
+                                           region: screenRegion, preferRect: effectivePreferRect) {
                 return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
             }
         }
@@ -87,7 +93,7 @@ final class CoordinateResolver {
         // --- Layer 0: Accessibility tree (role + anchor aware) -------------
         if !targetLabel.isEmpty,
            let found = axSearchDetailed(targetLabel, region: screenRegion, screen: screen, allowSystemUI: true,
-                                        preferredRole: controlKind, anchor: anchorInfo, preferRect: preferRect) {
+                                        preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect) {
             let element = found.best
             print("[Resolver] L0 AX hit '\(element.title)' \(element.center)")
             DebugLogger.logResolution("L0-AX", found: true, point: element.center, label: "\(element.title) [\(element.role)]")
@@ -104,7 +110,7 @@ final class CoordinateResolver {
         // "System Settings" header for an "Appearance" step — so we skip it.
         if (targetType == .icon || targetLabel.isEmpty),
            let element = axSearch(axQuery, region: screenRegion, screen: screen, allowSystemUI: false,
-                                  preferredRole: controlKind, anchor: anchorInfo, preferRect: preferRect) {
+                                  preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect) {
             if passesRegion(element.center, screenRegion, screen: screen) {
                 print("[Resolver] L0 AX hit (desc) '\(element.title)' \(element.center)")
                 DebugLogger.logResolution("L0-AX-desc", found: true, point: element.center, label: element.title)
@@ -122,7 +128,7 @@ final class CoordinateResolver {
         if targetType == .text && isControl {
             if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
-                                           region: screenRegion, preferRect: preferRect) {
+                                           region: screenRegion, preferRect: effectivePreferRect) {
                 return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
             }
         }
