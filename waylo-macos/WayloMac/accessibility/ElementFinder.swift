@@ -132,6 +132,19 @@ final class ElementFinder {
         // Full coverage: every query keyword appears as a whole word in the title.
         if !keywords.isEmpty && titleWordHits == keywords.count { score += 40 }
 
+        // REVERSE coverage: the planner's label is often LONGER than the real
+        // control's short title — a step says "Empty Trash" but the actual
+        // button is just "Empty". When every word of a short title appears in
+        // the query, that's a strong signal. Restricted to real controls so
+        // plain header/static text can't ride this bonus, and at least one
+        // title word must be a query keyword (not just stop words).
+        let isStaticish = element.role == "AXStaticText" || element.role == "AXRow" || element.role == "AXCell"
+        if !isStaticish, !titleWords.isEmpty, titleWords.count <= 3,
+           titleWords.contains(where: { keywords.contains($0) }),
+           titleWords.allSatisfy({ keywords.contains($0) || Self.stopWords.contains($0) }) {
+            score += 25
+        }
+
         // Role boost based on intent words in the query.
         if query.contains("button") && (element.role == "AXButton" || element.role == "AXMenuButton" || element.role == "AXToolbarButton") { score += 15 }
         if query.contains("menu") && (element.role == "AXMenuItem" || element.role == "AXMenuBarItem") { score += 15 }

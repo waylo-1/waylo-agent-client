@@ -14,6 +14,9 @@ struct HomePanelView: View {
     /// Toggles the developer/milestone testing tools.
     @State private var showDevTools = false
     @State private var testFindDescription = ""
+    @State private var layerTestLabel = ""
+    @State private var layerTestResults: [String] = []
+    @State private var layerTestRunning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -385,6 +388,34 @@ struct HomePanelView: View {
                 Button("Find") { findAndShowDot() }
                     .buttonStyle(.bordered)
             }
+
+            // Layer self-test: run EVERY layer independently on the current
+            // screen and show each one's verdict. Switch to the target app
+            // first (the panel stays open), then press Test.
+            Divider()
+            Text("Layer self-test (L0 AX · L1 OCR · cache · YOLO · Nova)")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            HStack(spacing: 8) {
+                TextField("Element to find, e.g. Empty", text: $layerTestLabel)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { runLayerSelfTest() }
+                Button("Test") { runLayerSelfTest() }
+                    .buttonStyle(.bordered)
+                    .disabled(layerTestRunning)
+            }
+            if layerTestRunning {
+                HStack(spacing: 6) {
+                    ProgressView().scaleEffect(0.6)
+                    Text("Running all layers…").font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            ForEach(layerTestResults, id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(line.contains("HIT") ? .green : .secondary)
+                    .lineLimit(2)
+            }
         }
     }
 
@@ -413,6 +444,24 @@ struct HomePanelView: View {
                     errorMessage = "Failed to generate guide. Check your internet connection."
                 }
             }
+        }
+    }
+
+    /// Runs every detection layer independently against the entered label.
+    private func runLayerSelfTest() {
+        let label = layerTestLabel.trimmingCharacters(in: .whitespaces)
+        guard !label.isEmpty, !layerTestRunning else { return }
+        layerTestRunning = true
+        layerTestResults = []
+        Task {
+            guard ScreenRecordingPermission.isGranted,
+                  let capture = await ScreenCapturer.shared.captureActiveScreen() else {
+                layerTestResults = ["Couldn't capture the screen — check Screen Recording permission."]
+                layerTestRunning = false
+                return
+            }
+            layerTestResults = await CoordinateResolver.shared.diagnose(capture: capture, label: label)
+            layerTestRunning = false
         }
     }
 

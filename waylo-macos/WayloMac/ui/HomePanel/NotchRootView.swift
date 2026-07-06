@@ -66,6 +66,7 @@ struct NotchRootView: View {
                 Spacer()
                 Button {
                     expansion.pinned = false
+                    expansion.hovering = false
                     expansion.recompute()
                 } label: {
                     Image(systemName: "chevron.up")
@@ -84,10 +85,9 @@ struct NotchRootView: View {
         .fixedSize(horizontal: false, vertical: true)
         .background(BottomRoundedRectangle(radius: 18).fill(Color.black.opacity(0.95)))
         .overlay(BottomRoundedRectangle(radius: 18).stroke(Color.white.opacity(0.08), lineWidth: 1))
-        .onTapGesture {
-            // Keep it open for interaction once clicked into.
-            if !expansion.pinned { expansion.pinned = true; expansion.recompute() }
-        }
+        // No tap-to-pin: it made the panel stick open until the chevron was
+        // found. The controller keeps the panel open while the window is key
+        // (typing) or hovered, and it retracts naturally otherwise.
     }
 }
 

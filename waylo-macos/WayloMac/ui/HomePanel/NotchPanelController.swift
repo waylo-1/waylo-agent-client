@@ -56,55 +56,52 @@ final class NotchPanelController: NSWindowController {
             .sink { [weak self] _ in Task { @MainActor in self?.applyState() } }
             .store(in: &cancellables)
 
-        // Clicking into the panel (e.g. the task text field) makes it key.
-        // Treat that as pinning — otherwise a hover-expanded panel collapses
-        // the moment the cursor drifts away while the user is typing.
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main
-        ) { _ in
-            Task { @MainActor in
-                let exp = NotchPanelController.expansion
-                if !exp.pinned {
-                    exp.pinned = true
-                    exp.recompute()
-                }
-            }
-        }
-
         startHoverWatcher()
     }
 
     /// Polls the cursor: when it reaches the notch region, drop the panel down;
     /// when it leaves the expanded panel, retract. This is more reliable than
     /// SwiftUI .onHover, which doesn't fire under the menu bar / notch.
+    /// 0.05s (20Hz) so expansion feels instant — the old 0.12s poll plus a
+    /// 2-tick debounce made the panel feel laggy.
     private func startHoverWatcher() {
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.updateHover() }
         }
     }
 
+    /// Ticks the cursor must be outside before collapsing (~0.25s grace).
+    private var collapseTicks: Int { 5 }
+
     private func updateHover() {
         guard let window = window, let screen = NSScreen.main else { return }
         let exp = NotchPanelController.expansion
-        if exp.pinned { outsideTicks = 0; return } // pinned stays open until closed
 
         let mouse = NSEvent.mouseLocation
         let frame = screen.frame
         let winX = frame.midX - panelWidth / 2
 
         if exp.expanded {
-            // Stay open while the cursor is over the VISIBLE content (not the
-            // whole fixed window). Collapse only after it's been outside for a
-            // couple of ticks. The window itself never moves, so there is no
-            // edge to oscillate across.
             let h = contentHeight(expanded: true)
             let active = CGRect(x: winX, y: frame.maxY - h, width: panelWidth, height: h)
                 .insetBy(dx: -12, dy: -12)
-            if active.contains(mouse) {
+
+            // Interactive ONLY over the visible content (or while key). The
+            // fixed window is taller than the content; without this the
+            // transparent remainder swallowed clicks meant for whatever sat
+            // underneath — a big part of the "buggy" feel.
+            window.ignoresMouseEvents = !(active.contains(mouse) || window.isKeyWindow)
+
+            // Stay open while pinned, while the user is interacting (window is
+            // key — e.g. typing in the task field), or while hovered. Collapse
+            // after a short grace once none of those hold. No tap-to-pin: the
+            // key-window check is what keeps it open during interaction, and
+            // clicking elsewhere naturally releases it.
+            if exp.pinned || window.isKeyWindow || active.contains(mouse) {
                 outsideTicks = 0
             } else {
                 outsideTicks += 1
-                if outsideTicks >= 2 {
+                if outsideTicks >= collapseTicks {
                     outsideTicks = 0
                     exp.hovering = false
                     exp.recompute()
@@ -183,7 +180,15 @@ final class NotchPanelController: NSWindowController {
 
         // Click-through unless expanded → the wide window never blocks the menu
         // bar, and collapsing/expanding only flips this flag (no geometry change).
+        // (While expanded, the hover watcher refines this per-tick so only the
+        // visible content is interactive.)
         window.ignoresMouseEvents = !expanded
+
+        // On collapse, drop keyboard focus — a still-key invisible panel would
+        // keep the "stay open while interacting" rule satisfied forever.
+        if !expanded, window.isKeyWindow {
+            window.orderOut(nil) // resigns key; re-ordered front just below
+        }
         window.orderFrontRegardless()
 
         // Only take keyboard focus once the user has pinned it open (clicked in),

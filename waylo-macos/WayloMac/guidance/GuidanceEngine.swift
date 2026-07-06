@@ -400,18 +400,22 @@ final class GuidanceEngine: ObservableObject {
             return
         }
 
-        // Before giving up, self-heal: show the loading dot and ask the model to
-        // re-read the screen — it can relabel this step or replan the rest.
+        // Before giving up, self-heal. RECOVERY runs FIRST: the most common
+        // failure is a planner label that differs from the visible one (step
+        // says "Empty Trash", the real button is "Empty") — /recover relabels
+        // that in ~2s. The old order sent the user scrolling for ~18s even
+        // when the element was already on screen under a different name.
         guard token == locateToken, isRunning else { return }
-        // Only offer to scroll when the screen ACTUALLY has a scrollable area
-        // (a long settings/list pane). Menus, the menu bar, and small dialogs
-        // can't scroll, so don't send the user scrolling pointlessly there.
+        if await attemptRecovery(step: step, capture: capture, token: token) { return }
+        guard token == locateToken, isRunning else { return }
+        // Recovery produced nothing usable — the element may genuinely be off
+        // screen. Only offer to scroll when the screen ACTUALLY has a
+        // scrollable area (a long settings/list pane). Menus, the menu bar,
+        // and small dialogs can't scroll.
         if AccessibilityReader.shared.targetHasScrollArea() {
             if await beginScrollAssist(step: step, token: token) { return }
             guard token == locateToken, isRunning else { return }
         }
-        if await attemptRecovery(step: step, capture: capture, token: token) { return }
-        guard token == locateToken, isRunning else { return }
         OverlayWindowController.shared.hideDot()
         state = .manual
         statusMessage = "I couldn't find it. Do it yourself, then press Next."
@@ -499,7 +503,9 @@ final class GuidanceEngine: ObservableObject {
                 screenRegion: step.screenRegion,
                 task: taskName,
                 stepIndex: step.index,
-                totalSteps: steps.count
+                totalSteps: steps.count,
+                targetType: step.targetType,
+                controlKind: step.controlKind
             )
             guard token == locateToken, isRunning else { return true }
             if let retry = retry {

@@ -223,6 +223,58 @@ final class CoordinateResolver {
         return nil
     }
 
+    /// Dev tool: runs EVERY detection layer independently against `label` and
+    /// returns one human-readable result line per layer (hit point or miss).
+    /// Backs the panel's "layer self-test" so each layer can be verified in
+    /// isolation on the real screen.
+    func diagnose(capture: ScreenCapturer.Capture, label: String) async -> [String] {
+        var lines: [String] = []
+        let screen = capture.screen
+        let appName = TargetAppTracker.shared.targetName
+        lines.append("target app: \(appName.isEmpty ? "?" : appName)")
+
+        if let el = axSearch(label, region: .fullScreen, screen: screen, allowSystemUI: true) {
+            let title = el.title.isEmpty ? el.description : el.title
+            lines.append("L0 AX: HIT '\(title)' [\(el.role)] (\(Int(el.center.x)),\(Int(el.center.y)))")
+        } else {
+            lines.append("L0 AX: miss")
+        }
+
+        if let m = await visionDetector.findLabelScored(label, in: capture.image, on: screen, region: .fullScreen) {
+            let verdict = m.score >= 0.8 ? "HIT" : "below 0.8 → reject"
+            lines.append(String(format: "L1 OCR: score %.2f (%d,%d) — %@", m.score, Int(m.point.x), Int(m.point.y), verdict))
+        } else {
+            lines.append("L1 OCR: no text matched at all")
+        }
+
+        if let cached = await WayloAPIClient.shared.lookupLabel(appName: appName, stepDescription: label) {
+            lines.append("Label cache: HIT '\(cached)'")
+        } else {
+            lines.append("Label cache: miss")
+        }
+
+        if let p = await YOLODetector.shared.detect(capture: capture, targetLabel: label,
+                                                    elementDescription: label, screenRegion: .fullScreen,
+                                                    stepInstruction: "find \(label)") {
+            lines.append("L2.5 YOLO: HIT (\(Int(p.x)),\(Int(p.y)))")
+        } else {
+            lines.append("L2.5 YOLO: miss")
+        }
+
+        if let r = await novaFallback.findElement(targetLabel: label, elementDescription: label,
+                                                  stepInstruction: "find \(label)", task: "layer self-test",
+                                                  stepIndex: 0, totalSteps: 1,
+                                                  image: capture.image, screen: screen),
+           let p = r.axPoint {
+            lines.append("L3 Nova: HIT '\(r.novaLabel)' (\(Int(p.x)),\(Int(p.y)))")
+        } else {
+            lines.append("L3 Nova: miss")
+        }
+
+        for line in lines { DebugLogger.log("SELFTEST", line) }
+        return lines
+    }
+
     /// Region is used SOFTLY elsewhere (to filter AX candidates and crop OCR).
     /// We no longer hard-reject a resolved point by absolute coordinates: that
     /// threw away correct hits (e.g. an Apple-menu dropdown item sits below the
