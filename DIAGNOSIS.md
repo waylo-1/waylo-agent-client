@@ -231,3 +231,70 @@ step). No change was needed there — I did not find log evidence of an
 already-placed dot moving, only of it being placed on the wrong element
 initially, and of wasted duplicate lookups that don't touch the dot. This is
 called out explicitly rather than silently assumed.
+
+## What I changed
+
+Commits (in order): `73cde59` (this diagnosis), `de0e02f` (the fixes below).
+
+- **`voice/Speaker.kt`** — `speak()`/`speakQueued()` now `Log.e` the exact
+  text and queue mode (`flush` vs `queued`) before speaking. Pure logging
+  addition, no behavior change to the TTS calls themselves.
+- **`guidance/GuidanceEngine.kt`**
+  - `onTargetLocated()`: the found-target prompt now uses `speakQueued()`
+    (wording: "When you see the red dot, tap it."), guarded by a new
+    `hasAnnouncedFoundThisStep` flag so it fires at most once per step and
+    never flushes the still-playing instruction.
+  - `locateOnDevice()`: the general on-device pipeline call now passes the
+    target package only for step index 0; every other step passes `null`.
+  - `checkTapInAppEvidence()`, `onTextChanged()`, `pollTextInput()`: all
+    three now pass `null` instead of `currentAppPackage` to
+    `ElementFinder.findElement()`.
+  - `checkTapInAppEvidence()`: added `tapEvidenceCheckInFlight` so a burst
+    of content-change events coalesces to at most one outstanding async
+    lookup instead of piling up duplicate concurrent scans.
+- **`accessibility/ElementFinder.kt`**
+  - `findElement()` now uses `scoreNodeWithBreakdown()` (same as
+    `findOnHomeScreen()`) and logs `viewId` + the full per-field score
+    breakdown for its top-3 candidates.
+  - `findOnHomeScreen()`'s candidate logging promoted from `Log.d` to
+    `Log.e` (this capture only retained `E`-priority lines) and given the
+    same `viewId`+breakdown detail.
+  - Removed the now-dead private `scoreNode(node, cleanedDescription,
+    tokens, ...)` wrapper that `findElement()` no longer calls.
+  - Doc comment on the `targetPackage` bonus now states the constraint
+    explicitly: only pass it for a search spanning multiple packages (the
+    home screen), never once already inside the target app.
+
+`./gradlew assembleDebug` and `./gradlew testDebugUnitTest` both pass. The
+instrumented `ElementFinderTest` (androidTest, needs a device/emulator)
+was **not run** — no `adb`/device is available in this environment. It
+exercises the public 2-arg `scoreNode(node, description)` entry point,
+whose internal scoring formula is unchanged (only which *callers* pass
+`targetPackage`, and logging, changed), so it isn't expected to be
+affected, but please run it on a device before considering this fully
+verified: `./gradlew connectedAndroidTest` or via Android Studio.
+
+## What to test on device
+
+1. **Speech**: run "open youtube and search for a song" (or the "find
+   youtube history" task from the log) and confirm each step's full
+   instruction is heard start to finish, followed by a short "When you see
+   the red dot, tap it." — not the instruction getting cut off after a
+   word or two.
+2. **Dot placement**: for step 2 ("Tap the profile picture..."), confirm
+   the dot lands on the actual profile picture, not the notification bell
+   or search icon. Check the other ICON_BUTTON/LIST_ITEM steps too.
+3. **No wrong-element regression on step 1**: step 1 (home-screen app icon)
+   still needs the package bonus to work — confirm it still finds the real
+   YouTube icon quickly (this path wasn't changed, but re-verify since it
+   shares code with the fix).
+4. **Re-capture a pacing log** (same capture method as `pacing_log.txt`) if
+   you want the "More options" = 90 anomaly fully explained — the new
+   `viewId`+breakdown logging will show exactly which field contributed the
+   extra points. Not required to confirm the two main fixes, since the
+   dominant +50 flat bonus (now removed for in-app lookups) is proven
+   independently.
+5. **General feel**: confirm the overall session reads as "better than
+   before b0ec09f," not just "not worse" — the original pacing overhaul's
+   intent (don't advance before the user acts, don't guess dot placement)
+   should now actually be perceptible instead of masked by these two bugs.
