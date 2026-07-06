@@ -147,6 +147,28 @@ final class AccessibilityReader {
         return frame.width > 1 && frame.height > 1 ? frame : nil
     }
 
+    /// Every window of the target app with its frame (AX coords) and subrole.
+    /// This is how new windows are identified REGARDLESS of app style: whether
+    /// an app opens a standard window (AXStandardWindow), a dialog (AXDialog),
+    /// a sheet, or a floating panel, it always appears in kAXWindowsAttribute
+    /// with an authoritative frame. Diffing this list before/after a click
+    /// reveals "the window that just opened" and its exact borders.
+    func targetWindowList() -> [(element: AXUIElement, frame: CGRect, subrole: String)] {
+        let pid = TargetAppTracker.shared.targetPID
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let pid = pid else { return [] }
+        let app = AXUIElementCreateApplication(pid)
+
+        var winsRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &winsRef)
+        guard let wins = winsRef as? [AXUIElement] else { return [] }
+        return wins.compactMap { w in
+            let f = copyFrame(w)
+            guard f.width > 40, f.height > 40 else { return nil }
+            return (w, f, copyStringAttribute(w, kAXSubroleAttribute))
+        }
+    }
+
     /// Recursively walks the AX tree, collecting interactive elements.
     private func traverseElement(_ element: AXUIElement, depth: Int, roles: Set<String>, results: inout [AXElementInfo]) {
         guard depth < 14 else { return } // Max depth to avoid runaway recursion

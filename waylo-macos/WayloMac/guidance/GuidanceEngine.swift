@@ -61,6 +61,12 @@ final class GuidanceEngine: ObservableObject {
     private let clickToleranceAX: CGFloat = 60
     /// Bumped every time we (re)enter a step so a stale async locate can bail out.
     private var locateToken = 0
+    /// Target-app windows at the moment the user completed the last click.
+    /// Diffed on the next step: a window that appeared (Trash window, dialog,
+    /// preferences panel) is where the next target almost certainly lives.
+    private var windowSnapshot: [AXUIElement] = []
+    /// Frame of the newly-appeared window, used to narrow AX + OCR search.
+    private var preferredWindowFrame: CGRect?
 
     private init() {}
 
@@ -102,11 +108,34 @@ final class GuidanceEngine: ObservableObject {
         OverlayWindowController.shared.hideDot()
         Speaker.shared.stop()
         currentTargetAX = nil
+        windowSnapshot = []
+        preferredWindowFrame = nil
         state = .idle
         statusMessage = ""
         currentInstruction = ""
         currentStepIndex = 0
         planLocked = false
+    }
+
+    // MARK: - New-window tracking
+
+    /// Remember the app's windows right when a click lands (before whatever it
+    /// opens has appeared).
+    private func snapshotWindows() {
+        windowSnapshot = AccessibilityReader.shared.targetWindowList().map(\.element)
+    }
+
+    /// Called at the start of the next step: any window not in the snapshot
+    /// just opened — focus detection inside it.
+    private func updatePreferredWindow() {
+        preferredWindowFrame = nil
+        guard !windowSnapshot.isEmpty else { return }
+        let current = AccessibilityReader.shared.targetWindowList()
+        let fresh = current.filter { c in !windowSnapshot.contains { CFEqual($0, c.element) } }
+        if let new = fresh.first {
+            preferredWindowFrame = new.frame
+            DebugLogger.log("WINDOW", "new window appeared (\(new.subrole.isEmpty ? "?" : new.subrole) \(Int(new.frame.width))x\(Int(new.frame.height))) — focusing detection inside it")
+        }
     }
 
     func stopGuidance() {
@@ -371,6 +400,9 @@ final class GuidanceEngine: ObservableObject {
         NSLog("[Waylo] locate: captured screen %dx%d, resolving step %d", capture.image.width, capture.image.height, currentStepIndex + 1)
         guard token == locateToken, isRunning else { return }
 
+        // Did the last click open a new window? If so, search inside it first.
+        updatePreferredWindow()
+
         var resolution = await CoordinateResolver.shared.resolve(
             capture: capture,
             targetLabel: step.targetLabel,
@@ -385,7 +417,8 @@ final class GuidanceEngine: ObservableObject {
             targetType: step.targetType,
             controlKind: step.controlKind,
             anchorText: step.anchorText,
-            anchorPosition: step.anchorPosition
+            anchorPosition: step.anchorPosition,
+            preferRect: preferredWindowFrame
         )
         guard token == locateToken, isRunning else { return }
 
@@ -412,7 +445,8 @@ final class GuidanceEngine: ObservableObject {
                     targetType: step.targetType,
                     controlKind: step.controlKind,
                     anchorText: step.anchorText,
-                    anchorPosition: step.anchorPosition
+                    anchorPosition: step.anchorPosition,
+                    preferRect: preferredWindowFrame
                 )
                 guard token == locateToken, isRunning else { return }
             }
@@ -435,12 +469,7 @@ final class GuidanceEngine: ObservableObject {
                 return
             }
 
-            currentTargetAX = resolution.axPoint
-            OverlayWindowController.shared.showDot(at: resolution.axPoint, caption: currentInstruction)
-            state = .showing
-            statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click the dot to continue"
-            // Seamless: clicking on/near the dot advances to the next step.
-            installClickMonitor(target: resolution.axPoint, forStep: currentStepIndex, secondary: isSecondaryClickStep(step))
+            showTarget(resolution, step: step)
             return
         }
 
@@ -466,6 +495,37 @@ final class GuidanceEngine: ObservableObject {
         Speaker.shared.speak("I couldn't find that one. Please do it yourself, then press Next.")
     }
 
+    // MARK: - Target presentation (dotted region highlight, dot fallback)
+
+    /// Shows the located target and arms click-to-advance. When the resolving
+    /// layer knows the element's bounds, a dotted region highlight is drawn
+    /// around it (HeyClicky-style — a clickable AREA beats a bare point);
+    /// otherwise the classic pulsing dot.
+    private func showTarget(_ resolution: CoordinateResolver.Resolution, step: Step) {
+        currentTargetAX = resolution.axPoint
+        presentTargetVisual(resolution)
+        state = .showing
+        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click the highlighted spot to continue"
+        installClickMonitor(target: resolution.axPoint, targetRect: highlightableFrame(resolution.targetFrame),
+                            forStep: currentStepIndex, secondary: isSecondaryClickStep(step))
+    }
+
+    /// Draws the highlight box (when bounds are known and sane) or the dot.
+    private func presentTargetVisual(_ resolution: CoordinateResolver.Resolution) {
+        if let frame = highlightableFrame(resolution.targetFrame) {
+            OverlayWindowController.shared.showHighlight(axRect: frame, caption: currentInstruction)
+        } else {
+            OverlayWindowController.shared.showDot(at: resolution.axPoint, caption: currentInstruction)
+        }
+    }
+
+    /// A frame is highlightable when it looks like a control, not a container:
+    /// oversized frames (whole panels/windows) fall back to the dot.
+    private func highlightableFrame(_ frame: CGRect?) -> CGRect? {
+        guard let f = frame, f.width >= 8, f.height >= 8, f.width <= 480, f.height <= 240 else { return nil }
+        return f
+    }
+
     // MARK: - Assist mode ("do it with me")
 
     /// Performs the click for the user: AXPress on the resolved element when
@@ -474,14 +534,15 @@ final class GuidanceEngine: ObservableObject {
     /// auto-clicked — they show the dot and wait for the user's own click.
     private func autoPerform(step: Step, resolution: CoordinateResolver.Resolution, stepIndex: Int, token: Int) async {
         currentTargetAX = resolution.axPoint
-        OverlayWindowController.shared.showDot(at: resolution.axPoint, caption: currentInstruction)
+        presentTargetVisual(resolution)
         state = .showing
 
         if isDestructiveStep(step) {
             statusMessage = "Step \(stepIndex + 1) of \(steps.count) — this one changes things; click it yourself to confirm"
             Speaker.shared.speak("This one deletes or changes things, so you click it yourself — I'll continue right after.")
             DebugLogger.log("ASSIST", "destructive step \(stepIndex + 1) — falling back to point-and-confirm")
-            installClickMonitor(target: resolution.axPoint, forStep: stepIndex, secondary: isSecondaryClickStep(step))
+            installClickMonitor(target: resolution.axPoint, targetRect: highlightableFrame(resolution.targetFrame),
+                                forStep: stepIndex, secondary: isSecondaryClickStep(step))
             return
         }
 
@@ -665,11 +726,7 @@ final class GuidanceEngine: ObservableObject {
                     await autoPerform(step: step, resolution: retry, stepIndex: currentStepIndex, token: token)
                     return true
                 }
-                currentTargetAX = retry.axPoint
-                OverlayWindowController.shared.showDot(at: retry.axPoint, caption: currentInstruction)
-                state = .showing
-                statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click the dot to continue"
-                installClickMonitor(target: retry.axPoint, forStep: currentStepIndex, secondary: isSecondaryClickStep(step))
+                showTarget(retry, step: step)
                 return true
             }
         }
@@ -740,11 +797,7 @@ final class GuidanceEngine: ObservableObject {
 
             if let resolution = resolution {
                 DebugLogger.log("ENGINE", "scroll assist: found after \(attempt + 1) checks")
-                currentTargetAX = resolution.axPoint
-                OverlayWindowController.shared.showDot(at: resolution.axPoint, caption: currentInstruction)
-                state = .showing
-                statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click the dot to continue"
-                installClickMonitor(target: resolution.axPoint, forStep: currentStepIndex, secondary: isSecondaryClickStep(step))
+                showTarget(resolution, step: step)
                 return true
             }
         }
@@ -940,17 +993,18 @@ final class GuidanceEngine: ObservableObject {
     /// on/near the dot advances. For a right-click ("Control-click") step, a
     /// right-click (or control-click) ANYWHERE advances — the user shouldn't have
     /// to also left-click the dot.
-    private func installClickMonitor(target: CGPoint, forStep stepIndex: Int, secondary: Bool) {
+    private func installClickMonitor(target: CGPoint, targetRect: CGRect? = nil, forStep stepIndex: Int, secondary: Bool) {
         removeClickMonitor()
         clickObserverId = HotkeyManager.shared.addClickObserver { [weak self] axPoint, isRight in
             Task { @MainActor in
-                self?.handleGlobalClick(atAX: axPoint, target: target, stepIndex: stepIndex,
-                                        secondary: secondary, isRight: isRight)
+                self?.handleGlobalClick(atAX: axPoint, target: target, targetRect: targetRect,
+                                        stepIndex: stepIndex, secondary: secondary, isRight: isRight)
             }
         }
     }
 
-    private func handleGlobalClick(atAX clickAX: CGPoint, target: CGPoint, stepIndex: Int, secondary: Bool, isRight: Bool) {
+    private func handleGlobalClick(atAX clickAX: CGPoint, target: CGPoint, targetRect: CGRect?,
+                                   stepIndex: Int, secondary: Bool, isRight: Bool) {
         guard isRunning, state == .showing, currentStepIndex == stepIndex else { return }
         guard !clickIsOnWayloUI(clickAX) else { return }
 
@@ -970,8 +1024,11 @@ final class GuidanceEngine: ObservableObject {
             return
         }
 
-        // Normal step: a left-click must land on/near the dot.
-        guard dist <= clickToleranceAX else { return }
+        // Normal step: a left-click anywhere inside the highlighted REGION
+        // (when known) counts — that's the whole point of the region box —
+        // else within the classic radius of the dot.
+        let insideRect = targetRect.map { $0.insetBy(dx: -12, dy: -12).contains(clickAX) } ?? false
+        guard insideRect || dist <= clickToleranceAX else { return }
         advanceAfterClick(stepIndex: stepIndex)
     }
 
@@ -980,6 +1037,9 @@ final class GuidanceEngine: ObservableObject {
     /// a short settle (lets the next screen/dialog open before we screenshot).
     private func advanceAfterClick(stepIndex: Int) {
         removeClickMonitor()
+        // Snapshot the app's windows NOW — anything that appears between this
+        // click and the next locate is "the window that just opened".
+        snapshotWindows()
         if let target = currentTargetAX {
             OverlayWindowController.shared.showLoading(at: target)
         } else {

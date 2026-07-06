@@ -46,6 +46,7 @@ struct YOLODetectResponse: Decodable {
 private struct YOLOCandidate {
     let element: YOLOElement
     let axPoint: CGPoint
+    let axFrame: CGRect
     let score: Double
 }
 
@@ -56,15 +57,22 @@ final class YOLODetector {
     static let shared = YOLODetector()
     private init() {}
 
-    /// Entry point. Returns an AX-global point for the best matching element, or
-    /// nil so CoordinateResolver falls through to L3 (Nova).
+    /// A successful detection: the click point plus the element's bounding
+    /// rect (both AX-global), so the overlay can draw a region highlight.
+    struct Detection {
+        let point: CGPoint
+        let frame: CGRect
+    }
+
+    /// Entry point. Returns the best matching element, or nil so
+    /// CoordinateResolver falls through to L3 (Nova).
     func detect(
         capture: ScreenCapturer.Capture,
         targetLabel: String,
         elementDescription: String,
         screenRegion: ScreenRegion,
         stepInstruction: String
-    ) async -> CGPoint? {
+    ) async -> Detection? {
         let image = capture.image
         let screen = capture.screen
         let regionRaw = screenRegion.rawValue
@@ -121,7 +129,7 @@ final class YOLODetector {
         DebugLogger.logResolution("L2.5", found: true, point: best.axPoint, label: targetLabel)
         DebugState.shared.yoloResult = "HIT \(best.element.source) \(cls) \(String(format: "%.2f", best.element.confidence))"
         DebugState.shared.update(layer: "L2.5 \(best.element.source)", dot: best.axPoint)
-        return best.axPoint
+        return Detection(point: best.axPoint, frame: best.axFrame)
     }
 
     // MARK: - Semantic matching
@@ -141,6 +149,7 @@ final class YOLODetector {
         var candidates: [YOLOCandidate] = []
         for element in elements {
             let axPoint = normalizedToAXPoint(cx: element.cx, cy: element.cy, screen: screen)
+            let axFrame = normalizedToAXRect(x: element.x, y: element.y, w: element.w, h: element.h, screen: screen)
 
             guard isValidAXPoint(axPoint, screenRegion: screenRegion, screen: screen) else { continue }
 
@@ -156,7 +165,7 @@ final class YOLODetector {
             // Region match bonus (already validated above, so always in-region).
             score += 0.1
 
-            candidates.append(YOLOCandidate(element: element, axPoint: axPoint, score: score))
+            candidates.append(YOLOCandidate(element: element, axPoint: axPoint, axFrame: axFrame, score: score))
         }
 
         let minScore = 0.3
@@ -192,6 +201,17 @@ final class YOLODetector {
         let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
         let axY = axTop + localY
         return CGPoint(x: axX, y: axY)
+    }
+
+    /// Normalized 0–1 top-left box → AX-global rect (same mapping as the point).
+    private func normalizedToAXRect(x: Double, y: Double, w: Double, h: Double, screen: NSScreen) -> CGRect {
+        let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
+        return CGRect(
+            x: screen.frame.minX + CGFloat(x) * screen.frame.width,
+            y: axTop + CGFloat(y) * screen.frame.height,
+            width: CGFloat(w) * screen.frame.width,
+            height: CGFloat(h) * screen.frame.height
+        )
     }
 
     // MARK: - Validation

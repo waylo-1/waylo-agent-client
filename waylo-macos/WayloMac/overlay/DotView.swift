@@ -138,6 +138,49 @@ struct BannerView: View {
     }
 }
 
+/// A dotted "click anywhere in here" region drawn around the target element's
+/// actual bounds, with the instruction below. Marching-ants dashes make it
+/// read as a live region, not a static decoration.
+struct HighlightBoxView: View {
+    let boxSize: CGSize
+    let caption: String
+    @State private var dashPhase: CGFloat = 0
+    @State private var pulse = false
+
+    var body: some View {
+        VStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 9)
+                .strokeBorder(Color.red, style: StrokeStyle(lineWidth: 2.5, dash: [7, 5], dashPhase: dashPhase))
+                .background(
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(Color.red.opacity(pulse ? 0.10 : 0.04))
+                )
+                .frame(width: boxSize.width, height: boxSize.height)
+                .shadow(color: .red.opacity(0.5), radius: 6)
+                .onAppear {
+                    withAnimation(.linear(duration: 0.6).repeatForever(autoreverses: false)) {
+                        dashPhase = -12
+                    }
+                    withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                        pulse = true
+                    }
+                }
+
+            if !caption.isEmpty {
+                Text(caption)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.78)))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 300)
+            }
+        }
+    }
+}
+
 /// A numbered badge marking one of several candidate matches when detection
 /// is ambiguous ("Empty" in three places). The user clicks the right one.
 struct CandidateBadgeView: View {

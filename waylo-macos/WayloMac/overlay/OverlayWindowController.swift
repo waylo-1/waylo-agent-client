@@ -62,6 +62,43 @@ final class OverlayWindowController: NSWindowController {
                 at: clamped, size: CGSize(width: 240, height: 130))
     }
 
+    /// Shows a dotted region highlight around the target element's bounds with
+    /// the instruction below — a clickable AREA instead of a bare point.
+    /// `axRect` is the element's frame in AX (top-left origin) global coords.
+    func showHighlight(axRect: CGRect, caption: String) {
+        guard let window = window, let contentView = window.contentView else { return }
+        window.setFrame(ScreenCoordinates.globalFrame, display: true)
+        dotHostingView?.removeFromSuperview()
+        dotHostingView = nil
+        clearExtraViews()
+
+        let pad: CGFloat = 6
+        let box = CGSize(width: axRect.width + pad * 2, height: axRect.height + pad * 2)
+        let hostW = max(box.width, 320)
+        let captionH: CGFloat = 70
+        let hostH = box.height + 8 + captionH
+
+        // Box center in Cocoa coords; the hosting view is top-aligned so the
+        // box sits over the element and the caption flows below it.
+        let cocoaCenter = ScreenCoordinates.axToCocoa(CGPoint(x: axRect.midX, y: axRect.midY))
+        let origin = window.frame.origin
+        let boxTopCocoa = cocoaCenter.y + box.height / 2
+        let host = NSHostingView(rootView: AnyView(
+            HighlightBoxView(boxSize: box, caption: caption)
+                .frame(width: hostW, height: hostH, alignment: .top)
+        ))
+        host.frame = CGRect(x: cocoaCenter.x - origin.x - hostW / 2,
+                            y: boxTopCocoa - hostH - origin.y,
+                            width: hostW, height: hostH)
+        host.wantsLayer = true
+        host.layer?.backgroundColor = .clear
+        contentView.addSubview(host)
+        dotHostingView = host
+        window.orderFrontRegardless()
+        DebugLogger.log("DOT", "highlight box \(Int(axRect.width))x\(Int(axRect.height)) at (\(Int(axRect.midX)),\(Int(axRect.midY)))")
+        DebugState.shared.update(dot: CGPoint(x: axRect.midX, y: axRect.midY))
+    }
+
     /// Shows numbered badges over several candidate matches plus an instruction
     /// banner. Used when detection is confident about MULTIPLE spots ("Empty"
     /// in three places) — the user clicks the correct one to continue.

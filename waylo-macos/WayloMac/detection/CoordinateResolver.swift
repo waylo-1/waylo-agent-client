@@ -26,6 +26,9 @@ final class CoordinateResolver {
         /// The AX element when L0 resolved — lets assist mode press it via
         /// AXUIElementPerformAction instead of a synthetic click.
         var axElement: AXUIElement? = nil
+        /// AX-global bounding rect of the target when the layer knows it —
+        /// drives the dotted region highlight instead of a bare dot.
+        var targetFrame: CGRect? = nil
         /// Near-tied CONFIDENT matches at other locations ("Empty" in three
         /// places). Non-empty means the resolver refuses to guess — the engine
         /// shows numbered badges and lets the user pick.
@@ -47,7 +50,8 @@ final class CoordinateResolver {
         targetType: StepTargetType = .text,
         controlKind: String = "",
         anchorText: String = "",
-        anchorPosition: String = ""
+        anchorPosition: String = "",
+        preferRect: CGRect? = nil
     ) async -> Resolution? {
         let image = capture.image
         let screen = capture.screen
@@ -73,22 +77,24 @@ final class CoordinateResolver {
         // CONTROLS (buttons etc.) we run AX first so role/anchor can pick the
         // actual control over plain header text — OCR is the control's fallback.
         if targetType == .text && !isControl {
-            if let p = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
-                                         instruction: stepInstruction, image: image, screen: screen, region: screenRegion) {
-                return Resolution(axPoint: p, updatedInstruction: "")
+            if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
+                                           instruction: stepInstruction, image: image, screen: screen,
+                                           region: screenRegion, preferRect: preferRect) {
+                return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
             }
         }
 
         // --- Layer 0: Accessibility tree (role + anchor aware) -------------
         if !targetLabel.isEmpty,
            let found = axSearchDetailed(targetLabel, region: screenRegion, screen: screen, allowSystemUI: true,
-                                        preferredRole: controlKind, anchor: anchorInfo) {
+                                        preferredRole: controlKind, anchor: anchorInfo, preferRect: preferRect) {
             let element = found.best
             print("[Resolver] L0 AX hit '\(element.title)' \(element.center)")
             DebugLogger.logResolution("L0-AX", found: true, point: element.center, label: "\(element.title) [\(element.role)]")
             DebugState.shared.update(layer: "L0 AX", dot: element.center)
             return Resolution(axPoint: element.center, updatedInstruction: "",
                               axElement: element.axElement,
+                              targetFrame: element.frame,
                               alternates: found.alternates.map(\.center))
         }
         let axQuery = elementDescription.isEmpty ? findDescription : elementDescription
@@ -98,12 +104,13 @@ final class CoordinateResolver {
         // "System Settings" header for an "Appearance" step — so we skip it.
         if (targetType == .icon || targetLabel.isEmpty),
            let element = axSearch(axQuery, region: screenRegion, screen: screen, allowSystemUI: false,
-                                  preferredRole: controlKind, anchor: anchorInfo) {
+                                  preferredRole: controlKind, anchor: anchorInfo, preferRect: preferRect) {
             if passesRegion(element.center, screenRegion, screen: screen) {
                 print("[Resolver] L0 AX hit (desc) '\(element.title)' \(element.center)")
                 DebugLogger.logResolution("L0-AX-desc", found: true, point: element.center, label: element.title)
                 DebugState.shared.update(layer: "L0 AX (desc)", dot: element.center)
-                return Resolution(axPoint: element.center, updatedInstruction: "", axElement: element.axElement)
+                return Resolution(axPoint: element.center, updatedInstruction: "",
+                                  axElement: element.axElement, targetFrame: element.frame)
             }
             DebugLogger.log("RESOLVE", "REGION_MISMATCH L0-AX-desc '\(element.title)' \(element.center) region=\(screenRegion) — trying next layer")
         }
@@ -113,9 +120,10 @@ final class CoordinateResolver {
         // CONTROL targets: OCR fallback after AX (a button's text sits on it, so
         // OCR of the label still lands on the control).
         if targetType == .text && isControl {
-            if let p = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
-                                         instruction: stepInstruction, image: image, screen: screen, region: screenRegion) {
-                return Resolution(axPoint: p, updatedInstruction: "")
+            if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
+                                           instruction: stepInstruction, image: image, screen: screen,
+                                           region: screenRegion, preferRect: preferRect) {
+                return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
             }
         }
 
@@ -134,7 +142,8 @@ final class CoordinateResolver {
                 DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT, skipped L3 — '\(cachedLabel)' \(element.center)")
                 DebugLogger.logResolution("label-cache-AX", found: true, point: element.center, label: cachedLabel)
                 DebugState.shared.update(layer: "cache→L0 AX", dot: element.center)
-                return Resolution(axPoint: element.center, updatedInstruction: "", axElement: element.axElement)
+                return Resolution(axPoint: element.center, updatedInstruction: "",
+                                  axElement: element.axElement, targetFrame: element.frame)
             }
             // Cache hit but AX still can't find it — fall through to L3 as normal.
             DebugLogger.log("RESOLVE", "cache label '\(cachedLabel)' present but L0 missed — continuing to L3")
@@ -148,15 +157,15 @@ final class CoordinateResolver {
         // that have no readable text; text targets skip it and go to Nova.
         if targetType == .icon || targetLabel.isEmpty {
             DebugLogger.log("PIPELINE", "icon target → trying L2.5 YOLO")
-            if let point = await YOLODetector.shared.detect(
+            if let detection = await YOLODetector.shared.detect(
                 capture: capture,
                 targetLabel: targetLabel,
                 elementDescription: elementDescription,
                 screenRegion: screenRegion,
                 stepInstruction: stepInstruction
             ) {
-                DebugLogger.log("PIPELINE", "L2.5 HIT at (\(Int(point.x)),\(Int(point.y)))")
-                return Resolution(axPoint: point, updatedInstruction: "")
+                DebugLogger.log("PIPELINE", "L2.5 HIT at (\(Int(detection.point.x)),\(Int(detection.point.y)))")
+                return Resolution(axPoint: detection.point, updatedInstruction: "", targetFrame: detection.frame)
             }
             DebugLogger.log("PIPELINE", "L2.5 miss → falling through to L3 Nova")
         } else {
@@ -210,14 +219,15 @@ final class CoordinateResolver {
                         pixelHeight: image.height
                     )
                 }
-                return Resolution(axPoint: point, updatedInstruction: result.updatedInstruction)
+                return Resolution(axPoint: point, updatedInstruction: result.updatedInstruction, targetFrame: result.axFrame)
             }
             let refined = result.updatedFindDescription
             if !refined.isEmpty {
                 if let element = axSearch(refined, region: screenRegion, screen: screen) {
                     DebugLogger.logResolution("L3-Nova-refine-AX", found: true, point: element.center, label: refined)
                     DebugState.shared.update(layer: "L3 Nova→AX", dot: element.center)
-                    return Resolution(axPoint: element.center, updatedInstruction: result.updatedInstruction, axElement: element.axElement)
+                    return Resolution(axPoint: element.center, updatedInstruction: result.updatedInstruction,
+                                      axElement: element.axElement, targetFrame: element.frame)
                 }
                 if let point = await visionDetector.findLabel(refined, in: image, on: screen, region: screenRegion) {
                     DebugLogger.logResolution("L3-Nova-refine-OCR", found: true, point: point, label: refined)
@@ -263,10 +273,10 @@ final class CoordinateResolver {
             lines.append("Label cache: miss")
         }
 
-        if let p = await YOLODetector.shared.detect(capture: capture, targetLabel: label,
+        if let d = await YOLODetector.shared.detect(capture: capture, targetLabel: label,
                                                     elementDescription: label, screenRegion: .fullScreen,
                                                     stepInstruction: "find \(label)") {
-            lines.append("L2.5 YOLO: HIT (\(Int(p.x)),\(Int(p.y)))")
+            lines.append("L2.5 YOLO: HIT (\(Int(d.point.x)),\(Int(d.point.y)))")
         } else {
             lines.append("L2.5 YOLO: miss")
         }
@@ -298,15 +308,17 @@ final class CoordinateResolver {
     /// Dock / menu-bar-extra items. Verbose descriptions ("… in System Settings")
     /// must NOT, or they hijack the dot onto the Dock icon.
     private func axSearch(_ query: String, region: ScreenRegion, screen: NSScreen, allowSystemUI: Bool = false,
-                          preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil) -> AXElementInfo? {
+                          preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil,
+                          preferRect: CGRect? = nil) -> AXElementInfo? {
         axSearchDetailed(query, region: region, screen: screen, allowSystemUI: allowSystemUI,
-                         preferredRole: preferredRole, anchor: anchor)?.best
+                         preferredRole: preferredRole, anchor: anchor, preferRect: preferRect)?.best
     }
 
     /// Full variant that also surfaces near-tied confident alternates (used by
     /// the primary targetLabel search so ambiguity can be shown to the user).
     private func axSearchDetailed(_ query: String, region: ScreenRegion, screen: NSScreen, allowSystemUI: Bool = false,
-                                  preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil)
+                                  preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil,
+                                  preferRect: CGRect? = nil)
         -> (best: AXElementInfo, alternates: [AXElementInfo])? {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         let all = AccessibilityReader.shared.getTargetAppElements()
@@ -330,6 +342,16 @@ final class CoordinateResolver {
                 if !inDialog.isEmpty {
                     DebugLogger.log("AX", "dialog filter: \(candidates.count) → \(inDialog.count) candidates")
                     candidates = inDialog
+                }
+            }
+            // A window that just appeared (the Trash window after clicking the
+            // Dock icon): the next target is almost always inside it. Soft
+            // preference — falls back to all candidates when none intersect.
+            if let prefer = preferRect {
+                let inRect = candidates.filter { prefer.insetBy(dx: -8, dy: -8).intersects($0.frame) }
+                if !inRect.isEmpty, inRect.count != candidates.count {
+                    DebugLogger.log("AX", "new-window filter: \(candidates.count) → \(inRect.count) candidates")
+                    candidates = inRect
                 }
             }
             if let hit = ElementFinder.shared.findElementWithAlternates(description: query, in: candidates, preferredRole: preferredRole, anchor: anchor) {
@@ -364,11 +386,17 @@ final class CoordinateResolver {
     /// OCR-based location: evaluates all candidate labels and returns the best
     /// confident match's AX point (≥0.8), preferring the most complete label.
     private func locateByOCR(targetLabel: String, elementDescription: String, instruction: String,
-                             image: CGImage, screen: NSScreen, region: ScreenRegion) async -> CGPoint? {
+                             image: CGImage, screen: NSScreen, region: ScreenRegion,
+                             preferRect: CGRect? = nil) async -> (point: CGPoint, frame: CGRect)? {
         let candidates = ocrCandidates(targetLabel: targetLabel, elementDescription: elementDescription, instruction: instruction)
-        var bestOCR: (point: CGPoint, score: Double, label: String)?
+        var bestOCR: (point: CGPoint, frame: CGRect, score: Double, label: String)?
         for label in candidates {
             var matches: [LocalVisionDetector.OCRMatch] = []
+            // A newly-opened window takes priority over the coarse region crop.
+            if let prefer = preferRect,
+               let m = await visionDetector.findLabelScored(label, in: image, on: screen, cropAXRect: prefer) {
+                matches.append(m)
+            }
             if let m = await visionDetector.findLabelScored(label, in: image, on: screen, region: region) {
                 matches.append(m)
             }
@@ -380,14 +408,14 @@ final class CoordinateResolver {
                 let better = bestOCR == nil
                     || m.score > bestOCR!.score
                     || (m.score == bestOCR!.score && label.count > bestOCR!.label.count)
-                if better { bestOCR = (m.point, m.score, label) }
+                if better { bestOCR = (m.point, m.frame, m.score, label) }
             }
         }
         if let best = bestOCR, best.score >= 0.8 {
             print("[Resolver] OCR hit '\(best.label)' score=\(best.score) \(best.point)")
             DebugLogger.logResolution("L1-OCR", found: true, point: best.point, label: "\(best.label) (\(String(format: "%.2f", best.score)))")
             DebugState.shared.update(layer: "OCR", dot: best.point)
-            return best.point
+            return (best.point, best.frame)
         }
         if let best = bestOCR {
             DebugLogger.log("RESOLVE", "OCR best '\(best.label)' score=\(String(format: "%.2f", best.score)) < 0.8")

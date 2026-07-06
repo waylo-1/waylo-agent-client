@@ -14,6 +14,8 @@ final class LocalVisionDetector {
     struct OCRMatch {
         let point: CGPoint
         let score: Double
+        /// AX-global bounding rect of the matched text (for region highlights).
+        var frame: CGRect = .zero
     }
 
     /// Thin wrapper: returns a point only if the best match clears `threshold`.
@@ -25,9 +27,12 @@ final class LocalVisionDetector {
 
     /// Finds `targetLabel` in the captured image of `screen`, optionally cropping
     /// to `region` first so e.g. a toolbar "Bold" doesn't compete with a dialog "Bold".
-    /// Returns the best match with its confidence score (caller decides whether to
-    /// accept), or nil if no text matched at all. Coords are AX global (top-left).
-    func findLabelScored(_ targetLabel: String, in image: CGImage, on screen: NSScreen, region: ScreenRegion = .fullScreen) async -> OCRMatch? {
+    /// `cropAXRect` (AX-global) overrides the region crop — used to focus a
+    /// newly-opened window. Returns the best match with its confidence score
+    /// (caller decides whether to accept), or nil if no text matched at all.
+    /// Coords are AX global (top-left).
+    func findLabelScored(_ targetLabel: String, in image: CGImage, on screen: NSScreen,
+                         region: ScreenRegion = .fullScreen, cropAXRect: CGRect? = nil) async -> OCRMatch? {
         let trimmed = targetLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let lowerTarget = trimmed.lowercased()
@@ -40,8 +45,19 @@ final class LocalVisionDetector {
         var cropOriginLocal = CGPoint.zero
         var cropSizeLocal = screen.frame.size
 
-        if region != .fullScreen,
-           let local = ScreenRegionHelper.localRect(for: region, screenSize: screen.frame.size) {
+        // Preferred crop: an explicit AX-global rect (a newly-opened window),
+        // else the coarse screen region.
+        let axTopOfScreen = ScreenCoordinates.primaryHeight - screen.frame.maxY
+        var localCropRect: CGRect?
+        if let axRect = cropAXRect {
+            localCropRect = CGRect(x: axRect.minX - screen.frame.minX,
+                                   y: axRect.minY - axTopOfScreen,
+                                   width: axRect.width, height: axRect.height)
+        } else if region != .fullScreen {
+            localCropRect = ScreenRegionHelper.localRect(for: region, screenSize: screen.frame.size)
+        }
+
+        if let local = localCropRect {
             let pixelRect = CGRect(
                 x: local.minX * scale, y: local.minY * scale,
                 width: local.width * scale, height: local.height * scale
@@ -93,9 +109,19 @@ final class LocalVisionDetector {
         // Screen-local (top-left) → AX global (top-left).
         let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
         let result = CGPoint(x: screen.frame.minX + screenLocalX, y: axTop + screenLocalY)
+
+        // The matched text's full bounding rect in AX-global coords (top of the
+        // text = 1 - box.maxY in the bottom-left-origin normalized space).
+        let axFrame = CGRect(
+            x: screen.frame.minX + cropOriginLocal.x + box.minX * cropSizeLocal.width,
+            y: axTop + cropOriginLocal.y + (1.0 - box.maxY) * cropSizeLocal.height,
+            width: box.width * cropSizeLocal.width,
+            height: box.height * cropSizeLocal.height
+        )
+
         DebugLogger.log("OCR", String(format: "best '%@' score=%.2f cropOrigin=(%.0f,%.0f) → ax=(%.0f,%.0f)",
             trimmed, bestScore, cropOriginLocal.x, cropOriginLocal.y, result.x, result.y))
-        return OCRMatch(point: result, score: bestScore)
+        return OCRMatch(point: result, score: bestScore, frame: axFrame)
     }
 
     // MARK: - OCR
