@@ -39,6 +39,12 @@ object OverlayManager {
     var isAttached = false
         private set
 
+    private var arrowView: ArrowView? = null
+
+    @Volatile
+    var isArrowAttached = false
+        private set
+
     fun init(ctx: Context) {
         context = ctx.applicationContext // ALWAYS use applicationContext
         windowManager = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -161,8 +167,85 @@ object OverlayManager {
         showDot(result.x, result.y, label)
     }
 
+    /**
+     * Show a pulsing arrow at the horizontal centre of the screen, pinned to
+     * the top edge ([ArrowView.Direction.UP]) or bottom edge
+     * ([ArrowView.Direction.DOWN]) depending on [direction] — used while a
+     * step's target hasn't been found yet but the instruction implies the
+     * user needs to scroll/swipe to reveal it. Idempotent: calling again with
+     * the same direction is a no-op; a different direction respawns the view.
+     */
+    fun showArrow(direction: ArrowView.Direction) {
+        if (isArrowAttached && arrowView?.direction == direction) return
+        hideArrow()
+
+        val ctx = context ?: run {
+            Log.e(TAG, "showArrow: context is null, cannot show arrow")
+            return
+        }
+        val wm = windowManager ?: run {
+            Log.e(TAG, "showArrow: windowManager is null, cannot show arrow")
+            return
+        }
+        if (!Settings.canDrawOverlays(ctx)) {
+            Log.e(TAG, "showArrow: SYSTEM_ALERT_WINDOW not granted!")
+            return
+        }
+
+        val metrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealMetrics(metrics)
+
+        val arrow = ArrowView(ctx, direction)
+        arrow.measure(0, 0)
+        val edgeMarginPx = (48 * ctx.resources.displayMetrics.density).toInt()
+        val centerX = metrics.widthPixels / 2
+        val edgeY = when (direction) {
+            ArrowView.Direction.UP -> edgeMarginPx
+            ArrowView.Direction.DOWN -> metrics.heightPixels - edgeMarginPx
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            this.x = centerX - arrow.centerOffsetX()
+            this.y = edgeY - arrow.centerOffsetY()
+        }
+
+        try {
+            wm.addView(arrow, params)
+            arrowView = arrow
+            isArrowAttached = true
+            Log.e(TAG, "showArrow: SUCCESS direction=$direction at ${params.x},${params.y}")
+        } catch (e: Exception) {
+            Log.e(TAG, "showArrow addView FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
+        }
+    }
+
+    fun hideArrow() {
+        val arrow = arrowView ?: return
+        val wm = windowManager ?: return
+        try {
+            wm.removeView(arrow)
+        } catch (e: Exception) {
+            Log.e(TAG, "hideArrow exception: ${e.message}")
+        } finally {
+            arrowView = null
+            isArrowAttached = false
+        }
+    }
+
     fun destroy() {
         hideDot()
+        hideArrow()
         windowManager = null
         context = null
         Log.e(TAG, "OverlayManager destroyed.")

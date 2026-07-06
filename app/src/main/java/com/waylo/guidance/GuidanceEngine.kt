@@ -9,6 +9,7 @@ import com.waylo.ai.GeminiClient
 import com.waylo.ai.Plan
 import com.waylo.ai.Step
 import com.waylo.ocr.ScreenAnalysisPipeline
+import com.waylo.overlay.ArrowView
 import com.waylo.overlay.OverlayManager
 import com.waylo.service.WayloGuidanceService
 import kotlinx.coroutines.CoroutineScope
@@ -259,7 +260,7 @@ object GuidanceEngine {
         }
     }
 
-    /** Stop guidance, clear the dot, and silence the voice. */
+    /** Stop guidance, clear the dot/arrow, and silence the voice. */
     fun stop() {
         isRunning = false
         stepJob?.cancel()
@@ -267,6 +268,7 @@ object GuidanceEngine {
         currentStepScope = null
         currentStepPhase = null
         OverlayManager.hideDot()
+        OverlayManager.hideArrow()
         WayloGuidanceService.instance?.speaker?.stop()
         Log.e(TAG, "Guidance stopped.")
     }
@@ -284,6 +286,7 @@ object GuidanceEngine {
         currentStepScope = null
         currentStepPhase = null
         OverlayManager.hideDot()
+        OverlayManager.hideArrow()
         Log.e(TAG, "Guidance paused for financial app.")
     }
 
@@ -321,6 +324,18 @@ object GuidanceEngine {
         // looking like current guidance. onTargetLocated() re-shows it once
         // (and only once) this step's own target is confirmed.
         OverlayManager.hideDot()
+
+        // If this step's own instruction/fallbackHint implies scrolling or
+        // swiping (e.g. "swipe up to see more apps"), show a directional
+        // arrow instead of nothing while we search — onTargetLocated()
+        // switches it out for the dot the moment the target actually
+        // resolves. Steps that don't imply a gesture get no arrow.
+        val scrollDirection = impliedScrollDirection(step)
+        if (scrollDirection != null) {
+            OverlayManager.showArrow(scrollDirection)
+        } else {
+            OverlayManager.hideArrow()
+        }
 
         stepShownAt = SystemClock.elapsedRealtime()
         dotShownAt = 0L
@@ -480,6 +495,14 @@ object GuidanceEngine {
             }
             return targetIndex
         }
+        // No lookahead step qualified — still leave a trace (a distinct tag
+        // from an actual skip) so a capture can show whether this even ran
+        // and what it saw. Device testing showed actual STEP_SKIP jumps can
+        // go missing from logcat under heavy system-log volume (this app's
+        // own getAllNodes() debug dump alone is a big contributor); this
+        // makes "checked, found nothing confident" auditable too, not just
+        // "checked, jumped".
+        Log.e(TAG, "STEP_SKIP_SCAN: step ${index + 1} — no confident lookahead match; scores=[$scoreLog]")
         return null
     }
 
@@ -608,6 +631,9 @@ object GuidanceEngine {
     private fun onTargetLocated(index: Int, step: Step, spoken: String, result: ScreenAnalysisPipeline.PipelineResult) {
         if (!isRunning || currentIndex != index) return
         Log.e(TAG, "Target located for step ${index + 1}: source=${result.source} confidence=${result.confidence}")
+        // The target resolved — if a scroll/swipe arrow was showing while we
+        // searched, switch it out for the dot on the actual target now.
+        OverlayManager.hideArrow()
         OverlayManager.showDotAtResult(result, spoken)
         placedResult = result
         if (!hasAnnouncedFoundThisStep) {
@@ -641,6 +667,19 @@ object GuidanceEngine {
             delay(REVALIDATE_INTERVAL_MS)
             if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
 
+            // Screen-aware step skipping also applies here, deliberately
+            // WITHOUT gating on the current target being absent (unlike the
+            // LOCATING-phase call in locateStep()): device testing showed the
+            // dot can stay confidently "confirmed" on this step's target
+            // (e.g. a screen title that still matches) even after the user
+            // has already moved to a screen where a LATER step's target is
+            // also directly visible (e.g. YouTube's Settings screen title
+            // still matches "settings icon" while "Manage all history" — the
+            // History step's target — is already showing on that same
+            // screen). Waiting for the reactive tap-evidence check alone left
+            // that sitting unacted-on for several seconds in that capture.
+            if (checkLookaheadSkip(index) != null) return
+
             val pkg = if (index == 0) (currentAppPackage ?: guessPackage(currentTask, step.findDescription)) else null
             val fresh = locateOnDevice(index, step, pkg)
 
@@ -650,7 +689,11 @@ object GuidanceEngine {
                 Log.e(TAG, "revalidatePlacement: step $index's target no longer confirmable — parking dot and re-scanning.")
                 OverlayManager.hideDot()
                 placedResult = null
-                hasAnnouncedFoundThisStep = false
+                // NOTE: hasAnnouncedFoundThisStep is deliberately NOT reset
+                // here. "When you see the red dot, tap it." must be said at
+                // most once per step, including across a temporary loss and
+                // re-find of the SAME step's target — only a genuine step
+                // change (executeStep) should allow it to be said again.
                 currentStepPhase = StepPhase.LOCATING
                 val service = WayloGuidanceService.instance ?: return
                 locateStep(service, index, step, pkg, shortLabel(step.instruction))
@@ -993,6 +1036,33 @@ object GuidanceEngine {
         return if (trimmed.length <= 40) trimmed else trimmed.take(37).trimEnd() + "…"
     }
 
+    private val SCROLL_GESTURE_WORDS = Regex("\\b(scroll|swipe)\\b", RegexOption.IGNORE_CASE)
+    private val SCROLL_DOWN_WORD = Regex("\\bdown\\b", RegexOption.IGNORE_CASE)
+    private val SCROLL_UP_WORD = Regex("\\bup\\b", RegexOption.IGNORE_CASE)
+
+    /**
+     * Whether [step]'s instruction or fallbackHint implies the user needs to
+     * scroll/swipe to reveal the target (e.g. "Swipe up from the bottom of
+     * the screen to see all your apps"), and if so, which direction the
+     * arrow overlay should point. Returns null for steps with no such hint —
+     * the large majority, which get no arrow at all.
+     *
+     * `internal` (not `private`) so this pure, Android-free piece of logic is
+     * directly unit-testable, same rationale as ElementFinder's score*
+     * functions — everything else in this object is entangled with live
+     * Android singletons (AccessibilityService/WindowManager/TTS) and isn't
+     * practically testable in a plain JVM test.
+     */
+    internal fun impliedScrollDirection(step: Step): ArrowView.Direction? {
+        val text = "${step.instruction} ${step.fallbackHint.orEmpty()}"
+        if (!SCROLL_GESTURE_WORDS.containsMatchIn(text)) return null
+        return when {
+            SCROLL_DOWN_WORD.containsMatchIn(text) -> ArrowView.Direction.DOWN
+            SCROLL_UP_WORD.containsMatchIn(text) -> ArrowView.Direction.UP
+            else -> null
+        }
+    }
+
     /** Known package names for common apps, keyed by a recognisable keyword. */
     private val KNOWN_PACKAGES = mapOf(
         "youtube" to "com.google.android.youtube",
@@ -1023,6 +1093,7 @@ object GuidanceEngine {
         currentStepScope = null
         currentStepPhase = null
         OverlayManager.hideDot()
+        OverlayManager.hideArrow()
         WayloGuidanceService.instance?.speaker?.speak("All done! Task complete.")
         isRunning = false
         Log.e(TAG, "Task complete: '$currentTask'")
