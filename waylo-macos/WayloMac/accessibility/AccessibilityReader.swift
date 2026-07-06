@@ -123,6 +123,30 @@ final class AccessibilityReader {
         return frame.width > 1 && frame.height > 1 ? frame : nil
     }
 
+    /// Frame (AX coords) of the target app's focused window ONLY when it is a
+    /// modal surface — a dialog, sheet, or system alert. Used to prefer AX
+    /// candidates inside it over identical elements behind it (a confirmation
+    /// dialog's "Empty Bin" vs the toolbar "Empty" underneath). Returns nil
+    /// for normal windows so menu-bar / dropdown-menu targets aren't filtered.
+    func targetFocusedDialogFrame() -> CGRect? {
+        let pid = TargetAppTracker.shared.targetPID
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let pid = pid else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+
+        var winRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+              let winRef = winRef else { return nil }
+        let win = winRef as! AXUIElement
+        let role = copyStringAttribute(win, kAXRoleAttribute)
+        let subrole = copyStringAttribute(win, kAXSubroleAttribute)
+        let isModal = role == "AXSheet"
+            || subrole == "AXDialog" || subrole == "AXSystemDialog" || subrole == "AXSheet"
+        guard isModal else { return nil }
+        let frame = copyFrame(win)
+        return frame.width > 1 && frame.height > 1 ? frame : nil
+    }
+
     /// Recursively walks the AX tree, collecting interactive elements.
     private func traverseElement(_ element: AXUIElement, depth: Int, roles: Set<String>, results: inout [AXElementInfo]) {
         guard depth < 14 else { return } // Max depth to avoid runaway recursion

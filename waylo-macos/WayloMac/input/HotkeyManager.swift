@@ -32,8 +32,18 @@ final class HotkeyManager: @unchecked Sendable {
         let action: () -> Void
     }
 
+    /// Observe-only click matcher. Unlike NSEvent global monitors — which miss
+    /// clicks consumed by menu/Dock tracking loops — the event tap sees every
+    /// click, so click-to-advance works on menu items and Dock icons too.
+    /// `axPoint` is the click location in AX/Quartz global coords (top-left).
+    struct ClickObserver {
+        let id: UUID
+        let action: (_ axPoint: CGPoint, _ isRight: Bool) -> Void
+    }
+
     private var hotkeys: [Hotkey] = []
     private var observers: [KeyObserver] = []
+    private var clickObservers: [ClickObserver] = []
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
@@ -70,6 +80,20 @@ final class HotkeyManager: @unchecked Sendable {
         observers.removeAll { $0.id == id }
     }
 
+    /// Adds an observe-only click matcher (never consumes). Returns an id for
+    /// `removeClickObserver`. The action runs on the main run loop thread.
+    @discardableResult
+    func addClickObserver(action: @escaping (_ axPoint: CGPoint, _ isRight: Bool) -> Void) -> UUID {
+        let id = UUID()
+        clickObservers.append(ClickObserver(id: id, action: action))
+        return id
+    }
+
+    func removeClickObserver(_ id: UUID?) {
+        guard let id = id else { return }
+        clickObservers.removeAll { $0.id == id }
+    }
+
     /// Creates and enables the event tap. If Accessibility isn't granted yet the
     /// tap can't be created — retry every few seconds so hotkeys come alive the
     /// moment the user grants permission (previously they stayed dead until the
@@ -78,6 +102,8 @@ final class HotkeyManager: @unchecked Sendable {
         guard eventTap == nil else { return }
 
         let mask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.rightMouseDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
             let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
@@ -115,6 +141,17 @@ final class HotkeyManager: @unchecked Sendable {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
+
+        // Clicks: observe-only, NEVER consumed. event.location is already in
+        // Quartz global coordinates (top-left origin) — i.e. AX coords.
+        if type == .leftMouseDown || type == .rightMouseDown {
+            let point = event.location
+            let isRight = type == .rightMouseDown
+                || (type == .leftMouseDown && event.flags.contains(.maskControl))
+            for obs in clickObservers { obs.action(point, isRight) }
+            return Unmanaged.passUnretained(event)
+        }
+
         guard type == .keyDown else { return Unmanaged.passUnretained(event) }
 
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))

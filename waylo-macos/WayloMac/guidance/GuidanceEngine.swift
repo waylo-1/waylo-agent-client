@@ -33,7 +33,9 @@ final class GuidanceEngine: ObservableObject {
     /// current step, never replan (so the curated step sequence stays intact).
     private var planLocked = false
     private var debugKeyMonitor: Any?
-    private var clickMonitor: Any?
+    /// CGEventTap click observer (observe-only). NSEvent global monitors miss
+    /// clicks consumed by menu/Dock tracking loops; the tap sees them all.
+    private var clickObserverId: UUID?
     private var keyAdvanceMonitor: Any?
     /// Transient HotkeyManager observer for a "press this combo" step (e.g. ⌘Space).
     private var keyObserverId: UUID?
@@ -271,10 +273,11 @@ final class GuidanceEngine: ObservableObject {
     /// waits `bufferSeconds` so the next screen can load before the next prompt.
     private func installAnyClickAdvance(forStep stepIndex: Int, bufferSeconds: Double) {
         removeClickMonitor()
-        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+        clickObserverId = HotkeyManager.shared.addClickObserver { [weak self] axPoint, _ in
             Task { @MainActor in
                 guard let self = self, self.isRunning, self.state == .showing,
-                      self.currentStepIndex == stepIndex else { return }
+                      self.currentStepIndex == stepIndex,
+                      !self.clickIsOnWayloUI(axPoint) else { return }
                 self.removeClickMonitor()
                 DebugLogger.log("ENGINE", "any-click sensed → advancing step \(stepIndex + 1) after \(bufferSeconds)s buffer")
                 OverlayWindowController.shared.hideDot()
@@ -282,6 +285,16 @@ final class GuidanceEngine: ObservableObject {
                 guard self.isRunning, self.currentStepIndex == stepIndex else { return }
                 await self.executeStep(index: stepIndex + 1)
             }
+        }
+    }
+
+    /// True when the click landed on one of Waylo's own interactive windows
+    /// (the notch panel). The event tap sees ALL clicks — including ours —
+    /// unlike the old NSEvent global monitor which excluded our app.
+    private func clickIsOnWayloUI(_ axPoint: CGPoint) -> Bool {
+        let cocoa = ScreenCoordinates.axToCocoa(axPoint)
+        return NSApp.windows.contains {
+            $0.isVisible && !$0.ignoresMouseEvents && $0.frame.contains(cocoa)
         }
     }
 
@@ -798,20 +811,25 @@ final class GuidanceEngine: ObservableObject {
     /// to also left-click the dot.
     private func installClickMonitor(target: CGPoint, forStep stepIndex: Int, secondary: Bool) {
         removeClickMonitor()
-        let mask: NSEvent.EventTypeMask = secondary ? [.leftMouseDown, .rightMouseDown] : [.leftMouseDown]
-        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            let clickCocoa = NSEvent.mouseLocation
-            let isRight = event.type == .rightMouseDown
-                || (event.type == .leftMouseDown && event.modifierFlags.contains(.control))
+        clickObserverId = HotkeyManager.shared.addClickObserver { [weak self] axPoint, isRight in
             Task { @MainActor in
-                self?.handleGlobalClick(at: clickCocoa, target: target, stepIndex: stepIndex,
+                self?.handleGlobalClick(atAX: axPoint, target: target, stepIndex: stepIndex,
                                         secondary: secondary, isRight: isRight)
             }
         }
     }
 
-    private func handleGlobalClick(at clickCocoa: CGPoint, target: CGPoint, stepIndex: Int, secondary: Bool, isRight: Bool) {
+    private func handleGlobalClick(atAX clickAX: CGPoint, target: CGPoint, stepIndex: Int, secondary: Bool, isRight: Bool) {
         guard isRunning, state == .showing, currentStepIndex == stepIndex else { return }
+        guard !clickIsOnWayloUI(clickAX) else { return }
+
+        let dx = clickAX.x - target.x
+        let dy = clickAX.y - target.y
+        let dist = (dx * dx + dy * dy).squareRoot()
+        // Always log while showing — makes "clicked but nothing happened"
+        // diagnosable from the debug log (distance vs tolerance).
+        DebugLogger.log("CLICK", String(format: "%@ at (%.0f,%.0f) target=(%.0f,%.0f) dist=%.0f tol=%.0f",
+            isRight ? "right" : "left", clickAX.x, clickAX.y, target.x, target.y, dist, clickToleranceAX))
 
         if secondary {
             // A right-click (or control-click) anywhere completes a right-click step.
@@ -822,17 +840,20 @@ final class GuidanceEngine: ObservableObject {
         }
 
         // Normal step: a left-click must land on/near the dot.
-        let clickAX = ScreenCoordinates.cocoaToAX(clickCocoa)
-        let dx = clickAX.x - target.x
-        let dy = clickAX.y - target.y
-        guard (dx * dx + dy * dy).squareRoot() <= clickToleranceAX else { return }
+        guard dist <= clickToleranceAX else { return }
         advanceAfterClick(stepIndex: stepIndex)
     }
 
-    /// Shared "click landed → move on" handler.
+    /// Shared "click landed → move on" handler. Shows an immediate spinner at
+    /// the target so the user KNOWS the click registered, then advances after
+    /// a short settle (lets the next screen/dialog open before we screenshot).
     private func advanceAfterClick(stepIndex: Int) {
         removeClickMonitor()
-        OverlayWindowController.shared.hideDot()
+        if let target = currentTargetAX {
+            OverlayWindowController.shared.showLoading(at: target)
+        } else {
+            OverlayWindowController.shared.hideDot()
+        }
         let next = stepIndex + 1
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: nextStepDelayNanos())
@@ -841,10 +862,11 @@ final class GuidanceEngine: ObservableObject {
         }
     }
 
-    /// A natural pause before the next prompt appears, so guidance doesn't feel
-    /// robotically instant. Randomized 1.8–2.0s.
+    /// Settle time between a registered click and the next step's locate —
+    /// long enough for the resulting window/dialog to appear, short enough to
+    /// feel responsive. (Was 1.8–2.0s, which read as "nothing happened".)
     private func nextStepDelayNanos() -> UInt64 {
-        UInt64(Double.random(in: 1.8...2.0) * 1_000_000_000)
+        UInt64(Double.random(in: 1.0...1.2) * 1_000_000_000)
     }
 
     /// True when the step asks the user to right-click / Control-click / open a
@@ -858,9 +880,9 @@ final class GuidanceEngine: ObservableObject {
     }
 
     private func removeClickMonitor() {
-        if let monitor = clickMonitor {
-            NSEvent.removeMonitor(monitor)
-            clickMonitor = nil
+        if let id = clickObserverId {
+            HotkeyManager.shared.removeClickObserver(id)
+            clickObserverId = nil
         }
     }
 

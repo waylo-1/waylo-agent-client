@@ -293,13 +293,25 @@ final class CoordinateResolver {
         let all = AccessibilityReader.shared.getTargetAppElements()
 
         if !all.isEmpty {
-            let candidates: [AXElementInfo]
+            var candidates: [AXElementInfo]
             if region != .fullScreen, let rect = ScreenRegionHelper.axGlobalRect(for: region, on: screen) {
                 let expanded = rect.insetBy(dx: -24, dy: -24)
                 let filtered = all.filter { expanded.intersects($0.frame) }
                 candidates = filtered.isEmpty ? all : filtered // fall back to all if region empties
             } else {
                 candidates = all
+            }
+            // When a DIALOG/SHEET is focused, prefer elements inside it: its
+            // "Empty Bin" button must outrank the identical toolbar "Empty"
+            // sitting behind it — the user can only interact with the modal
+            // anyway. Applies only to modal surfaces (normal windows return
+            // nil) so menu-bar and dropdown-menu targets aren't filtered out.
+            if let dialogFrame = AccessibilityReader.shared.targetFocusedDialogFrame() {
+                let inDialog = candidates.filter { dialogFrame.insetBy(dx: -8, dy: -8).intersects($0.frame) }
+                if !inDialog.isEmpty {
+                    DebugLogger.log("AX", "dialog filter: \(candidates.count) → \(inDialog.count) candidates")
+                    candidates = inDialog
+                }
             }
             if let hit = ElementFinder.shared.findElement(description: query, in: candidates, preferredRole: preferredRole, anchor: anchor) {
                 return hit

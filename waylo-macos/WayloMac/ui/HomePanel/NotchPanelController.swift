@@ -86,18 +86,21 @@ final class NotchPanelController: NSWindowController {
             let active = CGRect(x: winX, y: frame.maxY - h, width: panelWidth, height: h)
                 .insetBy(dx: -12, dy: -12)
 
-            // Interactive ONLY over the visible content (or while key). The
+            // The user is "actively editing" only when the field editor has
+            // focus (typing in the task field). Being key alone must NOT hold
+            // the panel open — a nonactivating panel stays key after any
+            // button click, which made the panel never retract.
+            let editingText = window.isKeyWindow && window.firstResponder is NSTextView
+
+            // Interactive ONLY over the visible content (or while typing). The
             // fixed window is taller than the content; without this the
             // transparent remainder swallowed clicks meant for whatever sat
             // underneath — a big part of the "buggy" feel.
-            window.ignoresMouseEvents = !(active.contains(mouse) || window.isKeyWindow)
+            window.ignoresMouseEvents = !(active.contains(mouse) || editingText)
 
-            // Stay open while pinned, while the user is interacting (window is
-            // key — e.g. typing in the task field), or while hovered. Collapse
-            // after a short grace once none of those hold. No tap-to-pin: the
-            // key-window check is what keeps it open during interaction, and
-            // clicking elsewhere naturally releases it.
-            if exp.pinned || window.isKeyWindow || active.contains(mouse) {
+            // Stay open while pinned, while typing, or while hovered. Collapse
+            // after a short grace once none of those hold.
+            if exp.pinned || editingText || active.contains(mouse) {
                 outsideTicks = 0
             } else {
                 outsideTicks += 1
@@ -120,13 +123,19 @@ final class NotchPanelController: NSWindowController {
                 width: triggerW,
                 height: triggerH
             )
+            // After an explicit collapse (chevron), wait for the cursor to
+            // LEAVE the notch zone before hover can expand again — else the
+            // collapse is immediately undone by the very cursor that clicked.
+            if exp.explicitCollapse {
+                if !trigger.contains(mouse) { exp.explicitCollapse = false }
+                return
+            }
             if trigger.contains(mouse) {
                 outsideTicks = 0
                 exp.hovering = true
                 exp.recompute()
             }
         }
-        _ = window
     }
 
     /// Visible content height for the current state (used only for hit-testing;
@@ -206,6 +215,12 @@ final class NotchExpansion: ObservableObject {
     @Published var expanded = false
     @Published var pinned = false
     var hovering = false
+    /// Set when the user explicitly collapses (chevron). The hover watcher
+    /// must NOT re-expand until the cursor leaves the notch zone once —
+    /// otherwise the chevron collapse is undone 50ms later (the cursor is
+    /// inside the trigger zone at the moment of the click), which made the
+    /// chevron look completely dead.
+    var explicitCollapse = false
 
     func recompute() {
         let next = hovering || pinned

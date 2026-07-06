@@ -67,6 +67,7 @@ struct NotchRootView: View {
                 Button {
                     expansion.pinned = false
                     expansion.hovering = false
+                    expansion.explicitCollapse = true
                     expansion.recompute()
                 } label: {
                     Image(systemName: "chevron.up")
