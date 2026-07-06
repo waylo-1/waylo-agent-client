@@ -27,7 +27,6 @@ import kotlin.coroutines.resume
 object ScreenAnalysisPipeline {
 
     private const val TAG = "Waylo"
-    private const val ACCESSIBILITY_CONFIDENCE = 50
 
     data class PipelineResult(
         val x: Int,
@@ -55,7 +54,7 @@ object ScreenAnalysisPipeline {
             Log.e("WAYLO_DOT", "Pipeline layer 1 starting for: $description")
             val match = ElementFinder.findElement(description, targetPackage, alternateLabels)
             Log.e("WAYLO_DOT", "Layer 1 result: ${match?.score} score, node: ${match?.node?.contentDescription}")
-            if (match != null && match.score > ACCESSIBILITY_CONFIDENCE) {
+            if (match != null && match.isConfident()) {
                 val bounds = ElementFinder.getBoundsOnScreen(match.node)
                 val label = match.node.text?.toString()
                     ?: match.node.contentDescription?.toString()

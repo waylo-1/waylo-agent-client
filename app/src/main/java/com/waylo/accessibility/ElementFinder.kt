@@ -22,6 +22,34 @@ object ElementFinder {
     private const val MIN_SCORE = 30
 
     /**
+     * Waylo's own package. Never a legitimate guidance target — excluded from
+     * [findElement]'s general scan so the dot can never be placed on Waylo's
+     * own UI (e.g. its own recent-task list happening to contain the target
+     * app's name as text). [findOnHomeScreen] doesn't need this: it's already
+     * restricted to [LAUNCHER_PACKAGES], which never includes this one.
+     */
+    private const val OWN_PACKAGE = "com.waylo"
+
+    /**
+     * Confidence floor for [MatchResult.isConfident]. Calibrated from observed
+     * score distributions: a candidate with zero real signal (no text/desc/
+     * viewId/label match — just clickable+visible affordance) caps at exactly
+     * 25 everywhere we've measured it. Any genuine match component adds at
+     * least +10, so 35 cleanly separates "some real signal" from "pure noise"
+     * without the old flat 50 rejecting weak-but-real matches (e.g. a single
+     * alternate-label hit scoring 40).
+     */
+    private const val MIN_CONFIDENT_SCORE = 35
+
+    /**
+     * A confident top candidate must also clearly beat the runner-up by this
+     * margin, so a screen full of near-tied noise (or near-tied real
+     * candidates) doesn't get an arbitrary winner picked just because it
+     * crossed [MIN_CONFIDENT_SCORE].
+     */
+    private const val MIN_CONFIDENCE_GAP = 10
+
+    /**
      * Filler words that pollute scoring when the backend sends rich, sentence
      * style descriptions. These are removed before tokenising.
      */
@@ -46,8 +74,17 @@ object ElementFinder {
     data class MatchResult(
         val node: AccessibilityNodeInfo,
         val score: Int,
-        val matchReason: String
-    )
+        val matchReason: String,
+        /** The second-highest score among candidates, or 0 if this was the only one. */
+        val runnerUpScore: Int = 0
+    ) {
+        /**
+         * Stricter than the raw [MIN_SCORE] gate `findElement`/`findOnHomeScreen`
+         * already apply — this is the bar for trusting a match enough to place
+         * (or move) the dot on it. See [MIN_CONFIDENT_SCORE]/[MIN_CONFIDENCE_GAP].
+         */
+        fun isConfident(): Boolean = score >= MIN_CONFIDENT_SCORE && (score - runnerUpScore) >= MIN_CONFIDENCE_GAP
+    }
 
     /** Per-field score breakdown, used for verbose logging. */
     private data class ScoreBreakdown(
@@ -81,7 +118,8 @@ object ElementFinder {
             return null
         }
 
-        val allNodes = service.getAllNodes()
+        // Never consider our own UI a guidance target (see OWN_PACKAGE).
+        val allNodes = service.getAllNodes().filter { it.packageName?.toString() != OWN_PACKAGE }
         Log.e("WAYLO_DOT", "findElement: scanning ${allNodes.size} nodes for '$cleanedDescription'")
 
         val scored = allNodes
@@ -100,9 +138,10 @@ object ElementFinder {
         }
 
         val best = scored.firstOrNull()
+        val runnerUp = scored.getOrNull(1)?.second?.total ?: 0
         return if (best != null && best.second.total > MIN_SCORE) {
-            Log.e("WAYLO_DOT", "findElement: FOUND '${best.first.contentDescription}' score=${best.second.total}")
-            MatchResult(best.first, best.second.total, cleanedDescription)
+            Log.e("WAYLO_DOT", "findElement: FOUND '${best.first.contentDescription}' score=${best.second.total} runnerUp=$runnerUp")
+            MatchResult(best.first, best.second.total, cleanedDescription, runnerUp)
         } else {
             Log.e("WAYLO_DOT", "findElement: NOT FOUND (best score=${best?.second?.total ?: 0}, threshold=$MIN_SCORE)")
             null
@@ -154,9 +193,10 @@ object ElementFinder {
         }
 
         val best = scored.firstOrNull()
+        val runnerUp = scored.getOrNull(1)?.second?.total ?: 0
         return if (best != null && best.second.total > MIN_SCORE) {
-            Log.e("WAYLO_DOT", "findOnHomeScreen: FOUND (score ${best.second.total}).")
-            MatchResult(best.first, best.second.total, "homeScreen")
+            Log.e("WAYLO_DOT", "findOnHomeScreen: FOUND (score ${best.second.total}, runnerUp=$runnerUp).")
+            MatchResult(best.first, best.second.total, "homeScreen", runnerUp)
         } else {
             Log.e("WAYLO_DOT", "findOnHomeScreen: NOT FOUND (best ${best?.second?.total ?: 0}).")
             null

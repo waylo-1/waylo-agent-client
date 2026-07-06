@@ -72,6 +72,9 @@ object GuidanceEngine {
     /** Guards against overlapping async tap-verification lookups from a burst of content-change events. */
     private var tapEvidenceCheckInFlight = false
 
+    /** What's currently under the dot for this step, so periodic re-validation can tell if it's gone or beaten. */
+    private var placedResult: ScreenAnalysisPipeline.PipelineResult? = null
+
     /** Flipped by accessibility events to wake the locate loop early instead of waiting out its poll tick. */
     private var locateRescanRequested = false
 
@@ -113,11 +116,14 @@ object GuidanceEngine {
     /** Ambiguous tap-verification signals allowed before we re-speak with the fallbackHint. */
     private const val UNCERTAIN_CHECK_LIMIT = 2
 
-    /** Minimum ElementFinder score to trust a match enough to place the dot on it. */
-    private const val ELEMENT_CONFIDENCE_FLOOR = 50
-
     /** Minimum ElementFinder score for a clicked/text-changed event's source node to count as "our target". */
     private const val CLICK_MATCH_FLOOR = 40
+
+    /** How often an already-placed dot is re-checked against a fresh scan while waiting for the user to act. */
+    private const val REVALIDATE_INTERVAL_MS = 4000L
+
+    /** A fresh candidate must land at least this far (px) from the current dot before it's worth moving. */
+    private const val MOVED_DISTANCE_PX = 60
 
     private val OPEN_INSTRUCTION_PREFIX = Regex("^(open|launch|start)\\b", RegexOption.IGNORE_CASE)
 
@@ -297,10 +303,18 @@ object GuidanceEngine {
         val spoken = shortLabel(step.instruction)
         WayloGuidanceService.instance?.speaker?.speak(step.instruction)
 
+        // A dot placed for a PREVIOUS step (or one that never got confirmed)
+        // must never linger into this step's search — e.g. if this step's
+        // target is never found, the last step's dot must not just sit there
+        // looking like current guidance. onTargetLocated() re-shows it once
+        // (and only once) this step's own target is confirmed.
+        OverlayManager.hideDot()
+
         stepShownAt = SystemClock.elapsedRealtime()
         dotShownAt = 0L
         currentStepPhase = StepPhase.LOCATING
         currentVerification = verificationFor(index, step)
+        placedResult = null
         uncertainChecks = 0
         hasRepeatedThisStep = false
         hasAnnouncedFoundThisStep = false
@@ -350,13 +364,13 @@ object GuidanceEngine {
 
     /**
      * The requirement-2 "don't guess" loop: repeatedly try to locate the
-     * step's target on-device, and only once it clears [ELEMENT_CONFIDENCE_FLOOR]
-     * do we place the dot. While not found, the dot stays hidden and we
-     * re-scan on every content-change nudge (or a [RESCAN_POLL_MS] safety
-     * tick). After [LOCATE_TIMEOUT_MS] with nothing found, we try the slower
-     * vision fallback chain once; if that also misses, we re-speak with the
-     * step's fallbackHint and open a fresh patient window rather than
-     * abandoning the user mid-task.
+     * step's target on-device, and only once it clears
+     * [ElementFinder.MatchResult.isConfident] do we place the dot. While not
+     * found, the dot stays hidden and we re-scan on every content-change
+     * nudge (or a [RESCAN_POLL_MS] safety tick). After [LOCATE_TIMEOUT_MS]
+     * with nothing found, we try the slower vision fallback chain once; if
+     * that also misses, we re-speak with the step's fallbackHint and open a
+     * fresh patient window rather than abandoning the user mid-task.
      */
     private suspend fun locateStep(
         service: WayloGuidanceService,
@@ -370,7 +384,7 @@ object GuidanceEngine {
         while (isRunning && currentIndex == index && !pausedForFinancialApp) {
             val result = locateOnDevice(index, step, pkg)
             if (result != null) {
-                onTargetLocated(index, spoken, result)
+                onTargetLocated(index, step, spoken, result)
                 return
             }
 
@@ -401,7 +415,7 @@ object GuidanceEngine {
             val home = withContext(Dispatchers.IO) {
                 ElementFinder.findOnHomeScreen(step.findDescription, pkg, step.alternateLabels)
             }
-            if (home != null && home.score >= ELEMENT_CONFIDENCE_FLOOR) {
+            if (home != null && home.isConfident()) {
                 val bounds = ElementFinder.getBoundsOnScreen(home.node)
                 return ScreenAnalysisPipeline.PipelineResult(
                     x = bounds.centerX(),
@@ -420,8 +434,8 @@ object GuidanceEngine {
         // the Play Store listing) — it's meaningless once we're already
         // inside the target app, since every visible interactive node shares
         // that same package. Passing it there let content-free nodes (any
-        // clickable+visible icon) clear ELEMENT_CONFIDENCE_FLOOR on the
-        // package bonus alone. Only pass it for the step-1 home-screen case.
+        // clickable+visible icon) clear the confidence floor on the package
+        // bonus alone. Only pass it for the step-1 home-screen case.
         val targetPackageForSearch = if (index == 0) pkg else null
         val result = withTimeoutOrNull(4000) {
             ScreenAnalysisPipeline.find(
@@ -460,10 +474,11 @@ object GuidanceEngine {
      * matches often resolve in under 100ms, well before a multi-second
      * instruction finishes playing). Guarded to fire at most once per step.
      */
-    private fun onTargetLocated(index: Int, spoken: String, result: ScreenAnalysisPipeline.PipelineResult) {
+    private fun onTargetLocated(index: Int, step: Step, spoken: String, result: ScreenAnalysisPipeline.PipelineResult) {
         if (!isRunning || currentIndex != index) return
         Log.e(TAG, "Target located for step ${index + 1}: source=${result.source} confidence=${result.confidence}")
         OverlayManager.showDotAtResult(result, spoken)
+        placedResult = result
         if (!hasAnnouncedFoundThisStep) {
             hasAnnouncedFoundThisStep = true
             WayloGuidanceService.instance?.speaker?.speakQueued("When you see the red dot, tap it.")
@@ -473,8 +488,53 @@ object GuidanceEngine {
         uncertainChecks = 0
         hasRepeatedThisStep = false
         schedulePatienceCheck(index)
+        launchInStep { revalidatePlacement(index, step) }
         if (currentVerification is Verification.TextInput) {
             launchInStep { pollTextInput(index) }
+        }
+    }
+
+    /**
+     * Periodically re-checks an already-placed dot while waiting for the user
+     * to act on it, so a stale or wrong placement can't sit there forever:
+     *  - If the target can no longer be confirmed at all, hide the dot and
+     *    hand back to [locateStep] to re-scan/re-place (and, if it drags on,
+     *    escalate to the vision fallback) exactly like the initial search.
+     *  - If a confident match now sits at a meaningfully different position,
+     *    quietly move the dot there — no re-announcement, since this is a
+     *    correction, not a new guidance moment.
+     *  - Otherwise, do nothing; most ticks should be a no-op.
+     */
+    private suspend fun revalidatePlacement(index: Int, step: Step) {
+        while (isRunning && currentIndex == index && currentStepPhase == StepPhase.WAITING_FOR_ACTION) {
+            delay(REVALIDATE_INTERVAL_MS)
+            if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
+
+            val pkg = if (index == 0) (currentAppPackage ?: guessPackage(currentTask, step.findDescription)) else null
+            val fresh = locateOnDevice(index, step, pkg)
+
+            if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
+
+            if (fresh == null) {
+                Log.e(TAG, "revalidatePlacement: step $index's target no longer confirmable — parking dot and re-scanning.")
+                OverlayManager.hideDot()
+                placedResult = null
+                hasAnnouncedFoundThisStep = false
+                currentStepPhase = StepPhase.LOCATING
+                val service = WayloGuidanceService.instance ?: return
+                locateStep(service, index, step, pkg, shortLabel(step.instruction))
+                return
+            }
+
+            val placed = placedResult
+            val movedFar = placed == null ||
+                kotlin.math.abs(fresh.x - placed.x) > MOVED_DISTANCE_PX ||
+                kotlin.math.abs(fresh.y - placed.y) > MOVED_DISTANCE_PX
+            if (movedFar) {
+                Log.e(TAG, "revalidatePlacement: step $index's best target moved to (${fresh.x},${fresh.y}) — moving dot.")
+                OverlayManager.showDotAtResult(fresh, shortLabel(step.instruction))
+                placedResult = fresh
+            }
         }
     }
 
@@ -545,6 +605,7 @@ object GuidanceEngine {
                 result.updatedInstruction?.let { service.speaker.speak(it) }
                 onTargetLocated(
                     index,
+                    step,
                     label,
                     ScreenAnalysisPipeline.PipelineResult(result.x, result.y, "vision", 100f, label)
                 )
@@ -682,8 +743,8 @@ object GuidanceEngine {
                 }
                 if (currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return@launchInStep
 
-                val targetGone = stillThere == null || stillThere.score < ELEMENT_CONFIDENCE_FLOOR
-                val nextIsUp = nextAppeared != null && nextAppeared.score >= ELEMENT_CONFIDENCE_FLOOR
+                val targetGone = stillThere == null || !stillThere.isConfident()
+                val nextIsUp = nextAppeared != null && nextAppeared.isConfident()
 
                 when {
                     nextIsUp || (targetGone && viaClick) -> {
