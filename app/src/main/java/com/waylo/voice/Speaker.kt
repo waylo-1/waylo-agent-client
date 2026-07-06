@@ -55,13 +55,20 @@ class Speaker(private val context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
-    /** Speak [text] immediately, or queue it if the engine isn't ready yet. */
+    /**
+     * Speak [text] immediately, or queue it if the engine isn't ready yet.
+     * Uses QUEUE_FLUSH — this CANCELS whatever is currently playing, even
+     * mid-utterance. Use [speakQueued] instead when [text] should wait for
+     * anything already speaking to finish (e.g. a short follow-up prompt).
+     */
     fun speak(text: String) {
+        Log.e("WAYLO_DOT", "Speaker.speak (flush): \"$text\"")
         if (isReady) speakNow(text) else pendingQueue.add(text)
     }
 
     /** Add [text] to the end of the speech queue (or pending queue if not ready). */
     fun speakQueued(text: String) {
+        Log.e("WAYLO_DOT", "Speaker.speakQueued: \"$text\"")
         if (isReady) {
             tts?.speak(text, TextToSpeech.QUEUE_ADD, null, UUID.randomUUID().toString())
         } else {

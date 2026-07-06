@@ -84,26 +84,27 @@ object ElementFinder {
         val allNodes = service.getAllNodes()
         Log.e("WAYLO_DOT", "findElement: scanning ${allNodes.size} nodes for '$cleanedDescription'")
 
-        val scored = allNodes.mapNotNull { node ->
-            val score = scoreNode(node, cleanedDescription, tokens, targetPackage, alternateLabels)
-            if (score > 0) MatchResult(node, score, cleanedDescription) else null
-        }.sortedByDescending { it.score }
+        val scored = allNodes
+            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage, alternateLabels)) }
+            .filter { it.second.total > 0 }
+            .sortedByDescending { it.second.total }
 
         val top3 = scored.take(3)
-        top3.forEach {
+        top3.forEach { (node, breakdown) ->
             Log.e(
                 "WAYLO_DOT",
-                "  Candidate: score=${it.score} desc='${it.node.contentDescription}' " +
-                    "text='${it.node.text}' pkg='${it.node.packageName}'"
+                "  Candidate: score=${breakdown.total} desc='${node.contentDescription}' " +
+                    "text='${node.text}' viewId='${node.viewIdResourceName}' pkg='${node.packageName}' " +
+                    "[${breakdown.parts.joinToString(", ")}]"
             )
         }
 
         val best = scored.firstOrNull()
-        return if (best != null && best.score > MIN_SCORE) {
-            Log.e("WAYLO_DOT", "findElement: FOUND '${best.node.contentDescription}' score=${best.score}")
-            best
+        return if (best != null && best.second.total > MIN_SCORE) {
+            Log.e("WAYLO_DOT", "findElement: FOUND '${best.first.contentDescription}' score=${best.second.total}")
+            MatchResult(best.first, best.second.total, cleanedDescription)
         } else {
-            Log.e("WAYLO_DOT", "findElement: NOT FOUND (best score=${best?.score ?: 0}, threshold=$MIN_SCORE)")
+            Log.e("WAYLO_DOT", "findElement: NOT FOUND (best score=${best?.second?.total ?: 0}, threshold=$MIN_SCORE)")
             null
         }
     }
@@ -144,19 +145,20 @@ object ElementFinder {
             .sortedByDescending { it.second.total }
 
         scored.take(3).forEachIndexed { i, (node, breakdown) ->
-            Log.d(
-                TAG,
+            Log.e(
+                "WAYLO_DOT",
                 "  home #${i + 1} score=${breakdown.total} text='${node.text}' " +
-                    "desc='${node.contentDescription}' pkg='${node.packageName}'"
+                    "desc='${node.contentDescription}' viewId='${node.viewIdResourceName}' " +
+                    "pkg='${node.packageName}' [${breakdown.parts.joinToString(", ")}]"
             )
         }
 
         val best = scored.firstOrNull()
         return if (best != null && best.second.total > MIN_SCORE) {
-            Log.d(TAG, "findOnHomeScreen: FOUND (score ${best.second.total}).")
+            Log.e("WAYLO_DOT", "findOnHomeScreen: FOUND (score ${best.second.total}).")
             MatchResult(best.first, best.second.total, "homeScreen")
         } else {
-            Log.d(TAG, "findOnHomeScreen: NOT FOUND (best ${best?.second?.total ?: 0}).")
+            Log.e("WAYLO_DOT", "findOnHomeScreen: NOT FOUND (best ${best?.second?.total ?: 0}).")
             null
         }
     }
@@ -170,22 +172,6 @@ object ElementFinder {
             .split(Regex("\\s+"))
             .filter { it.isNotBlank() }
         return scoreNodeWithBreakdown(node, description.lowercase().trim(), tokens).total
-    }
-
-    /**
-     * Score a node against a pre-cleaned description and its pre-computed
-     * [tokens]. Used by [findElement] to avoid re-tokenising for every node.
-     * If [targetPackage] is set, nodes belonging to that package get a strong
-     * bonus (fixes e.g. the Play Store logo outscoring the real YouTube icon).
-     */
-    private fun scoreNode(
-        node: AccessibilityNodeInfo,
-        cleanedDescription: String,
-        tokens: List<String>,
-        targetPackage: String? = null,
-        alternateLabels: List<String> = emptyList()
-    ): Int {
-        return scoreNodeWithBreakdown(node, cleanedDescription, tokens, targetPackage, alternateLabels).total
     }
 
     /**
@@ -209,6 +195,12 @@ object ElementFinder {
 
         // Strong preference for the target app's package (e.g. the real
         // com.google.android.youtube icon over the Play Store listing).
+        // Callers MUST only pass targetPackage for a search that spans
+        // multiple packages (the home screen) — once already inside the
+        // target app, every visible node shares this package, so the bonus
+        // adds no discriminating signal and can let an unrelated but
+        // clickable+visible icon (+15+10) clear the confidence floor on this
+        // +50 alone. See GuidanceEngine.locateOnDevice()/checkTapInAppEvidence().
         if (targetPackage != null && node.packageName?.toString() == targetPackage) {
             score += 50; parts.add("targetPackage($targetPackage) +50")
         }

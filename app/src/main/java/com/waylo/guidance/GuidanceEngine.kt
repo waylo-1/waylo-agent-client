@@ -66,6 +66,12 @@ object GuidanceEngine {
     /** Whether the "gentle repeat" patience nudge has already fired for the current step. */
     private var hasRepeatedThisStep = false
 
+    /** Whether the "when you see the red dot, tap it" follow-up has already been queued for the current step. */
+    private var hasAnnouncedFoundThisStep = false
+
+    /** Guards against overlapping async tap-verification lookups from a burst of content-change events. */
+    private var tapEvidenceCheckInFlight = false
+
     /** Flipped by accessibility events to wake the locate loop early instead of waiting out its poll tick. */
     private var locateRescanRequested = false
 
@@ -297,6 +303,8 @@ object GuidanceEngine {
         currentVerification = verificationFor(index, step)
         uncertainChecks = 0
         hasRepeatedThisStep = false
+        hasAnnouncedFoundThisStep = false
+        tapEvidenceCheckInFlight = false
         locateRescanRequested = false
         advancing = false
 
@@ -407,8 +415,22 @@ object GuidanceEngine {
             // pipeline below (OCR may still catch a label the tree didn't).
         }
 
+        // The target-package bonus in ElementFinder exists to disambiguate
+        // look-alike icons on the HOME SCREEN (e.g. the real YouTube icon vs.
+        // the Play Store listing) — it's meaningless once we're already
+        // inside the target app, since every visible interactive node shares
+        // that same package. Passing it there let content-free nodes (any
+        // clickable+visible icon) clear ELEMENT_CONFIDENCE_FLOOR on the
+        // package bonus alone. Only pass it for the step-1 home-screen case.
+        val targetPackageForSearch = if (index == 0) pkg else null
         val result = withTimeoutOrNull(4000) {
-            ScreenAnalysisPipeline.find(service, step.findDescription, pkg, step.alternateLabels, step.visualDescription)
+            ScreenAnalysisPipeline.find(
+                service,
+                step.findDescription,
+                targetPackageForSearch,
+                step.alternateLabels,
+                step.visualDescription
+            )
         }
         return if (result != null && result.source != "failed") result else null
     }
@@ -430,12 +452,22 @@ object GuidanceEngine {
      * The target cleared the confidence floor: show the dot, tell the user to
      * tap it, and switch into the WAITING_FOR_ACTION phase where the
      * accessibility-event handlers below take over verification.
+     *
+     * The full instruction was already spoken (flushing) at the start of the
+     * step in [executeStep] — this follow-up MUST use [speakQueued], not
+     * [speak]/QUEUE_FLUSH, or it cancels that instruction mid-sentence
+     * whenever the target is found quickly (the common case: on-device
+     * matches often resolve in under 100ms, well before a multi-second
+     * instruction finishes playing). Guarded to fire at most once per step.
      */
     private fun onTargetLocated(index: Int, spoken: String, result: ScreenAnalysisPipeline.PipelineResult) {
         if (!isRunning || currentIndex != index) return
         Log.e(TAG, "Target located for step ${index + 1}: source=${result.source} confidence=${result.confidence}")
         OverlayManager.showDotAtResult(result, spoken)
-        WayloGuidanceService.instance?.speaker?.speak("Now tap the red dot.")
+        if (!hasAnnouncedFoundThisStep) {
+            hasAnnouncedFoundThisStep = true
+            WayloGuidanceService.instance?.speaker?.speakQueued("When you see the red dot, tap it.")
+        }
         dotShownAt = SystemClock.elapsedRealtime()
         currentStepPhase = StepPhase.WAITING_FOR_ACTION
         uncertainChecks = 0
@@ -467,8 +499,11 @@ object GuidanceEngine {
             if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
             if (SystemClock.elapsedRealtime() - stepShownAt < MIN_DWELL_MS) continue
             val step = steps.getOrNull(index) ?: return
+            // No targetPackage here: this only ever runs once we're already
+            // confirmed inside the target app (never step 0), where every
+            // node shares that package and the bonus adds noise, not signal.
             val match = withContext(Dispatchers.IO) {
-                ElementFinder.findElement(step.findDescription, currentAppPackage, step.alternateLabels)
+                ElementFinder.findElement(step.findDescription, null, step.alternateLabels)
             }
             if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
             if (match != null && !match.node.text.isNullOrBlank()) {
@@ -620,40 +655,59 @@ object GuidanceEngine {
             }
         }
 
-        launchInStep {
-            val stillThere = withContext(Dispatchers.IO) {
-                ElementFinder.findElement(step.findDescription, currentAppPackage, step.alternateLabels)
-            }
-            val nextStep = steps.getOrNull(index + 1)
-            val nextAppeared = nextStep?.let { next ->
-                withContext(Dispatchers.IO) {
-                    ElementFinder.findElement(next.findDescription, currentAppPackage, next.alternateLabels)
-                }
-            }
-            if (currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return@launchInStep
+        // Android can fire many TYPE_WINDOW_CONTENT_CHANGED events per second
+        // during a scroll/transition animation; onContentChanged() calls this
+        // for every one of them. Without this guard, each event spawned its
+        // own concurrent findElement() pair (tens of duplicate scans observed
+        // in one capture within a few hundred ms). Coalesce to at most one
+        // outstanding lookup — a stale-in-flight check will be superseded by
+        // the next event anyway once it finishes.
+        if (tapEvidenceCheckInFlight) return
+        tapEvidenceCheckInFlight = true
 
-            val targetGone = stillThere == null || stillThere.score < ELEMENT_CONFIDENCE_FLOOR
-            val nextIsUp = nextAppeared != null && nextAppeared.score >= ELEMENT_CONFIDENCE_FLOOR
-
-            when {
-                nextIsUp || (targetGone && viaClick) -> {
-                    Log.e(
-                        TAG,
-                        "checkTapInAppEvidence: confirmed (${if (nextIsUp) "next target appeared" else "target gone + click"})."
-                    )
-                    advanceFrom(index)
+        val launched = launchInStep {
+            try {
+                // No targetPackage here either — same reasoning as
+                // pollTextInput above: every node in the current screen
+                // already shares this app's package, so the bonus can only
+                // add noise, not discriminate the real target.
+                val stillThere = withContext(Dispatchers.IO) {
+                    ElementFinder.findElement(step.findDescription, null, step.alternateLabels)
                 }
-                targetGone -> {
-                    uncertainChecks++
-                    Log.e(TAG, "checkTapInAppEvidence: ambiguous (#$uncertainChecks) for step $index.")
-                    if (uncertainChecks >= UNCERTAIN_CHECK_LIMIT) {
-                        uncertainChecks = 0
-                        speakFallbackHint(step)
+                val nextStep = steps.getOrNull(index + 1)
+                val nextAppeared = nextStep?.let { next ->
+                    withContext(Dispatchers.IO) {
+                        ElementFinder.findElement(next.findDescription, null, next.alternateLabels)
                     }
                 }
-                else -> Unit // target still clearly present — nothing changed, keep waiting.
+                if (currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return@launchInStep
+
+                val targetGone = stillThere == null || stillThere.score < ELEMENT_CONFIDENCE_FLOOR
+                val nextIsUp = nextAppeared != null && nextAppeared.score >= ELEMENT_CONFIDENCE_FLOOR
+
+                when {
+                    nextIsUp || (targetGone && viaClick) -> {
+                        Log.e(
+                            TAG,
+                            "checkTapInAppEvidence: confirmed (${if (nextIsUp) "next target appeared" else "target gone + click"})."
+                        )
+                        advanceFrom(index)
+                    }
+                    targetGone -> {
+                        uncertainChecks++
+                        Log.e(TAG, "checkTapInAppEvidence: ambiguous (#$uncertainChecks) for step $index.")
+                        if (uncertainChecks >= UNCERTAIN_CHECK_LIMIT) {
+                            uncertainChecks = 0
+                            speakFallbackHint(step)
+                        }
+                    }
+                    else -> Unit // target still clearly present — nothing changed, keep waiting.
+                }
+            } finally {
+                tapEvidenceCheckInFlight = false
             }
         }
+        if (launched == null) tapEvidenceCheckInFlight = false // no step scope to run in (race with stop/advance)
     }
 
     /**
@@ -682,10 +736,11 @@ object GuidanceEngine {
         }
 
         // The event may have fired on a sibling/wrapper rather than the exact
-        // node ElementFinder would pick — re-resolve from the live tree.
+        // node ElementFinder would pick — re-resolve from the live tree. No
+        // targetPackage: we're always already inside the target app here.
         launchInStep {
             val match = withContext(Dispatchers.IO) {
-                ElementFinder.findElement(step.findDescription, currentAppPackage, step.alternateLabels)
+                ElementFinder.findElement(step.findDescription, null, step.alternateLabels)
             }
             if (currentIndex == index && currentStepPhase == StepPhase.WAITING_FOR_ACTION &&
                 match != null && !match.node.text.isNullOrBlank()
