@@ -138,6 +138,30 @@ struct BannerView: View {
     }
 }
 
+/// A numbered badge marking one of several candidate matches when detection
+/// is ambiguous ("Empty" in three places). The user clicks the right one.
+struct CandidateBadgeView: View {
+    let number: Int
+    let isPrimary: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(isPrimary ? Color.red : Color.orange)
+                .frame(width: 34, height: 34)
+                .shadow(color: .black.opacity(0.45), radius: 5)
+                .scaleEffect(pulse ? 1.12 : 1.0)
+                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
+            Text("\(number)")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundColor(.white)
+        }
+        .frame(width: 56, height: 56)
+        .onAppear { pulse = true }
+    }
+}
+
 /// A spinner shown in place of the dot while a vision fallback is running.
 struct LoadingDotView: View {
     @State private var rotation = 0.0

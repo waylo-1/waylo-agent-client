@@ -40,6 +40,19 @@ final class ElementFinder {
     func findElement(description: String, in elements: [AXElementInfo],
                      preferredRole: String? = nil,
                      anchor: (point: CGPoint, position: String)? = nil) -> AXElementInfo? {
+        findElementWithAlternates(description: description, in: elements,
+                                  preferredRole: preferredRole, anchor: anchor)?.best
+    }
+
+    /// Like findElement, but also returns near-tied CONFIDENT matches at other
+    /// on-screen locations, so the caller can ASK the user instead of guessing
+    /// when e.g. "Empty" appears in three places. Alternates must be spatially
+    /// distinct — a row and the static text inside it are the same thing, not
+    /// an ambiguity.
+    func findElementWithAlternates(description: String, in elements: [AXElementInfo],
+                                   preferredRole: String? = nil,
+                                   anchor: (point: CGPoint, position: String)? = nil)
+        -> (best: AXElementInfo, alternates: [AXElementInfo])? {
         guard !elements.isEmpty else { return nil }
 
         let query = description.lowercased()
@@ -49,24 +62,37 @@ final class ElementFinder {
         let keywords = allWords.filter { !Self.stopWords.contains($0) }
         let roleSet = Self.rolesFor(preferredRole)
 
-        var bestMatch: AXElementInfo?
-        var bestScore = 0
-
+        var scored: [(el: AXElementInfo, score: Int)] = []
         for element in elements {
             let score = scoreElement(element, query: query, keywords: keywords, roleSet: roleSet, anchor: anchor)
-            if score > bestScore {
-                bestScore = score
-                bestMatch = element
-            } else if score == bestScore, score >= minimumScore, let current = bestMatch {
-                // Tie-break: prefer the more compact (control-sized) element over
-                // a large container that happens to contain the same text.
-                if area(element.frame) < area(current.frame) {
-                    bestMatch = element
-                }
-            }
+            if score >= minimumScore { scored.append((element, score)) }
+        }
+        scored.sort { a, b in
+            if a.score != b.score { return a.score > b.score }
+            // Tie-break: prefer the more compact (control-sized) element over
+            // a large container that happens to contain the same text.
+            return area(a.el.frame) < area(b.el.frame)
         }
 
-        return bestScore >= confidentScore ? bestMatch : lowConfidence(bestMatch, bestScore)
+        guard let top = scored.first, top.score >= confidentScore else {
+            if let first = scored.first { _ = lowConfidence(first.el, first.score) }
+            return nil
+        }
+
+        var alternates: [AXElementInfo] = []
+        for cand in scored.dropFirst() {
+            guard cand.score >= confidentScore, top.score - cand.score <= 12 else { break }
+            let distinct = ([top.el] + alternates).allSatisfy { existing in
+                hypot(existing.center.x - cand.el.center.x,
+                      existing.center.y - cand.el.center.y) > 40
+            }
+            if distinct { alternates.append(cand.el) }
+            if alternates.count >= 3 { break }
+        }
+        if !alternates.isEmpty {
+            DebugLogger.log("AX", "AMBIGUOUS: '\(top.el.title)' + \(alternates.count) near-tied matches — asking user")
+        }
+        return (top.el, alternates)
     }
 
     /// Maps a controlKind string to the set of acceptable AX roles.

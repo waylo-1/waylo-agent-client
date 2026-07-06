@@ -190,6 +190,20 @@ struct HomePanelView: View {
                 .tint(.red)
                 .disabled(taskText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
 
+            Toggle(isOn: Binding(
+                get: { engine.mode == .assist },
+                set: { engine.mode = $0 ? .assist : .teach }
+            )) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Do it for me").font(.caption)
+                    Text("Waylo clicks safe steps itself; risky ones you confirm")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
             if isLoading {
                 HStack(spacing: 8) {
                     ProgressView().scaleEffect(0.8)

@@ -7,6 +7,14 @@ final class OverlayWindowController: NSWindowController {
     static let shared = OverlayWindowController()
 
     private var dotHostingView: NSView?
+    /// Extra overlay views (numbered candidate badges). Cleared by hideDot and
+    /// whenever a new dot/banner replaces them.
+    private var extraHostingViews: [NSView] = []
+
+    private func clearExtraViews() {
+        extraHostingViews.forEach { $0.removeFromSuperview() }
+        extraHostingViews = []
+    }
 
     private convenience init() {
         let overlayWindow = OverlayWindow()
@@ -54,6 +62,48 @@ final class OverlayWindowController: NSWindowController {
                 at: clamped, size: CGSize(width: 240, height: 130))
     }
 
+    /// Shows numbered badges over several candidate matches plus an instruction
+    /// banner. Used when detection is confident about MULTIPLE spots ("Empty"
+    /// in three places) — the user clicks the correct one to continue.
+    func showCandidateBadges(at axPoints: [CGPoint], caption: String) {
+        guard let window = window, let contentView = window.contentView, !axPoints.isEmpty else { return }
+        window.setFrame(ScreenCoordinates.globalFrame, display: true)
+        dotHostingView?.removeFromSuperview()
+        dotHostingView = nil
+        clearExtraViews()
+
+        let origin = window.frame.origin
+        for (i, p) in axPoints.enumerated() {
+            let cocoa = ScreenCoordinates.axToCocoa(ScreenCoordinates.clampToScreens(p))
+            let size = CGSize(width: 56, height: 56)
+            let host = NSHostingView(rootView: AnyView(CandidateBadgeView(number: i + 1, isPrimary: i == 0)))
+            host.frame = CGRect(x: cocoa.x - origin.x - size.width / 2,
+                                y: cocoa.y - origin.y - size.height / 2,
+                                width: size.width, height: size.height)
+            host.wantsLayer = true
+            host.layer?.backgroundColor = .clear
+            contentView.addSubview(host)
+            extraHostingViews.append(host)
+        }
+        DebugLogger.log("DOT", "candidate badges shown: \(axPoints.count)")
+
+        // Caption banner at the top of the screen the first candidate is on.
+        let screen = NSScreen.screens.first {
+            NSMouseInRect(ScreenCoordinates.axToCocoa(axPoints[0]), $0.frame, false)
+        } ?? NSScreen.main ?? NSScreen.screens.first
+        let frame = screen?.frame ?? .zero
+        let size = CGSize(width: 460, height: 90)
+        let host = NSHostingView(rootView: AnyView(BannerView(text: caption)))
+        host.frame = CGRect(x: frame.midX - origin.x - size.width / 2,
+                            y: frame.maxY - 120 - origin.y - size.height / 2,
+                            width: size.width, height: size.height)
+        host.wantsLayer = true
+        host.layer?.backgroundColor = .clear
+        contentView.addSubview(host)
+        extraHostingViews.append(host)
+        window.orderFrontRegardless()
+    }
+
     /// Show a centered instruction banner near the top of the active screen
     /// (used for non-click steps like "type the name" or "press Enter").
     /// Pass `autoDismissAfter` for transient banners (errors, spoken answers)
@@ -63,6 +113,7 @@ final class OverlayWindowController: NSWindowController {
         guard let window = window, let contentView = window.contentView else { return }
         window.setFrame(ScreenCoordinates.globalFrame, display: true)
         dotHostingView?.removeFromSuperview()
+        clearExtraViews()
 
         let screen = NSScreen.screens.first {
             NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
@@ -106,6 +157,7 @@ final class OverlayWindowController: NSWindowController {
 
         // Remove any existing overlay view.
         dotHostingView?.removeFromSuperview()
+        clearExtraViews()
 
         // AX (top-left) → Cocoa global (bottom-left), then relative to the
         // window origin (may be negative on multi-display setups).
@@ -141,6 +193,7 @@ final class OverlayWindowController: NSWindowController {
     func hideDot() {
         dotHostingView?.removeFromSuperview()
         dotHostingView = nil
+        clearExtraViews()
         window?.orderOut(nil)
     }
 }

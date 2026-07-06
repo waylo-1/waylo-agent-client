@@ -23,6 +23,13 @@ final class CoordinateResolver {
         let axPoint: CGPoint
         /// A refined instruction if a cloud layer produced one (else empty).
         let updatedInstruction: String
+        /// The AX element when L0 resolved — lets assist mode press it via
+        /// AXUIElementPerformAction instead of a synthetic click.
+        var axElement: AXUIElement? = nil
+        /// Near-tied CONFIDENT matches at other locations ("Empty" in three
+        /// places). Non-empty means the resolver refuses to guess — the engine
+        /// shows numbered badges and lets the user pick.
+        var alternates: [CGPoint] = []
     }
 
     func resolve(
@@ -74,12 +81,15 @@ final class CoordinateResolver {
 
         // --- Layer 0: Accessibility tree (role + anchor aware) -------------
         if !targetLabel.isEmpty,
-           let element = axSearch(targetLabel, region: screenRegion, screen: screen, allowSystemUI: true,
-                                  preferredRole: controlKind, anchor: anchorInfo) {
+           let found = axSearchDetailed(targetLabel, region: screenRegion, screen: screen, allowSystemUI: true,
+                                        preferredRole: controlKind, anchor: anchorInfo) {
+            let element = found.best
             print("[Resolver] L0 AX hit '\(element.title)' \(element.center)")
             DebugLogger.logResolution("L0-AX", found: true, point: element.center, label: "\(element.title) [\(element.role)]")
             DebugState.shared.update(layer: "L0 AX", dot: element.center)
-            return Resolution(axPoint: element.center, updatedInstruction: "")
+            return Resolution(axPoint: element.center, updatedInstruction: "",
+                              axElement: element.axElement,
+                              alternates: found.alternates.map(\.center))
         }
         let axQuery = elementDescription.isEmpty ? findDescription : elementDescription
         // The verbose description is only used for AX when there's NO precise
@@ -93,7 +103,7 @@ final class CoordinateResolver {
                 print("[Resolver] L0 AX hit (desc) '\(element.title)' \(element.center)")
                 DebugLogger.logResolution("L0-AX-desc", found: true, point: element.center, label: element.title)
                 DebugState.shared.update(layer: "L0 AX (desc)", dot: element.center)
-                return Resolution(axPoint: element.center, updatedInstruction: "")
+                return Resolution(axPoint: element.center, updatedInstruction: "", axElement: element.axElement)
             }
             DebugLogger.log("RESOLVE", "REGION_MISMATCH L0-AX-desc '\(element.title)' \(element.center) region=\(screenRegion) — trying next layer")
         }
@@ -124,7 +134,7 @@ final class CoordinateResolver {
                 DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT, skipped L3 — '\(cachedLabel)' \(element.center)")
                 DebugLogger.logResolution("label-cache-AX", found: true, point: element.center, label: cachedLabel)
                 DebugState.shared.update(layer: "cache→L0 AX", dot: element.center)
-                return Resolution(axPoint: element.center, updatedInstruction: "")
+                return Resolution(axPoint: element.center, updatedInstruction: "", axElement: element.axElement)
             }
             // Cache hit but AX still can't find it — fall through to L3 as normal.
             DebugLogger.log("RESOLVE", "cache label '\(cachedLabel)' present but L0 missed — continuing to L3")
@@ -207,7 +217,7 @@ final class CoordinateResolver {
                 if let element = axSearch(refined, region: screenRegion, screen: screen) {
                     DebugLogger.logResolution("L3-Nova-refine-AX", found: true, point: element.center, label: refined)
                     DebugState.shared.update(layer: "L3 Nova→AX", dot: element.center)
-                    return Resolution(axPoint: element.center, updatedInstruction: result.updatedInstruction)
+                    return Resolution(axPoint: element.center, updatedInstruction: result.updatedInstruction, axElement: element.axElement)
                 }
                 if let point = await visionDetector.findLabel(refined, in: image, on: screen, region: screenRegion) {
                     DebugLogger.logResolution("L3-Nova-refine-OCR", found: true, point: point, label: refined)
@@ -289,6 +299,15 @@ final class CoordinateResolver {
     /// must NOT, or they hijack the dot onto the Dock icon.
     private func axSearch(_ query: String, region: ScreenRegion, screen: NSScreen, allowSystemUI: Bool = false,
                           preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil) -> AXElementInfo? {
+        axSearchDetailed(query, region: region, screen: screen, allowSystemUI: allowSystemUI,
+                         preferredRole: preferredRole, anchor: anchor)?.best
+    }
+
+    /// Full variant that also surfaces near-tied confident alternates (used by
+    /// the primary targetLabel search so ambiguity can be shown to the user).
+    private func axSearchDetailed(_ query: String, region: ScreenRegion, screen: NSScreen, allowSystemUI: Bool = false,
+                                  preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil)
+        -> (best: AXElementInfo, alternates: [AXElementInfo])? {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         let all = AccessibilityReader.shared.getTargetAppElements()
 
@@ -313,7 +332,7 @@ final class CoordinateResolver {
                     candidates = inDialog
                 }
             }
-            if let hit = ElementFinder.shared.findElement(description: query, in: candidates, preferredRole: preferredRole, anchor: anchor) {
+            if let hit = ElementFinder.shared.findElementWithAlternates(description: query, in: candidates, preferredRole: preferredRole, anchor: anchor) {
                 return hit
             }
         }
@@ -326,7 +345,7 @@ final class CoordinateResolver {
               let hit = ElementFinder.shared.findElement(description: query, in: systemElements),
               isStrongTitleMatch(query: query, element: hit) else { return nil }
         DebugLogger.log("AX", "system-UI hit '\(hit.title)' role=\(hit.role)")
-        return hit
+        return (hit, [])
     }
 
     /// True when every word of `query` appears in the element's title — a strong,

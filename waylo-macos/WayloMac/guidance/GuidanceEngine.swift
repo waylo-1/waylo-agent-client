@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import ApplicationServices
 
 /// High-level state of a running guide.
 enum GuidanceState {
@@ -10,6 +11,17 @@ enum GuidanceState {
     case manual     // couldn't locate; user does it themselves then presses Next
     case paused
     case complete
+}
+
+/// How the guide interacts with the screen.
+/// `.teach`  — point with the dot; the user clicks (the classic mode).
+/// `.assist` — "do it with me": Waylo performs safe clicks itself (AXPress
+///             when the element is known, else a synthetic click) and narrates.
+///             Destructive steps (delete/empty/send/pay…) are NEVER auto-
+///             clicked — they fall back to point-and-confirm.
+enum GuideMode: String {
+    case teach
+    case assist
 }
 
 /// The orchestrator. Walks through steps one at a time. For each step it shows a
@@ -22,6 +34,10 @@ final class GuidanceEngine: ObservableObject {
 
     @Published var isRunning = false
     @Published var state: GuidanceState = .idle
+    /// Teach (point) vs assist (do it for me). Persisted across launches.
+    @Published var mode: GuideMode = GuideMode(rawValue: UserDefaults.standard.string(forKey: "waylo.guideMode") ?? "") ?? .teach {
+        didSet { UserDefaults.standard.set(mode.rawValue, forKey: "waylo.guideMode") }
+    }
     @Published var currentStepIndex = 0
     @Published var stepCount = 0
     @Published var currentInstruction = ""
@@ -404,6 +420,21 @@ final class GuidanceEngine: ObservableObject {
 
         if let resolution = resolution {
             applyUpdatedInstruction(resolution.updatedInstruction)
+
+            // Several confident, distinct matches — never guess. Show numbered
+            // badges on all of them and let the user click the right one.
+            if !resolution.alternates.isEmpty {
+                presentAmbiguity(step: step, primary: resolution.axPoint, alternates: resolution.alternates)
+                return
+            }
+
+            // Assist mode: perform safe clicks ourselves (destructive steps
+            // still fall back to point-and-confirm inside autoPerform).
+            if mode == .assist && step.action == .click {
+                await autoPerform(step: step, resolution: resolution, stepIndex: currentStepIndex, token: token)
+                return
+            }
+
             currentTargetAX = resolution.axPoint
             OverlayWindowController.shared.showDot(at: resolution.axPoint, caption: currentInstruction)
             state = .showing
@@ -433,6 +464,98 @@ final class GuidanceEngine: ObservableObject {
         state = .manual
         statusMessage = "I couldn't find it. Do it yourself, then press Next."
         Speaker.shared.speak("I couldn't find that one. Please do it yourself, then press Next.")
+    }
+
+    // MARK: - Assist mode ("do it with me")
+
+    /// Performs the click for the user: AXPress on the resolved element when
+    /// available (works for menus/buttons without moving the mouse), else a
+    /// synthetic click at the resolved point. Destructive steps are never
+    /// auto-clicked — they show the dot and wait for the user's own click.
+    private func autoPerform(step: Step, resolution: CoordinateResolver.Resolution, stepIndex: Int, token: Int) async {
+        currentTargetAX = resolution.axPoint
+        OverlayWindowController.shared.showDot(at: resolution.axPoint, caption: currentInstruction)
+        state = .showing
+
+        if isDestructiveStep(step) {
+            statusMessage = "Step \(stepIndex + 1) of \(steps.count) — this one changes things; click it yourself to confirm"
+            Speaker.shared.speak("This one deletes or changes things, so you click it yourself — I'll continue right after.")
+            DebugLogger.log("ASSIST", "destructive step \(stepIndex + 1) — falling back to point-and-confirm")
+            installClickMonitor(target: resolution.axPoint, forStep: stepIndex, secondary: isSecondaryClickStep(step))
+            return
+        }
+
+        statusMessage = "Step \(stepIndex + 1) of \(steps.count) — doing it for you…"
+        // Brief pause so the user sees WHERE before the click happens —
+        // assist mode should still teach, not teleport.
+        try? await Task.sleep(nanoseconds: 900_000_000)
+        guard token == locateToken, isRunning, currentStepIndex == stepIndex else { return }
+
+        var pressed = false
+        if let el = resolution.axElement {
+            pressed = AXUIElementPerformAction(el, kAXPressAction as CFString) == .success
+            DebugLogger.log("ASSIST", "AXPress \(pressed ? "OK" : "failed → synthetic click")")
+        }
+        if !pressed { performSyntheticClick(at: resolution.axPoint) }
+        advanceAfterClick(stepIndex: stepIndex)
+    }
+
+    /// Posts a real left-click at the point (Quartz global coords, which is
+    /// exactly what the resolver returns).
+    private func performSyntheticClick(at axPoint: CGPoint) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
+                           mouseCursorPosition: axPoint, mouseButton: .left)
+        let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
+                         mouseCursorPosition: axPoint, mouseButton: .left)
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+        DebugLogger.log("ASSIST", "synthetic click at (\(Int(axPoint.x)),\(Int(axPoint.y)))")
+    }
+
+    /// True when auto-clicking this step could destroy/commit something the
+    /// user didn't explicitly confirm. Over-gating is safe (the user just
+    /// clicks it themselves); under-gating is not.
+    private func isDestructiveStep(_ step: Step) -> Bool {
+        let t = "\(step.instruction) \(step.targetLabel) \(step.elementDescription)".lowercased()
+        let danger = ["empty", "delete", "erase", "remove", "discard", "uninstall",
+                      "format", "don't save", "dont save", "send", "pay", "buy",
+                      "purchase", "shut down", "restart", "log out", "sign out"]
+        return danger.contains { t.contains($0) }
+    }
+
+    // MARK: - Ambiguity ("Empty" in three places — ask, don't guess)
+
+    /// Shows numbered badges over every confident match; the user's click on
+    /// any of them completes the step.
+    private func presentAmbiguity(step: Step, primary: CGPoint, alternates: [CGPoint]) {
+        let all = [primary] + alternates
+        state = .showing
+        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — I see \(all.count) matches; click the right one"
+        OverlayWindowController.shared.showCandidateBadges(at: all, caption: currentInstruction)
+        Speaker.shared.speak("I found \(all.count) places that look right. Click the correct one and I'll continue.")
+        installMultiClickMonitor(targets: all, forStep: currentStepIndex)
+    }
+
+    /// Click monitor accepting a click near ANY of the candidate targets.
+    private func installMultiClickMonitor(targets: [CGPoint], forStep stepIndex: Int) {
+        removeClickMonitor()
+        clickObserverId = HotkeyManager.shared.addClickObserver { [weak self] axPoint, _ in
+            Task { @MainActor in
+                guard let self = self, self.isRunning, self.state == .showing,
+                      self.currentStepIndex == stepIndex,
+                      !self.clickIsOnWayloUI(axPoint) else { return }
+                guard let hit = targets.first(where: {
+                    hypot($0.x - axPoint.x, $0.y - axPoint.y) <= self.clickToleranceAX
+                }) else {
+                    DebugLogger.log("CLICK", "ambiguity: click missed all \(targets.count) candidates")
+                    return
+                }
+                self.currentTargetAX = hit
+                DebugLogger.log("ENGINE", "ambiguity resolved by user click at (\(Int(hit.x)),\(Int(hit.y))) → advancing")
+                self.advanceAfterClick(stepIndex: stepIndex)
+            }
+        }
     }
 
     /// Self-healing: screenshot → backend `/recover`. The model can correct the
@@ -534,6 +657,14 @@ final class GuidanceEngine: ObservableObject {
                     DebugState.shared.update(cache: "STORED \(result.visibleLabel)")
                 }
                 applyUpdatedInstruction(result.updatedInstruction)
+                if !retry.alternates.isEmpty {
+                    presentAmbiguity(step: step, primary: retry.axPoint, alternates: retry.alternates)
+                    return true
+                }
+                if mode == .assist && step.action == .click {
+                    await autoPerform(step: step, resolution: retry, stepIndex: currentStepIndex, token: token)
+                    return true
+                }
                 currentTargetAX = retry.axPoint
                 OverlayWindowController.shared.showDot(at: retry.axPoint, caption: currentInstruction)
                 state = .showing
