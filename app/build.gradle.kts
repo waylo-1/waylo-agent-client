@@ -111,6 +111,11 @@ dependencies {
     // throws on construction ("not mocked"), which PlanParser's catch-all would
     // otherwise silently swallow into a false-passing null result.
     testImplementation("org.json:json:20231013")
+    // For mocking AccessibilityNodeInfo in the ElementFinder lookahead/partial-
+    // match JVM tests (mirrors ElementFinderTest's existing androidTest usage;
+    // Mockito 5's inline mock maker handles final Android framework classes
+    // fine without needing the instrumented runtime).
+    testImplementation("org.mockito:mockito-core:5.5.0")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:core:1.5.0")

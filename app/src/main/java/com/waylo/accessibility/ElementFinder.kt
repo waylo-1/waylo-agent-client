@@ -203,6 +203,101 @@ object ElementFinder {
         }
     }
 
+    /** A single element to search for — see [scanMultiple]. */
+    data class ElementQuery(val findDescription: String, val alternateLabels: List<String> = emptyList())
+
+    /**
+     * Score each of [queries] against the SAME node-tree snapshot in one pass.
+     * Used by GuidanceEngine's screen-aware step-skip lookahead: checking a
+     * step's target plus several steps ahead this way costs one extra tree
+     * walk total (this function's own [WayloAccessibilityService.getAllNodes]
+     * call), not one per step. Returns a result per query, in the same order;
+     * `null` where nothing cleared [MIN_SCORE].
+     */
+    fun scanMultiple(queries: List<ElementQuery>, targetPackage: String? = null): List<MatchResult?> {
+        if (queries.isEmpty()) return emptyList()
+        val service = WayloAccessibilityService.instance ?: return queries.map { null }
+        val allNodes = service.getAllNodes().filter { it.packageName?.toString() != OWN_PACKAGE }
+        return scoreMultiple(allNodes, queries, targetPackage)
+    }
+
+    /**
+     * Pure scoring core for [scanMultiple] — takes the node snapshot directly
+     * so it's testable without a live [WayloAccessibilityService].
+     */
+    fun scoreMultiple(
+        allNodes: List<AccessibilityNodeInfo>,
+        queries: List<ElementQuery>,
+        targetPackage: String? = null
+    ): List<MatchResult?> = queries.map { query ->
+        val tokens = query.findDescription.lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .split(" ")
+            .filter { it.length > 2 && it !in STOP_WORDS }
+        val cleaned = tokens.joinToString(" ")
+        val scored = allNodes
+            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleaned, tokens, targetPackage, query.alternateLabels)) }
+            .filter { it.second.total > 0 }
+            .sortedByDescending { it.second.total }
+        val best = scored.firstOrNull()
+        val runnerUp = scored.getOrNull(1)?.second?.total ?: 0
+        if (best != null && best.second.total > MIN_SCORE) {
+            MatchResult(best.first, best.second.total, cleaned, runnerUp)
+        } else null
+    }
+
+    /**
+     * Last-resort, deliberately looser search used only after the primary
+     * findDescription search has failed for a step's *entire* patient window.
+     * Scores directly against the step's semantic-goal hints — [alternateLabels]
+     * (via the existing altHits bonus) and the individual words of
+     * [visualDescription] (via the existing desc/wordHits bonuses) — rather
+     * than the findDescription that just failed, and accepts real signal even
+     * where the gap to the runner-up would fail [MatchResult.isConfident]
+     * (that stricter gap check exists to pick a clean winner when the primary
+     * search is still live; here we've already exhausted the primary search
+     * and are deliberately accepting a weaker, "best guess" signal instead of
+     * stalling forever). Returns null if there's nothing to search with (no
+     * alternateLabels AND no visualDescription words) or nothing clears the bar.
+     */
+    fun findPartialMatch(
+        alternateLabels: List<String>,
+        visualDescription: String?,
+        targetPackage: String? = null
+    ): MatchResult? {
+        val service = WayloAccessibilityService.instance ?: return null
+        val allNodes = service.getAllNodes().filter { it.packageName?.toString() != OWN_PACKAGE }
+        return scorePartialMatch(allNodes, alternateLabels, visualDescription, targetPackage)
+    }
+
+    /**
+     * Pure scoring core for [findPartialMatch] — takes the node snapshot
+     * directly so it's testable without a live [WayloAccessibilityService].
+     */
+    fun scorePartialMatch(
+        allNodes: List<AccessibilityNodeInfo>,
+        alternateLabels: List<String>,
+        visualDescription: String?,
+        targetPackage: String? = null
+    ): MatchResult? {
+        val visualTokens = visualDescription.orEmpty().lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .split(" ")
+            .filter { it.length > 2 && it !in STOP_WORDS }
+        if (alternateLabels.isEmpty() && visualTokens.isEmpty()) return null
+
+        val cleanedVisual = visualTokens.joinToString(" ")
+        val scored = allNodes
+            .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedVisual, visualTokens, targetPackage, alternateLabels)) }
+            .filter { it.second.total > 0 }
+            .sortedByDescending { it.second.total }
+        val best = scored.firstOrNull() ?: return null
+        val runnerUp = scored.getOrNull(1)?.second?.total ?: 0
+        return if (best.second.total >= MIN_CONFIDENT_SCORE) {
+            MatchResult(best.first, best.second.total, cleanedVisual.ifBlank { alternateLabels.joinToString(" ") }, runnerUp)
+        } else null
+    }
+
     /**
      * Score a single node against [description]. Public entry point that
      * tokenises the description itself (used by tests and ad-hoc callers).

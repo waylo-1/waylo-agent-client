@@ -125,6 +125,18 @@ object GuidanceEngine {
     /** A fresh candidate must land at least this far (px) from the current dot before it's worth moving. */
     private const val MOVED_DISTANCE_PX = 60
 
+    /**
+     * How many steps ahead to check for a screen-aware skip (see
+     * [checkLookaheadSkip]). Bounded deliberately small — this is a recovery
+     * for a stale/hallucinated *nearby* plan step, not a general-purpose
+     * planner; scanning the whole remaining plan would risk jumping to a
+     * target that merely looks similar much later in an unrelated flow.
+     */
+    private const val LOOKAHEAD_STEPS = 3
+
+    /** Delay after a spoken skip/partial-match announcement before acting on it, so TTS isn't cut off mid-sentence. */
+    private const val ANNOUNCEMENT_SETTLE_MS = 1500L
+
     private val OPEN_INSTRUCTION_PREFIX = Regex("^(open|launch|start)\\b", RegexOption.IGNORE_CASE)
 
     /** How a step's completion is detected. Chosen per-step from [Step.elementType]. */
@@ -388,8 +400,17 @@ object GuidanceEngine {
                 return
             }
 
+            // Screen-aware step skipping (only reached when the on-device
+            // search just above came up empty for THIS step this scan — a
+            // confidently-present current-step target always returns above
+            // and never reaches here).
+            if (checkLookaheadSkip(index) != null) return
+
             if (SystemClock.elapsedRealtime() >= deadline) {
-                Log.e(TAG, "locateStep: on-device pipeline timed out for step $index, trying vision fallback.")
+                Log.e(TAG, "locateStep: on-device pipeline timed out for step $index, trying a lowered-confidence partial match.")
+                if (tryPartialMatchAcceptance(index, step, pkg)) return
+
+                Log.e(TAG, "locateStep: no partial match either, trying vision fallback.")
                 if (tryVisionFallback(service, index, step, spoken)) return
                 // Vision fallback also missed. Never guess a dot position —
                 // gently re-prompt with the fallback hint and open a fresh
@@ -401,6 +422,116 @@ object GuidanceEngine {
 
             waitForRescanTrigger()
         }
+    }
+
+    /**
+     * Requirement: real-world plans are sometimes stale/hallucinated about
+     * the target app's current UI (e.g. a plan routing through Settings >
+     * Manage History when a "History" item is already directly on screen).
+     * On every re-scan where step [index]'s own target wasn't found this
+     * pass, ALSO score the next [LOOKAHEAD_STEPS] steps' targets against the
+     * SAME accessibility-tree snapshot in one call (cheap: one extra tree
+     * walk total, no OCR/vision) — if the closest of them is confidently
+     * present, jump straight there instead of continuing to hunt for a step
+     * that may not reflect the real screen.
+     *
+     * Only ever looks forward (steps are examined in index order starting at
+     * `index + 1`, closest first — backwards is structurally impossible
+     * here) and only ever called after the caller has already established
+     * this scan's current-step search came up empty, so a confidently-present
+     * current-step target is never skipped past.
+     *
+     * Every decision is logged with both steps' descriptions and the full
+     * set of lookahead scores considered, tagged `STEP_SKIP` for later audit.
+     *
+     * @return the absolute step index jumped to, or null if no lookahead step
+     * qualified (the caller's normal timeout/vision-fallback path continues).
+     */
+    private fun checkLookaheadSkip(index: Int): Int? {
+        if (!isRunning || currentIndex != index || pausedForFinancialApp) return null
+
+        val lookahead = ((index + 1)..(index + LOOKAHEAD_STEPS))
+            .mapNotNull { i -> steps.getOrNull(i)?.let { i to it } }
+        if (lookahead.isEmpty()) return null
+
+        val queries = lookahead.map { (_, s) -> ElementFinder.ElementQuery(s.findDescription, s.alternateLabels) }
+        val matches = ElementFinder.scanMultiple(queries)
+        val scoreLog = lookahead.indices.joinToString(", ") { i ->
+            val (stepIdx, _) = lookahead[i]
+            "step${stepIdx + 1}=${matches[i]?.score ?: "none"}"
+        }
+
+        for (i in lookahead.indices) {
+            val (targetIndex, targetStep) = lookahead[i]
+            val match = matches[i] ?: continue
+            if (!match.isConfident()) continue
+
+            Log.e(
+                TAG,
+                "STEP_SKIP: step ${index + 1} ('${steps[index].findDescription}') not found this scan; " +
+                    "jumping to step ${targetIndex + 1} (target='${targetStep.findDescription}', " +
+                    "score=${match.score}, runnerUp=${match.runnerUpScore}); lookahead scan=[$scoreLog]"
+            )
+            val label = visibleLabelFor(match, targetStep.findDescription)
+            WayloGuidanceService.instance?.speaker?.speak("I can see $label already — let's go there.")
+            scope.launch {
+                delay(ANNOUNCEMENT_SETTLE_MS)
+                executeStep(targetIndex)
+            }
+            return targetIndex
+        }
+        return null
+    }
+
+    /**
+     * Requirement: rather than escalate straight to the slower/paid vision
+     * fallback — or worse, loop on the fallbackHint forever — once step
+     * [index]'s primary findDescription search has had its entire patient
+     * window and found nothing, try one more instant on-device check against
+     * the step's semantic-goal hints (alternateLabels/visualDescription) via
+     * [ElementFinder.findPartialMatch]. Accepts with an explicit
+     * lowered-confidence announcement so the user knows this placement is a
+     * best guess, not a confirmed match. Logged (tagged `PARTIAL_MATCH`) for
+     * the same later-audit reason as [checkLookaheadSkip].
+     *
+     * @return true if a partial match was accepted (dot placed, phase moved
+     * to WAITING_FOR_ACTION via [onTargetLocated]) — caller should stop
+     * looping. False if nothing qualified — caller proceeds to vision fallback.
+     */
+    private fun tryPartialMatchAcceptance(index: Int, step: Step, pkg: String?): Boolean {
+        if (!isRunning || currentIndex != index || pausedForFinancialApp) return false
+
+        val targetPackageForSearch = if (index == 0) pkg else null
+        val match = ElementFinder.findPartialMatch(step.alternateLabels, step.visualDescription, targetPackageForSearch)
+            ?: return false
+
+        Log.e(
+            TAG,
+            "PARTIAL_MATCH: step ${index + 1} ('${step.findDescription}') not found after the full patient window; " +
+                "accepting lowered-confidence match via alternateLabels/visualDescription " +
+                "(score=${match.score}, runnerUp=${match.runnerUpScore})."
+        )
+        val label = visibleLabelFor(match, step.findDescription)
+        WayloGuidanceService.instance?.speaker?.speak("I'm not completely sure, but I think this might be it — let's try here.")
+        val bounds = ElementFinder.getBoundsOnScreen(match.node)
+        val result = ScreenAnalysisPipeline.PipelineResult(
+            x = bounds.centerX(),
+            y = bounds.centerY(),
+            source = "partial-match",
+            confidence = match.score.toFloat(),
+            label = label
+        )
+        onTargetLocated(index, step, shortLabel(step.instruction), result)
+        return true
+    }
+
+    /** Prefer the matched node's own visible text/contentDescription (what the user actually sees) over the backend's findDescription. */
+    private fun visibleLabelFor(match: ElementFinder.MatchResult, fallback: String): String {
+        val text = match.node.text?.toString()?.trim()
+        if (!text.isNullOrBlank()) return text
+        val desc = match.node.contentDescription?.toString()?.trim()
+        if (!desc.isNullOrBlank()) return desc
+        return fallback
     }
 
     /** One cheap on-device attempt: home-screen shortcut for step 1, else the full L0+L1 pipeline. */
