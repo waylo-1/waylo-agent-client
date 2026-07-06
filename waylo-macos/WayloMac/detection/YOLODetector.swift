@@ -22,10 +22,14 @@ struct YOLOElement: Decodable {
     let confidence: Double
     let source: String   // "screen2ax" | "omniparser"
     let axClass: String? // "AXButton", "AXLink", ... (nil for omniparser)
+    /// CLIP similarity of this box vs the step's target text, softmaxed across
+    /// the scored boxes (0–1). The box that best MEANS the target scores high.
+    let matchScore: Double?
 
     enum CodingKeys: String, CodingKey {
         case x, y, w, h, cx, cy, confidence, source
         case axClass = "ax_class"
+        case matchScore = "match_score"
     }
 }
 
@@ -34,12 +38,14 @@ struct YOLODetectResponse: Decodable {
     let omniCount: Int
     let macosCount: Int
     let mergedCount: Int
+    let matchApplied: Bool?
 
     enum CodingKeys: String, CodingKey {
         case elements
         case omniCount = "omni_count"
         case macosCount = "macos_count"
         case mergedCount = "merged_count"
+        case matchApplied = "match_applied"
     }
 }
 
@@ -154,7 +160,11 @@ final class YOLODetector {
             guard isValidAXPoint(axPoint, screenRegion: screenRegion, screen: screen) else { continue }
 
             var score = 0.0
-            // AX class match (Screen2AX only) — strongest signal.
+            // CLIP semantic match vs the step's target text — the strongest
+            // signal when the service computed it (it's what actually ties a
+            // box to THIS step's target).
+            if let ms = element.matchScore { score += ms * 0.8 }
+            // AX class match (Screen2AX only).
             if let axClass = element.axClass, let expected = expectedAXClass, axClass == expected {
                 score += 0.5
             }
@@ -173,18 +183,26 @@ final class YOLODetector {
             return nil
         }
 
-        // YOLO boxes carry no text, so beyond the AX class there is nothing tying
-        // a detection to THIS step's target. Without this guard, any confident
-        // box in the region "wins" and a wrong dot blocks the far more accurate
-        // Nova fallback. Only accept when there is a real semantic signal:
+        // A detection is only accepted when something ties it to THIS step's
+        // target — otherwise any confident box in the region would "win" and a
+        // wrong dot blocks the far more accurate Nova fallback. Accept when:
+        //   - CLIP says this box is the semantic winner (decisively), or
         //   - the expected AX class matched, or
         //   - the region narrowed the field to a single unambiguous candidate.
+        let ms = winner.element.matchScore ?? 0
+        let runnerUpMS = candidates
+            .filter { $0.element.matchScore != nil && $0.axPoint != winner.axPoint }
+            .map { $0.element.matchScore! }.max() ?? 0
+        let semanticWinner = ms >= 0.35 && ms >= runnerUpMS * 1.5
         let classMatched = expectedAXClass != nil
             && winner.element.axClass == expectedAXClass
         let unambiguous = candidates.count == 1 && winner.element.confidence >= 0.5
-        guard classMatched || unambiguous else {
-            DebugLogger.log("L2.5", "best candidate rejected (no class match, \(candidates.count) candidates) — deferring to L3 Nova")
+        guard semanticWinner || classMatched || unambiguous else {
+            DebugLogger.log("L2.5", "best candidate rejected (matchScore=\(String(format: "%.2f", ms)), no class match, \(candidates.count) candidates) — deferring to L3 Nova")
             return nil
+        }
+        if semanticWinner {
+            DebugLogger.log("L2.5", "CLIP semantic winner: matchScore=\(String(format: "%.2f", ms)) (runner-up \(String(format: "%.2f", runnerUpMS)))")
         }
         return winner
     }
@@ -246,35 +264,65 @@ final class YOLODetector {
 
     // MARK: - Training data collection
 
+    /// UserDefaults key for the OPT-IN screenshot capture. Off by default —
+    /// the core privacy rule is "screenshots never touch disk", so saving
+    /// training images requires an explicit user decision (dev-tools toggle).
+    static let captureTrainingImagesKey = "waylo.captureTrainingImages"
+
     /// Called when L3 (Nova) succeeds — appends a labelled example to a local
     /// JSONL file for future YOLO fine-tuning. Fire-and-forget, failures ignored.
     /// `nonisolated` so the file write stays off the main actor.
+    ///
+    /// When the user has opted in (`captureTrainingImagesKey`), the downscaled
+    /// screenshot is saved next to the log so the example is actually
+    /// trainable (bbox-only entries have no pixels to learn from).
     nonisolated func logTrainingExample(
         appName: String,
         targetLabel: String,
+        controlKind: String,
         screenRegion: String,
         novaBBox: [Double],   // raw [xMin, yMin, xMax, yMax] on 0–1000 scale
         pixelWidth: Int,
-        pixelHeight: Int
+        pixelHeight: Int,
+        image: CGImage?
     ) {
-        let entry: [String: Any] = [
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!.appendingPathComponent("Sahayak", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        var entry: [String: Any] = [
             "timestamp": ISO8601DateFormatter().string(from: Date()),
             "app_name": appName,
             "target_label": targetLabel,
+            "control_kind": controlKind,
             "screen_region": screenRegion,
             "bbox_0_1000": novaBBox,
             "image_pixel_width": pixelWidth,
             "image_pixel_height": pixelHeight,
         ]
+
+        // Opt-in image capture: downscaled JPEG (same 1280px compressor used
+        // for uploads) into training_images/, referenced from the JSONL entry.
+        if UserDefaults.standard.bool(forKey: Self.captureTrainingImagesKey),
+           let image = image,
+           let (b64, size) = ScreenCapturer.compressedJPEGBase64(image, maxWidth: 1280),
+           let jpeg = Data(base64Encoded: b64) {
+            let imagesDir = dir.appendingPathComponent("training_images", isDirectory: true)
+            try? FileManager.default.createDirectory(at: imagesDir, withIntermediateDirectories: true)
+            let name = "\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
+            let fileURL = imagesDir.appendingPathComponent(name)
+            if (try? jpeg.write(to: fileURL)) != nil {
+                entry["image_file"] = "training_images/\(name)"
+                entry["saved_image_width"] = Int(size.width)
+                entry["saved_image_height"] = Int(size.height)
+            }
+        }
+
         guard let data = try? JSONSerialization.data(withJSONObject: entry),
               var line = String(data: data, encoding: .utf8) else { return }
         line += "\n"
 
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!.appendingPathComponent("Sahayak", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent("yolo_training_log.jsonl")
-
         if let handle = try? FileHandle(forWritingTo: file) {
             handle.seekToEndOfFile()
             handle.write(line.data(using: .utf8)!)
@@ -282,6 +330,6 @@ final class YOLODetector {
         } else {
             try? line.data(using: .utf8)?.write(to: file)
         }
-        DebugLogger.log("L2.5", "training example logged to yolo_training_log.jsonl")
+        DebugLogger.log("L2.5", "training example logged\(entry["image_file"] != nil ? " (with image)" : "") to yolo_training_log.jsonl")
     }
 }

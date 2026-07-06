@@ -213,16 +213,19 @@ final class CoordinateResolver {
                     DebugLogger.log("RESOLVE", "LABEL_CACHE_STORED: \(result.novaLabel)")
                     DebugState.shared.update(cache: "STORED \(result.novaLabel)")
                 }
-                // Log a labelled example for future YOLO fine-tuning.
+                // Log a labelled example for future YOLO fine-tuning (the
+                // screenshot is saved only if the user opted in).
                 if let bbox = result.rawBBox {
                     let app = appName.isEmpty ? TargetAppTracker.shared.targetName : appName
                     YOLODetector.shared.logTrainingExample(
                         appName: app,
                         targetLabel: targetLabel,
+                        controlKind: controlKind,
                         screenRegion: screenRegion.rawValue,
                         novaBBox: bbox,
                         pixelWidth: image.width,
-                        pixelHeight: image.height
+                        pixelHeight: image.height,
+                        image: image
                     )
                 }
                 return Resolution(axPoint: point, updatedInstruction: result.updatedInstruction, targetFrame: result.axFrame)

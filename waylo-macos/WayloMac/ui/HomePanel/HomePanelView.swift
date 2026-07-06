@@ -13,6 +13,10 @@ struct HomePanelView: View {
 
     /// Toggles the developer/milestone testing tools.
     @State private var showDevTools = false
+    /// Opt-in: save downscaled screenshots with harvested YOLO training
+    /// examples (off by default — screenshots otherwise never touch disk).
+    @State private var captureTrainingImages =
+        UserDefaults.standard.bool(forKey: YOLODetector.captureTrainingImagesKey)
     @State private var testFindDescription = ""
     @State private var layerTestLabel = ""
     @State private var layerTestResults: [String] = []
@@ -401,6 +405,20 @@ struct HomePanelView: View {
                     .onSubmit { findAndShowDot() }
                 Button("Find") { findAndShowDot() }
                     .buttonStyle(.bordered)
+            }
+
+            Toggle(isOn: $captureTrainingImages) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Save YOLO training screenshots").font(.caption)
+                    Text("Stores downscaled screenshots on-device when Nova finds an element, for fine-tuning")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .onChange(of: captureTrainingImages) {
+                UserDefaults.standard.set(captureTrainingImages, forKey: YOLODetector.captureTrainingImagesKey)
             }
 
             // Layer self-test: run EVERY layer independently on the current
