@@ -103,9 +103,23 @@ class WayloGuidanceService : Service() {
     }
 
     private fun startAsForeground() {
-        // Plain foreground service: enough to keep the overlay alive everywhere.
-        // The mediaProjection type is added later only during a capture.
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // The manifest declares BOTH "specialUse" and "mediaProjection" for this
+        // service. If startForeground() is called without an explicit type,
+        // Android 14+ applies ALL manifest-declared types — including
+        // mediaProjection, which requires an active MediaProjection grant that
+        // doesn't exist yet at plain service start, and throws SecurityException.
+        // Passing FOREGROUND_SERVICE_TYPE_SPECIAL_USE explicitly restricts this
+        // initial call to just that type; mediaProjection is added later, only
+        // once a capture actually begins, via enableMediaProjectionType().
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
     }
 
     private fun buildNotification(): Notification {
