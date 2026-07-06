@@ -1,6 +1,7 @@
 package com.waylo.ai
 
 import android.util.Log
+import androidx.annotation.Keep
 import org.json.JSONObject
 
 /**
@@ -16,6 +17,7 @@ import org.json.JSONObject
  * @param fallbackHint       Backend's suggestion for what to do if the element isn't found.
  * @param parentContainer    Backend hint for the containing UI region/component.
  */
+@Keep
 data class Step(
     val index: Int,
     val instruction: String,
@@ -37,6 +39,7 @@ data class Step(
  * so the caller can decide how to phrase this for the user; this class does
  * not do any user-facing message classification itself.
  */
+@Keep
 data class Plan(
     val appPackage: String?,
     val appName: String?,
@@ -48,6 +51,7 @@ data class Plan(
 /**
  * Parses the JSON plan returned by the backend's `/plan` endpoint into a [Plan].
  */
+@Keep
 object PlanParser {
 
     private const val TAG = "WAYLO_DOT"
