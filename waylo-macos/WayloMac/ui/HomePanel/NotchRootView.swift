@@ -11,10 +11,10 @@ struct NotchRootView: View {
             if expansion.expanded {
                 expandedPanel
             } else if engine.isRunning {
+                // Display-only: the pill window is click-through so it can
+                // never block menu items beneath it. Open via menu-bar icon
+                // or ⌃⌥⌘W.
                 runningIndicator
-                    // Click the pill to open the full panel.
-                    .contentShape(Rectangle())
-                    .onTapGesture { expansion.expanded = true }
             }
         }
         .frame(width: 380)

@@ -100,8 +100,9 @@ final class NotchPanelController: NSWindowController {
         }
 
         // Size the window to the SwiftUI content's natural height so there is no
-        // transparent dead zone to swallow clicks (the old bug).
-        window.setContentSize(NSSize(width: panelWidth, height: 10)) // let it grow from small
+        // transparent dead zone to swallow clicks (the old bug). fittingSize is
+        // intrinsic to the SwiftUI content — no pre-resize needed (a resize
+        // here caused a one-frame flicker on every state change).
         let fitting = hostingController.view.fittingSize
         let height = max(28, min(fitting.height, screen.frame.height - 40))
 
@@ -122,9 +123,12 @@ final class NotchPanelController: NSWindowController {
         )
         window.setFrame(rect, display: true)
 
-        // Collapsed pill is clickable (small window → no dead zone). Expanded
-        // panel is interactive and takes key focus for the text field.
-        window.ignoresMouseEvents = false
+        // The collapsed pill is CLICK-THROUGH: it spans the menu-bar strip, and
+        // apps with long menus (Xcode) have real menu items under its left/
+        // right wings — a progress indicator must never swallow those clicks
+        // (clicky's rule: never block the user's app). Open the panel via the
+        // menu-bar icon or ⌃⌥⌘W instead. Only the expanded panel is interactive.
+        window.ignoresMouseEvents = !expanded
         window.orderFrontRegardless()
 
         if expanded {
