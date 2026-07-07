@@ -24,6 +24,7 @@ final class NovaVisionFallback {
     }
 
     /// `image`/`screen`: the captured display image and its screen.
+    /// `ocrContext`: visible on-screen text from local OCR — free grounding.
     func findElement(
         targetLabel: String,
         elementDescription: String,
@@ -32,7 +33,8 @@ final class NovaVisionFallback {
         stepIndex: Int,
         totalSteps: Int,
         image: CGImage,
-        screen: NSScreen
+        screen: NSScreen,
+        ocrContext: String = ""
     ) async -> Result? {
         // Nova 2 Lite normalises coordinates, so compression ratio is irrelevant.
         // Downscale only to keep the upload payload small/fast.
@@ -49,7 +51,8 @@ final class NovaVisionFallback {
             let response = try await WayloAPIClient.shared.novaVision(
                 imageBase64: base64,
                 targetLabel: label,
-                stepInstruction: stepInstruction
+                stepInstruction: stepInstruction,
+                ocrContext: ocrContext
             )
             guard response.found, let bbox = response.bbox, bbox.count == 4 else {
                 DebugLogger.log("NOVA", "not found (found=\(response.found))")

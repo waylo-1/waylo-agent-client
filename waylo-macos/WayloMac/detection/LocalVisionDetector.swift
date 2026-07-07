@@ -124,6 +124,25 @@ final class LocalVisionDetector {
         return OCRMatch(point: result, score: bestScore, frame: axFrame)
     }
 
+    /// A compact comma-separated list of the text currently visible on screen
+    /// (deduped, capped). Sent with the Nova request as free grounding — a
+    /// vision model anchored to real on-screen words searches far better on
+    /// busy screens. ~80ms, fully local.
+    func visibleTextSummary(in image: CGImage, maxItems: Int = 40) async -> String {
+        let results = await runOCRRaw(on: image)
+        var seen = Set<String>()
+        var items: [String] = []
+        for obs in results {
+            guard let text = obs.topCandidates(1).first?.string
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty, text.count <= 48 else { continue }
+            guard seen.insert(text.lowercased()).inserted else { continue }
+            items.append(text)
+            if items.count >= maxItems { break }
+        }
+        return items.joined(separator: ", ")
+    }
+
     // MARK: - OCR
 
     private func runOCRRaw(on cgImage: CGImage) async -> [VNRecognizedTextObservation] {

@@ -173,6 +173,41 @@ final class AccessibilityReader {
         return nil
     }
 
+    /// The interactive element under an AX-global point — hit-testing via the
+    /// system-wide AX element. Walks UP from the deepest hit to the nearest
+    /// ancestor with a usable label, so clicking a button's inner text still
+    /// returns the button. Used to LEARN from user clicks: when the user
+    /// clicks somewhere other than where Waylo pointed and the screen then
+    /// changes, that element was the real target.
+    func elementAt(axPoint: CGPoint) -> AXElementInfo? {
+        let system = AXUIElementCreateSystemWide()
+        var ref: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(system, Float(axPoint.x), Float(axPoint.y), &ref) == .success,
+              var element = ref else { return nil }
+
+        for _ in 0..<4 {
+            let role = copyStringAttribute(element, kAXRoleAttribute)
+            let title = copyStringAttribute(element, kAXTitleAttribute)
+            let desc = copyStringAttribute(element, kAXDescriptionAttribute)
+            let value = copyStringAttribute(element, kAXValueAttribute)
+            if !title.isEmpty || !desc.isEmpty || (!value.isEmpty && role == "AXStaticText") {
+                let frame = copyFrame(element)
+                return AXElementInfo(
+                    role: role, title: title, description: desc,
+                    helpText: copyStringAttribute(element, kAXHelpAttribute),
+                    value: value, frame: frame,
+                    center: CGPoint(x: frame.midX, y: frame.midY),
+                    axElement: element
+                )
+            }
+            var parentRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parentRef) == .success,
+                  let parent = parentRef else { break }
+            element = parent as! AXUIElement
+        }
+        return nil
+    }
+
     /// A cheap fingerprint of the target app's visible state: app name, window
     /// count, focused-window title, and whether a sheet/dialog is up. Comparing
     /// it before/after an action answers "did that click visibly DO anything?"

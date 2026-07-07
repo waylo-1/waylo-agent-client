@@ -187,7 +187,8 @@ final class WayloAPIClient {
     func novaVision(
         imageBase64: String,
         targetLabel: String,
-        stepInstruction: String
+        stepInstruction: String,
+        ocrContext: String = ""
     ) async throws -> NovaVisionResponse {
         guard let url = URL(string: "\(baseURL)/nova-vision") else { throw APIError.invalidURL }
 
@@ -196,11 +197,12 @@ final class WayloAPIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 20
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "image_base64": imageBase64,
             "target_label": targetLabel,
             "step_instruction": stepInstruction
         ]
+        if !ocrContext.isEmpty { body["ocr_context"] = ocrContext }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
@@ -332,6 +334,59 @@ final class WayloAPIClient {
             throw APIError.serverError
         }
         return PlanParser.parseRecover(from: data)
+    }
+
+    // MARK: - POST /failure (detection analytics: successes, misses, corrections)
+
+    /// One session id per app run, so events can be grouped server-side.
+    static let sessionID = UUID().uuidString
+
+    /// Fire-and-forget detection event. `source`: "auto_success" (a layer hit —
+    /// includes which layer and the chosen box), "auto_miss" (all layers missed;
+    /// include the screenshot), or "user_correction" (the user clicked elsewhere
+    /// and the screen changed — their element is ground truth). Two weeks of
+    /// this data shows exactly where accuracy is lost.
+    func reportDetectionEvent(
+        source: String,
+        task: String,
+        stepNumber: Int,
+        findDescription: String,
+        elementType: String = "",
+        screenRegion: String = "",
+        appName: String = "",
+        layerReached: Int = -1,
+        chosenBox: [String: Any]? = nil,
+        correctedTarget: [String: Any]? = nil,
+        screenshotBase64: String? = nil,
+        screenWidth: Int = 0,
+        screenHeight: Int = 0
+    ) {
+        guard !findDescription.isEmpty, let url = URL(string: "\(baseURL)/failure") else { return }
+        var body: [String: Any] = [
+            "sessionId": Self.sessionID,
+            "taskDescription": task,
+            "stepNumber": stepNumber,
+            "findDescription": findDescription,
+            "elementType": elementType,
+            "screenRegion": screenRegion,
+            "targetPackage": appName,      // app name plays the package role on macOS
+            "layerReached": layerReached,
+            "source": source,
+        ]
+        if let box = chosenBox { body["chosenBox"] = box }
+        if let corrected = correctedTarget { body["correctedTarget"] = corrected }
+        if let shot = screenshotBase64 {
+            body["screenshotBase64"] = shot
+            body["screenWidth"] = screenWidth
+            body["screenHeight"] = screenHeight
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
     }
 
     // MARK: - POST /guide

@@ -476,6 +476,7 @@ final class GuidanceEngine: ObservableObject {
         }
 
         if let resolution = resolution {
+            reportSuccess(step: step, resolution: resolution)
             applyUpdatedInstruction(resolution.updatedInstruction)
 
             // Several confident, distinct matches — never guess. Show numbered
@@ -652,6 +653,22 @@ final class GuidanceEngine: ObservableObject {
         OverlayWindowController.shared.showLoading(at: spinnerPoint)
 
         guard let (base64, size) = ScreenCapturer.compressedJPEGBase64(capture.image) else { return false }
+
+        // Every-layer miss: report it (with the screenshot recovery is about
+        // to use anyway) so the failure set is analyzable and trainable.
+        WayloAPIClient.shared.reportDetectionEvent(
+            source: "auto_miss",
+            task: taskName,
+            stepNumber: step.index,
+            findDescription: step.findDescription,
+            elementType: step.controlKind,
+            screenRegion: step.screenRegion.rawValue,
+            appName: TargetAppTracker.shared.targetName,
+            layerReached: -1,
+            screenshotBase64: base64,
+            screenWidth: Int(size.width),
+            screenHeight: Int(size.height)
+        )
 
         // Verification signal → recovery: when the previous action visibly did
         // nothing AND we now can't find this step's target, the model should
@@ -1071,6 +1088,103 @@ final class GuidanceEngine: ObservableObject {
         if secondary && isRight {
             DebugLogger.log("ENGINE", "right-click detected → advancing step \(stepIndex + 1)")
             advanceAfterClick(stepIndex: stepIndex)
+            return
+        }
+
+        // OFF-TARGET click: maybe the USER knows better than the dot. If the
+        // screen visibly changes right after their click, their element was
+        // the real target — learn it and move on.
+        if !isRight {
+            watchOffTargetClick(at: clickAX, stepIndex: stepIndex)
+        }
+    }
+
+    // MARK: - Detection analytics (fire-and-forget, no screenshots on success)
+
+    /// Reports which layer resolved a step — two weeks of this shows exactly
+    /// where accuracy is won and lost.
+    private func reportSuccess(step: Step, resolution: CoordinateResolver.Resolution) {
+        let layerName = DebugState.shared.layerResolved
+        var box: [String: Any] = ["x": Int(resolution.axPoint.x), "y": Int(resolution.axPoint.y)]
+        if let f = resolution.targetFrame {
+            box["bounds"] = ["x": Int(f.minX), "y": Int(f.minY), "w": Int(f.width), "h": Int(f.height)]
+        }
+        box["layer"] = layerName
+        WayloAPIClient.shared.reportDetectionEvent(
+            source: "auto_success",
+            task: taskName,
+            stepNumber: step.index,
+            findDescription: step.findDescription,
+            elementType: step.controlKind,
+            screenRegion: step.screenRegion.rawValue,
+            appName: TargetAppTracker.shared.targetName,
+            layerReached: Self.layerIndex(layerName),
+            chosenBox: box
+        )
+    }
+
+    /// "L0 AX" → 0, "OCR" → 1, "cache→L0 AX" → 2, "L2.5 …" → 3, "L3 …" → 4.
+    private static func layerIndex(_ name: String) -> Int {
+        if name.contains("cache") { return 2 }
+        if name.contains("L0") { return 0 }
+        if name.contains("OCR") { return 1 }
+        if name.contains("L2.5") { return 3 }
+        if name.contains("L3") || name.contains("Nova") { return 4 }
+        return -1
+    }
+
+    // MARK: - Learning from the user's clicks (self-supervised correction)
+
+    /// The user clicked somewhere OTHER than where Waylo pointed while a dot/
+    /// highlight was showing. If the screen visibly changes within ~1.3s, the
+    /// click did something — treat the clicked element as ground truth:
+    /// cache its label for this step, report a user_correction event, and
+    /// advance (the user just did the step their own way).
+    private func watchOffTargetClick(at clickAX: CGPoint, stepIndex: Int) {
+        let token = locateToken
+        let before = AccessibilityReader.shared.targetScreenSignature()
+        DebugLogger.log("CORRECT", "off-target click at (\(Int(clickAX.x)),\(Int(clickAX.y))) — watching for effect")
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            guard self.isRunning, self.state == .showing,
+                  self.currentStepIndex == stepIndex, token == self.locateToken,
+                  stepIndex < self.steps.count else { return }
+            let after = AccessibilityReader.shared.targetScreenSignature()
+            guard after != before else { return } // click did nothing visible — ignore
+
+            let step = self.steps[stepIndex]
+            let appName = TargetAppTracker.shared.targetName
+            let element = AccessibilityReader.shared.elementAt(axPoint: clickAX)
+            let label = element.map { $0.title.isEmpty ? $0.description : $0.title } ?? ""
+            DebugLogger.log("CORRECT", "user's click WORKED — learning '\(label)' as the real target for step \(stepIndex + 1)")
+
+            // 1. Label cache: next run of this step resolves to the user's
+            //    element via AX and skips vision entirely.
+            if !label.isEmpty, !step.labelCacheKey.isEmpty {
+                WayloAPIClient.shared.storeLabel(appName: appName,
+                                                 stepDescription: step.labelCacheKey,
+                                                 axLabel: label)
+            }
+            // 2. Analytics: a user_correction event carrying the true target.
+            var corrected: [String: Any] = ["x": Int(clickAX.x), "y": Int(clickAX.y)]
+            if let el = element {
+                corrected["text"] = label
+                corrected["bounds"] = ["x": Int(el.frame.minX), "y": Int(el.frame.minY),
+                                       "w": Int(el.frame.width), "h": Int(el.frame.height)]
+            }
+            WayloAPIClient.shared.reportDetectionEvent(
+                source: "user_correction",
+                task: self.taskName,
+                stepNumber: stepIndex + 1,
+                findDescription: step.findDescription,
+                elementType: step.controlKind,
+                screenRegion: step.screenRegion.rawValue,
+                appName: appName,
+                correctedTarget: corrected
+            )
+            // 3. The user completed the step their own way — advance.
+            self.currentTargetAX = clickAX
+            self.advanceAfterClick(stepIndex: stepIndex)
         }
     }
 
@@ -1089,17 +1203,12 @@ final class GuidanceEngine: ObservableObject {
         }
         let next = stepIndex + 1
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: nextStepDelayNanos())
+            // Settle until the screen stops changing (animations/window opens)
+            // instead of a fixed delay — faster when quick, safer when slow.
+            await ScreenCapturer.shared.settleAfterAction()
             guard self.isRunning, self.currentStepIndex == stepIndex else { return }
             await self.executeStep(index: next)
         }
-    }
-
-    /// Settle time between a registered click and the next step's locate —
-    /// long enough for the resulting window/dialog to appear, short enough to
-    /// feel responsive. (Was 1.8–2.0s, which read as "nothing happened".)
-    private func nextStepDelayNanos() -> UInt64 {
-        UInt64(Double.random(in: 1.0...1.2) * 1_000_000_000)
     }
 
     /// True when the step asks the user to right-click / Control-click / open a
@@ -1296,7 +1405,7 @@ final class GuidanceEngine: ObservableObject {
         OverlayWindowController.shared.hideDot()
         let next = stepIndex + 1
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: nextStepDelayNanos())
+            await ScreenCapturer.shared.settleAfterAction()
             guard self.isRunning, self.currentStepIndex == stepIndex else { return }
             await self.executeStep(index: next)
         }

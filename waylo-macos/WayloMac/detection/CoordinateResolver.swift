@@ -192,6 +192,8 @@ final class CoordinateResolver {
         if !anchorText.isEmpty && !anchorPosition.isEmpty {
             novaDescription += " (located to the \(anchorPosition) of \"\(anchorText)\")"
         }
+        // Local OCR words as grounding context (~80ms, only on this paid path).
+        let ocrContext = await visionDetector.visibleTextSummary(in: image)
         if let result = await novaFallback.findElement(
             targetLabel: targetLabel,
             elementDescription: novaDescription,
@@ -200,7 +202,8 @@ final class CoordinateResolver {
             stepIndex: stepIndex,
             totalSteps: totalSteps,
             image: image,
-            screen: screen
+            screen: screen,
+            ocrContext: ocrContext
         ) {
             if let point = result.axPoint {
                 print("[Resolver] L3 hit \(point)")
