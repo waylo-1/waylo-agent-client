@@ -19,8 +19,11 @@ final class DebugLogger {
         guard isEnabled else { return }
         // .public so the dynamic values aren't redacted to <private>.
         logger.log("[\(tag, privacy: .public)] \(message, privacy: .public)")
-        // Also mirror to stderr for Xcode console runs.
+        #if DEBUG
+        // Mirror to stderr for Xcode console runs; skipped in Release so
+        // production builds don't pay for (or leak) per-line stderr writes.
         FileHandle.standardError.write("[Sahayak][\(tag)] \(message)\n".data(using: .utf8) ?? Data())
+        #endif
     }
 
     static func logCoordinate(_ tag: String, point: CGPoint, context: String) {

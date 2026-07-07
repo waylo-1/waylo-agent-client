@@ -195,9 +195,16 @@ final class AccessibilityReader {
         }
     }
 
+    /// Hard cap on collected elements. Huge trees (Xcode, browsers with many
+    /// tabs) can hold tens of thousands of nodes; walking them all stalls
+    /// every locate for seconds and floods the scorer with noise. The first
+    /// ~800 interactive elements cover everything visible on one screen.
+    private static let maxElements = 800
+
     /// Recursively walks the AX tree, collecting interactive elements.
     private func traverseElement(_ element: AXUIElement, depth: Int, roles: Set<String>, results: inout [AXElementInfo]) {
         guard depth < 14 else { return } // Max depth to avoid runaway recursion
+        guard results.count < Self.maxElements else { return }
 
         let roleStr = copyStringAttribute(element, kAXRoleAttribute)
         let subroleStr = copyStringAttribute(element, kAXSubroleAttribute)

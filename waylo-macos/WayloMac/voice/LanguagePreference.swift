@@ -33,10 +33,11 @@ enum LanguagePreference: String, CaseIterable {
     /// A recognizer for this language, falling back to en-US when the OS has
     /// no model for it (Apple's STT coverage varies — Punjabi in particular
     /// may be unavailable; the fallback keeps voice input working).
+    /// SFSpeechRecognizer(locale:) returns nil for unsupported locales;
+    /// isAvailable can be transiently false (network), so nil is the only
+    /// signal we act on here.
     var recognizer: SFSpeechRecognizer? {
-        if let r = SFSpeechRecognizer(locale: Locale(identifier: rawValue)), r.isAvailable || r.supportsOnDeviceRecognition || true {
-            // SFSpeechRecognizer(locale:) returns nil for unsupported locales;
-            // isAvailable can be transiently false (network) — accept non-nil.
+        if let r = SFSpeechRecognizer(locale: Locale(identifier: rawValue)) {
             return r
         }
         DebugLogger.log("LANG", "no STT for \(rawValue) — falling back to en-US")
