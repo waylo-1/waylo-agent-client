@@ -1,0 +1,127 @@
+import AppKit
+
+/// Tasks that don't need a plan at all: opening a website, a web search, or
+/// launching an app are one NSWorkspace call — instant, free, and impossible
+/// to mis-ground. Matching is deliberately CONSERVATIVE: anything ambiguous
+/// falls through to the planner ("search for my file in Finder" is guidance,
+/// not a Google query), so a false negative costs one LLM call while a false
+/// positive would hijack a real task.
+enum IntentShortcuts {
+
+    enum Intent {
+        case openURL(URL, spoken: String)
+        case webSearch(query: String, engine: String, url: URL)
+        case openApp(name: String, url: URL)
+    }
+
+    /// Returns a matched intent, or nil → send the task to the planner.
+    static func match(_ task: String) -> Intent? {
+        let text = task.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = text.lowercased()
+
+        // 1. Explicit URL / domain anywhere in the task.
+        if let url = explicitURL(in: text) {
+            return .openURL(url, spoken: "Opening \(url.host ?? "the website").")
+        }
+
+        // 2. Web search — ONLY when the engine is named ("search X on google",
+        //    "google X", "youtube X", "search youtube for X").
+        if let (query, engine) = searchQuery(in: lower, original: text) {
+            let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+            let url = engine == "youtube"
+                ? URL(string: "https://www.youtube.com/results?search_query=\(encoded)")!
+                : URL(string: "https://www.google.com/search?q=\(encoded)")!
+            return .webSearch(query: query, engine: engine, url: url)
+        }
+
+        // 3. App launch — "open/launch/start <app>", short tail, and ONLY when
+        //    the app actually resolves on this Mac (else the planner guides
+        //    the user through Dock/Spotlight, which teaches more anyway).
+        for prefix in ["open ", "launch ", "start "] where lower.hasPrefix(prefix) {
+            let name = text.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            let words = name.split(separator: " ")
+            guard !name.isEmpty, words.count <= 3 else { continue }
+            if let url = resolveApp(named: name) {
+                return .openApp(name: name, url: url)
+            }
+        }
+
+        return nil
+    }
+
+    /// Performs the intent. Returns the confirmation to show/speak.
+    @discardableResult
+    static func perform(_ intent: Intent) -> String {
+        switch intent {
+        case .openURL(let url, let spoken):
+            NSWorkspace.shared.open(url)
+            DebugLogger.log("INTENT", "openURL \(url.absoluteString)")
+            return spoken
+        case .webSearch(let query, let engine, let url):
+            NSWorkspace.shared.open(url)
+            DebugLogger.log("INTENT", "search '\(query)' on \(engine)")
+            return "Searching \(engine == "youtube" ? "YouTube" : "Google") for \(query)."
+        case .openApp(let name, let url):
+            NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
+            DebugLogger.log("INTENT", "openApp \(name) → \(url.path)")
+            return "Opening \(name)."
+        }
+    }
+
+    // MARK: - Matching helpers
+
+    private static func explicitURL(in text: String) -> URL? {
+        // Full URLs.
+        if let range = text.range(of: #"https?://\S+"#, options: .regularExpression) {
+            return URL(string: String(text[range]))
+        }
+        // Bare domains ("go to amazon.in", "open wikipedia.org") — require a
+        // dot + known-ish TLD shape and no spaces.
+        if let range = text.range(of: #"(?i)\b[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|org|net|in|io|co|gov|edu|app|dev|ai)(/\S*)?\b"#,
+                                  options: .regularExpression) {
+            return URL(string: "https://\(text[range])")
+        }
+        return nil
+    }
+
+    private static func searchQuery(in lower: String, original: String) -> (String, String)? {
+        let patterns: [(pattern: String, engine: String)] = [
+            (#"^(?:search|look up|find)\s+(?:for\s+)?(.+?)\s+on\s+google$"#, "google"),
+            (#"^(?:search|look up|find)\s+(?:for\s+)?(.+?)\s+on\s+youtube$"#, "youtube"),
+            (#"^google\s+(?:for\s+)?(.+)$"#, "google"),
+            (#"^youtube\s+(.+)$"#, "youtube"),
+            (#"^search\s+(?:google|the web)\s+for\s+(.+)$"#, "google"),
+            (#"^search\s+youtube\s+for\s+(.+)$"#, "youtube"),
+        ]
+        for (pattern, engine) in patterns {
+            if let q = lower.firstCapture(for: pattern), !q.isEmpty {
+                return (q.trimmingCharacters(in: .whitespaces), engine)
+            }
+        }
+        return nil
+    }
+
+    /// Finds an installed app by (case-insensitive) display name.
+    private static func resolveApp(named name: String) -> URL? {
+        let fm = FileManager.default
+        let dirs = ["/Applications", "/System/Applications",
+                    "/System/Applications/Utilities",
+                    ("~/Applications" as NSString).expandingTildeInPath]
+        for dir in dirs {
+            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            if let hit = items.first(where: {
+                $0.hasSuffix(".app") &&
+                $0.dropLast(4).caseInsensitiveCompare(name) == .orderedSame
+            }) {
+                return URL(fileURLWithPath: "\(dir)/\(hit)")
+            }
+        }
+        // Already-running app with that name also counts.
+        if let running = NSWorkspace.shared.runningApplications.first(where: {
+            ($0.localizedName ?? "").caseInsensitiveCompare(name) == .orderedSame
+        }), let url = running.bundleURL {
+            return url
+        }
+        return nil
+    }
+}

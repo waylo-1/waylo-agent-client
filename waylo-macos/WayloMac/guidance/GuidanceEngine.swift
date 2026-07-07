@@ -69,6 +69,12 @@ final class GuidanceEngine: ObservableObject {
     private var windowSnapshot: [AXUIElement] = []
     /// Frame of the newly-appeared window, used to narrow AX + OCR search.
     private var preferredWindowFrame: CGRect?
+    /// Screen fingerprint at the moment of the last completed action, and
+    /// whether the screen visibly changed after it. When an action had NO
+    /// visible effect and the next step then can't be found, recovery is told
+    /// so — it stops assuming the click worked.
+    private var signatureBeforeAction: String?
+    private var lastActionChangedScreen = true
 
     private init() {}
 
@@ -120,9 +126,11 @@ final class GuidanceEngine: ObservableObject {
     // MARK: - New-window tracking
 
     /// Remember the app's windows right when a click lands (before whatever it
-    /// opens has appeared).
+    /// opens has appeared), plus the screen fingerprint for the verification
+    /// signal.
     private func snapshotWindows() {
         windowSnapshot = AccessibilityReader.shared.targetWindowList().map(\.element)
+        signatureBeforeAction = AccessibilityReader.shared.targetScreenSignature()
     }
 
     /// Called at the start of the next step: any window not in the snapshot
@@ -404,6 +412,18 @@ final class GuidanceEngine: ObservableObject {
         // Did the last click open a new window? If so, search inside it first.
         updatePreferredWindow()
 
+        // Verification signal: did the last action visibly change anything?
+        // (Coarse by design — a toggle changes nothing and that's fine; this
+        // only matters when the next step ALSO can't be found.)
+        if let before = signatureBeforeAction {
+            let now = AccessibilityReader.shared.targetScreenSignature()
+            lastActionChangedScreen = now != before
+            DebugLogger.log("VERIFY", "screen \(lastActionChangedScreen ? "CHANGED" : "unchanged") since last action")
+            signatureBeforeAction = nil
+        } else {
+            lastActionChangedScreen = true
+        }
+
         var resolution = await CoordinateResolver.shared.resolve(
             capture: capture,
             targetLabel: step.targetLabel,
@@ -631,6 +651,16 @@ final class GuidanceEngine: ObservableObject {
 
         guard let (base64, size) = ScreenCapturer.compressedJPEGBase64(capture.image) else { return false }
 
+        // Verification signal → recovery: when the previous action visibly did
+        // nothing AND we now can't find this step's target, the model should
+        // not assume the click worked (the wrong thing may have been pressed,
+        // or the press was a silent no-op).
+        var recoveryMessage = userMessage
+        if recoveryMessage.isEmpty && !lastActionChangedScreen && currentStepIndex > 0 {
+            recoveryMessage = "Note: the previous step's click appears to have had no visible effect — the screen looks the same as before it."
+            DebugLogger.log("VERIFY", "recovery informed: previous action had no visible effect")
+        }
+
         let result: RecoverResult
         do {
             result = try await WayloAPIClient.shared.recover(
@@ -642,7 +672,7 @@ final class GuidanceEngine: ObservableObject {
                 totalSteps: steps.count,
                 instruction: step.instruction,
                 targetLabel: step.targetLabel,
-                userMessage: userMessage
+                userMessage: recoveryMessage
             )
         } catch {
             print("[Engine] recover failed: \(error)")

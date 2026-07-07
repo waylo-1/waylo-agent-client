@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 
 /// Tracks the application the user is actually working in — i.e. the most
 /// recently activated app that is NOT Waylo itself.
@@ -25,6 +26,7 @@ final class TargetAppTracker {
         if let front = workspace.frontmostApplication, front.processIdentifier != selfPID {
             targetPID = front.processIdentifier
             targetName = front.localizedName ?? ""
+            enableElectronAccessibility(pid: front.processIdentifier)
             DebugLogger.log("TRACKER", "seed target='\(targetName)' pid=\(targetPID ?? -1)")
         }
 
@@ -49,7 +51,22 @@ final class TargetAppTracker {
             let old = self.targetName
             self.targetPID = app.processIdentifier
             self.targetName = app.localizedName ?? ""
+            self.enableElectronAccessibility(pid: app.processIdentifier)
             DebugLogger.log("TRACKER", "target changed: '\(old)' -> '\(self.targetName)' pid=\(self.targetPID ?? -1)")
+        }
+    }
+
+    /// Chromium/Electron apps (Slack, Spotify, VS Code, Discord, Chrome…)
+    /// render their AX tree ONLY after a client sets AXManualAccessibility on
+    /// them — otherwise they look empty to L0 and everything falls to vision.
+    /// Idempotent and ignored by native apps, so it's safe to set on every
+    /// target change. (Not AXEnhancedUserInterface — that one changes window
+    /// behavior and is known to break window managers.)
+    private func enableElectronAccessibility(pid: pid_t) {
+        let app = AXUIElementCreateApplication(pid)
+        let result = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        if result == .success {
+            DebugLogger.log("TRACKER", "AXManualAccessibility enabled for pid \(pid) (Electron-style app)")
         }
     }
 }

@@ -72,7 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // takeRetainedValue would over-release it.
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
-        if !trusted {
+        // Onboarding covers ALL permissions with live status — show it when
+        // anything is missing, so nothing is discovered broken mid-task.
+        if !trusted || !ScreenRecordingPermission.isGranted {
             showOnboarding()
         }
     }

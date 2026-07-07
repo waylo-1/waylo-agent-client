@@ -466,6 +466,17 @@ struct HomePanelView: View {
     private func startTask() {
         let task = taskText.trimmingCharacters(in: .whitespaces)
         guard !task.isEmpty else { return }
+
+        // Direct intents (open a site, web search, launch an app) execute
+        // instantly — no plan, no dot, no cost.
+        if let intent = IntentShortcuts.match(task) {
+            let spoken = IntentShortcuts.perform(intent)
+            Speaker.shared.speak(spoken)
+            taskText = ""
+            errorMessage = nil
+            return
+        }
+
         isLoading = true
         errorMessage = nil
 

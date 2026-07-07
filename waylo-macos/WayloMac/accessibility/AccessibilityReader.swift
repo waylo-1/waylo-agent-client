@@ -173,6 +173,28 @@ final class AccessibilityReader {
         return nil
     }
 
+    /// A cheap fingerprint of the target app's visible state: app name, window
+    /// count, focused-window title, and whether a sheet/dialog is up. Comparing
+    /// it before/after an action answers "did that click visibly DO anything?"
+    /// without a screenshot. (Deliberately coarse — content edits inside a
+    /// window don't change it, which is fine: it's a navigation signal.)
+    func targetScreenSignature() -> String {
+        let windows = targetWindowList()
+        let pid = TargetAppTracker.shared.targetPID
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        var focusedTitle = ""
+        if let pid = pid {
+            let app = AXUIElementCreateApplication(pid)
+            var winRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+               let winRef = winRef {
+                focusedTitle = copyStringAttribute(winRef as! AXUIElement, kAXTitleAttribute)
+            }
+        }
+        let sheet = targetFocusedDialogFrame() != nil
+        return "\(TargetAppTracker.shared.targetName)|\(windows.count)|\(focusedTitle)|\(sheet)"
+    }
+
     /// Every window of the target app with its frame (AX coords) and subrole.
     /// This is how new windows are identified REGARDLESS of app style: whether
     /// an app opens a standard window (AXStandardWindow), a dialog (AXDialog),

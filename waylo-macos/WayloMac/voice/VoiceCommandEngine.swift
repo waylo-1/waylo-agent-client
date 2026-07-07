@@ -64,6 +64,16 @@ final class VoiceCommandEngine: ObservableObject {
     }
 
     private func startNewTask(_ task: String) async {
+        // Direct intents (open a site, web search, launch an app) execute
+        // instantly — no plan, no dot, no cost.
+        if let intent = IntentShortcuts.match(task) {
+            let spoken = IntentShortcuts.perform(intent)
+            OverlayWindowController.shared.showBanner(spoken, autoDismissAfter: 5)
+            Speaker.shared.speak(spoken)
+            state = .idle
+            return
+        }
+
         OverlayWindowController.shared.showBanner("Planning: “\(task)”…")
         Speaker.shared.speak("Okay, let me figure that out.")
         do {
