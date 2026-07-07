@@ -116,6 +116,8 @@ final class GuidanceEngine: ObservableObject {
         currentTargetAX = nil
         windowSnapshot = []
         preferredWindowFrame = nil
+        signatureBeforeAction = nil
+        lastActionChangedScreen = true
         state = .idle
         statusMessage = ""
         currentInstruction = ""
@@ -887,6 +889,11 @@ final class GuidanceEngine: ObservableObject {
         if !taskName.isEmpty, !steps.isEmpty {
             TaskHistory.shared.record(task: taskName, steps: steps)
         }
+
+        // Reopen the panel so the completion banner + rating are actually
+        // visible — with isRunning false and the panel collapsed, it would
+        // otherwise hide entirely and the ✓/✗ feedback loop would be lost.
+        NotchPanelController.expansion.expanded = true
     }
 
     // MARK: - Global debug hotkey (Ctrl+Option+N) — re-check / fix the step

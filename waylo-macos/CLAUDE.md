@@ -1,5 +1,34 @@
 # CLAUDE.md — Waylo macOS (WayloMac) context
 
+> **2026-07 update — read this first; sections below may lag the code.**
+> - **No hover UI**: the notch panel is click-driven (menu-bar icon / ⌃⌥⌘W /
+>   clicking the running pill), content-sized, dismisses on click-outside
+>   (clicky-style). `NotchExpansion` has only `expanded`.
+> - **Region highlights**: every layer returns the target's bounding rect;
+>   the overlay draws a dashed box (`HighlightBoxView`) and a click anywhere
+>   inside it advances. Bare dot is the fallback.
+> - **Assist mode is the default** (`GuideMode.assist`): safe clicks are
+>   performed via AXPress/synthetic click; destructive steps (empty/delete/
+>   send/pay…) always fall back to point-and-confirm.
+> - **Ambiguity**: near-tied confident AX matches show numbered badges
+>   (`CandidateBadgeView`); the user's click picks.
+> - **Grounded planning**: `/plan` is sent a live AX snapshot
+>   (`ScreenContextBuilder`) — plans start from the current screen state.
+>   Hardcoded demo plans are REMOVED from the backend.
+> - **Clicks come from the CGEventTap** (`HotkeyManager.addClickObserver`),
+>   not NSEvent monitors (those miss menu/Dock tracking clicks).
+> - **New-window & modal awareness**: window-list diffs after each action
+>   prefer the just-opened window; sheets/dialogs (AXSheets attr) hard-focus
+>   detection inside them. Verification: a screen fingerprint detects
+>   "the last action did nothing" and informs /recover.
+> - **Electron apps**: `AXManualAccessibility` is set on every target app.
+> - **Intents**: URL / named-engine search / "open <installed app>" bypass
+>   the planner (`IntentShortcuts`).
+> - **Language**: en/hi/pa preference drives STT + TTS + `L10n` UI strings.
+> - **YOLO service** returns CLIP `match_score` per box (semantic matching);
+>   opt-in training-screenshot capture + `finetune/` pipeline exist.
+> - CI builds Debug+Release on pushes touching `waylo-macos/`.
+
 Complete context for the **macOS** app. Read this before making changes in `waylo-macos/`.
 It is the macOS-focused companion to the repo-root `../CLAUDE.md`; where they overlap this
 file is the authority for the macOS target.
