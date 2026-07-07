@@ -7,6 +7,7 @@ struct HomePanelView: View {
     @State private var taskText = ""
     @State private var isLoading = false
     @State private var isListening = false
+    @State private var language = LanguagePreference.current
     @State private var errorMessage: String?
     /// History entry whose share link was just copied (shows a ✓ briefly).
     @State private var copiedEntryID: UUID?
@@ -207,6 +208,15 @@ struct HomePanelView: View {
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
+
+            Picker("Voice", selection: $language) {
+                ForEach(LanguagePreference.allCases, id: \.self) { lang in
+                    Text(lang.displayName).tag(lang)
+                }
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .onChange(of: language) { LanguagePreference.current = language }
 
             if isLoading {
                 HStack(spacing: 8) {
@@ -462,7 +472,10 @@ struct HomePanelView: View {
         NSLog("[Waylo] startTask pressed: '%@'", task)
         Task {
             do {
-                let plan = try await WayloAPIClient.shared.generatePlan(task: task)
+                // Ground the plan in the live screen (local AX read, ~free).
+                let context = ScreenContextBuilder.build()
+                DebugLogger.log("PLAN", "screenContext \(context.count) chars")
+                let plan = try await WayloAPIClient.shared.generatePlan(task: task, screenContext: context)
                 NSLog("[Waylo] generatePlan OK: %d steps", plan.steps.count)
                 isLoading = false
                 taskText = ""

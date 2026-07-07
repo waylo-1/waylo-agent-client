@@ -10,7 +10,9 @@ import AVFoundation
 final class MicHandler: NSObject, SFSpeechRecognizerDelegate {
     static let shared = MicHandler()
 
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    /// Rebuilt when the user's language preference changes (en/hi/pa).
+    private var recognizer = LanguagePreference.current.recognizer
+    private var recognizerLanguage = LanguagePreference.current
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
@@ -44,6 +46,14 @@ final class MicHandler: NSObject, SFSpeechRecognizerDelegate {
         stopListening()
         sessionID += 1
         let session = sessionID
+
+        // Pick up a language change made in the panel since the last listen.
+        let pref = LanguagePreference.current
+        if pref != recognizerLanguage {
+            recognizerLanguage = pref
+            recognizer = pref.recognizer
+            DebugLogger.log("MIC", "recognizer language → \(pref.rawValue)")
+        }
         self.completion = completion
         self.latestTranscript = ""
         self.didComplete = false

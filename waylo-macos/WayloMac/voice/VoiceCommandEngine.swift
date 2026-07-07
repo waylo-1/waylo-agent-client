@@ -67,7 +67,9 @@ final class VoiceCommandEngine: ObservableObject {
         OverlayWindowController.shared.showBanner("Planning: “\(task)”…")
         Speaker.shared.speak("Okay, let me figure that out.")
         do {
-            let plan = try await WayloAPIClient.shared.generatePlan(task: task)
+            let context = ScreenContextBuilder.build()
+            DebugLogger.log("PLAN", "screenContext \(context.count) chars")
+            let plan = try await WayloAPIClient.shared.generatePlan(task: task, screenContext: context)
             OverlayWindowController.shared.hideDot()
             GuidanceEngine.shared.startGuidance(plan: plan)
             DebugLogger.log("VOICE", "started guide for '\(task)' (\(plan.steps.count) steps)")

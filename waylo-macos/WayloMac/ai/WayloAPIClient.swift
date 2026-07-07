@@ -14,7 +14,9 @@ final class WayloAPIClient {
     // MARK: - POST /plan
 
     /// Generates a step plan from a natural-language task description.
-    func generatePlan(task: String) async throws -> GuidePlan {
+    /// `screenContext`: compact live AX-tree snapshot (ScreenContextBuilder)
+    /// so the planner grounds steps in what's actually on screen.
+    func generatePlan(task: String, screenContext: String = "") async throws -> GuidePlan {
         guard let url = URL(string: "\(baseURL)/plan") else { throw APIError.invalidURL }
 
         var request = URLRequest(url: url)
@@ -24,7 +26,8 @@ final class WayloAPIClient {
         // exceed 30s, which used to abort real (slow but successful) plans.
         request.timeoutInterval = 90
 
-        let body = ["task": task, "platform": "macos"]
+        var body: [String: Any] = ["task": task, "platform": "macos"]
+        if !screenContext.isEmpty { body["screenContext"] = screenContext }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)

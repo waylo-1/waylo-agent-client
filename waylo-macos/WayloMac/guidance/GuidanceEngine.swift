@@ -35,7 +35,9 @@ final class GuidanceEngine: ObservableObject {
     @Published var isRunning = false
     @Published var state: GuidanceState = .idle
     /// Teach (point) vs assist (do it for me). Persisted across launches.
-    @Published var mode: GuideMode = GuideMode(rawValue: UserDefaults.standard.string(forKey: "waylo.guideMode") ?? "") ?? .teach {
+    /// DEFAULT IS ASSIST: Waylo performs the safe clicks itself and the user
+    /// only confirms destructive ones — half the work done autonomously.
+    @Published var mode: GuideMode = GuideMode(rawValue: UserDefaults.standard.string(forKey: "waylo.guideMode") ?? "") ?? .assist {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: "waylo.guideMode") }
     }
     @Published var currentStepIndex = 0
