@@ -1,0 +1,36 @@
+name: macOS build
+
+# Build the WayloMac app in both configurations on every push/PR that touches
+# it — a broken build can never land unnoticed. No signing on CI (Debug/Release
+# compile checks only; release packaging stays local via build-release.sh).
+on:
+  push:
+    paths:
+      - "waylo-macos/**"
+      - ".github/workflows/macos-build.yml"
+  pull_request:
+    paths:
+      - "waylo-macos/**"
+      - ".github/workflows/macos-build.yml"
+
+jobs:
+  build:
+    name: xcodebuild (${{ matrix.configuration }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build WayloMac
+        working-directory: waylo-macos
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project WayloMac.xcodeproj \
+            -scheme WayloMac \
+            -configuration ${{ matrix.configuration }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -40

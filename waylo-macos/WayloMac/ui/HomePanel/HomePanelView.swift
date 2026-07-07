@@ -22,6 +22,7 @@ struct HomePanelView: View {
     @State private var layerTestLabel = ""
     @State private var layerTestResults: [String] = []
     @State private var layerTestRunning = false
+    @State private var copiedDebugReport = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -64,7 +65,7 @@ struct HomePanelView: View {
             .buttonStyle(.borderless)
             .help("Quit Waylo")
             if engine.isRunning {
-                Button("Stop") { engine.stopGuidance() }
+                Button(L10n.t("stop")) { engine.stopGuidance() }
                     .buttonStyle(.bordered)
                     .tint(.red)
             } else {
@@ -86,7 +87,7 @@ struct HomePanelView: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundColor(.green)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Task complete! 🎉")
+                Text(L10n.t("task_complete"))
                     .font(.subheadline)
                     .fontWeight(.semibold)
                 Text("Rate it under Recent so it's right next time.")
@@ -163,7 +164,7 @@ struct HomePanelView: View {
 
     private var taskInput: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("What do you want to learn?")
+            Text(L10n.t("ask_prompt"))
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
@@ -185,12 +186,12 @@ struct HomePanelView: View {
             }
 
             if isListening {
-                Text("Listening… speak now")
+                Text(L10n.t("listening"))
                     .font(.caption)
                     .foregroundColor(.red)
             }
 
-            Button("Start Guide →") { startTask() }
+            Button(L10n.t("start_guide")) { startTask() }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
                 .disabled(taskText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
@@ -221,7 +222,7 @@ struct HomePanelView: View {
             if isLoading {
                 HStack(spacing: 8) {
                     ProgressView().scaleEffect(0.8)
-                    Text("Generating your guide...")
+                    Text(L10n.t("generating"))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -281,7 +282,7 @@ struct HomePanelView: View {
 
             // Controls.
             if engine.state == .complete {
-                Button("Done") { engine.stopGuidance() }
+                Button(L10n.t("done")) { engine.stopGuidance() }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
             } else {
@@ -296,7 +297,7 @@ struct HomePanelView: View {
                 Button {
                     engine.previousStep()
                 } label: {
-                    Label("Back", systemImage: "chevron.left")
+                    Label(L10n.t("back"), systemImage: "chevron.left")
                 }
                 .buttonStyle(.bordered)
                 .disabled(engine.currentStepIndex == 0 || engine.state == .locating)
@@ -305,14 +306,14 @@ struct HomePanelView: View {
                     Button {
                         engine.resumeGuide()
                     } label: {
-                        Label("Resume", systemImage: "play.fill")
+                        Label(L10n.t("resume"), systemImage: "play.fill")
                     }
                     .buttonStyle(.bordered)
                 } else {
                     Button {
                         engine.pauseGuide()
                     } label: {
-                        Label("Pause", systemImage: "pause.fill")
+                        Label(L10n.t("pause"), systemImage: "pause.fill")
                     }
                     .buttonStyle(.bordered)
                     .disabled(engine.state == .locating)
@@ -321,7 +322,7 @@ struct HomePanelView: View {
                 Button {
                     engine.nextStep()
                 } label: {
-                    Label("Next", systemImage: "chevron.right")
+                    Label(L10n.t("next"), systemImage: "chevron.right")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red)
@@ -396,6 +397,15 @@ struct HomePanelView: View {
                 logFrontmostElements()
             }
             .buttonStyle(.bordered)
+
+            Button {
+                copyDebugReport()
+            } label: {
+                Label(copiedDebugReport ? "Copied!" : "Copy debug report",
+                      systemImage: copiedDebugReport ? "checkmark" : "doc.on.clipboard")
+            }
+            .buttonStyle(.bordered)
+            .help("Copies versions, permissions, pipeline state, and the last 200 log lines — paste it in a bug report")
 
             // Milestone 2 — hardcoded dot.
             Button("Show test dot at (400, 300)") {
@@ -501,6 +511,28 @@ struct HomePanelView: View {
                 }
             }
         }
+    }
+
+    /// Assembles a self-contained bug report (environment, permissions,
+    /// pipeline state, recent log) and puts it on the clipboard.
+    private func copyDebugReport() {
+        var r: [String] = []
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        r.append("=== Waylo debug report — \(Date()) ===")
+        r.append("app: \(version) (\(build))  macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        r.append("backend: \(AppConfig.backendBaseURL)")
+        r.append("permissions: ax=\(AXIsProcessTrusted()) screen=\(ScreenRecordingPermission.isGranted)")
+        r.append("mode: \(engine.mode.rawValue)  language: \(LanguagePreference.current.rawValue)")
+        r.append("guide: running=\(engine.isRunning) step=\(engine.currentStepIndex + 1)/\(engine.stepCount) state=\(engine.state)")
+        let d = DebugState.shared
+        r.append("pipeline: app='\(d.targetApp)' layer='\(d.layerResolved)' dot=\(d.dotPosition) cache=\(d.cacheStatus) yolo=\(d.yoloResult)")
+        r.append("--- last \(DebugLogger.recentLines().count) log lines ---")
+        r.append(contentsOf: DebugLogger.recentLines())
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(r.joined(separator: "\n"), forType: .string)
+        copiedDebugReport = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { copiedDebugReport = false }
     }
 
     /// Runs every detection layer independently against the entered label.

@@ -198,7 +198,7 @@ final class GuidanceEngine: ObservableObject {
         removeKeyAdvanceMonitor()
         OverlayWindowController.shared.hideDot()
         Speaker.shared.stop()
-        statusMessage = "Paused"
+        statusMessage = L10n.t("paused")
     }
 
     func resumeGuide() {
@@ -385,7 +385,7 @@ final class GuidanceEngine: ObservableObject {
         currentTargetAX = nil
 
         state = .locating
-        statusMessage = "Finding it on screen..."
+        statusMessage = L10n.t("finding")
 
         guard ScreenRecordingPermission.isGranted else {
             // Screen capture (and thus OCR) needs Screen Recording.
@@ -512,8 +512,8 @@ final class GuidanceEngine: ObservableObject {
         }
         OverlayWindowController.shared.hideDot()
         state = .manual
-        statusMessage = "I couldn't find it. Do it yourself, then press Next."
-        Speaker.shared.speak("I couldn't find that one. Please do it yourself, then press Next.")
+        statusMessage = L10n.t("manual_fallback")
+        Speaker.shared.speak(L10n.t("spoken_not_found"))
     }
 
     // MARK: - Target presentation (dotted region highlight, dot fallback)
@@ -526,7 +526,7 @@ final class GuidanceEngine: ObservableObject {
         currentTargetAX = resolution.axPoint
         presentTargetVisual(resolution)
         state = .showing
-        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click the highlighted spot to continue"
+        statusMessage = L10n.step(currentStepIndex + 1, steps.count) + L10n.t("click_highlight")
         installClickMonitor(target: resolution.axPoint, targetRect: highlightableFrame(resolution.targetFrame),
                             forStep: currentStepIndex, secondary: isSecondaryClickStep(step))
     }
@@ -560,7 +560,7 @@ final class GuidanceEngine: ObservableObject {
 
         if isDestructiveStep(step) {
             statusMessage = "Step \(stepIndex + 1) of \(steps.count) — this one changes things; click it yourself to confirm"
-            Speaker.shared.speak("This one deletes or changes things, so you click it yourself — I'll continue right after.")
+            Speaker.shared.speak(L10n.t("spoken_destructive"))
             DebugLogger.log("ASSIST", "destructive step \(stepIndex + 1) — falling back to point-and-confirm")
             installClickMonitor(target: resolution.axPoint, targetRect: highlightableFrame(resolution.targetFrame),
                                 forStep: stepIndex, secondary: isSecondaryClickStep(step))
@@ -706,8 +706,8 @@ final class GuidanceEngine: ObservableObject {
                 guard token == locateToken, isRunning else { return true }
                 OverlayWindowController.shared.hideDot()
                 state = .manual
-                statusMessage = "I couldn't find it. Do it yourself, then press Next."
-                Speaker.shared.speak("I couldn't find that one. Please do it yourself, then press Next.")
+                statusMessage = L10n.t("manual_fallback")
+                Speaker.shared.speak(L10n.t("spoken_not_found"))
             }
             return true
         }
@@ -874,9 +874,9 @@ final class GuidanceEngine: ObservableObject {
     private func onTaskComplete() async {
         state = .complete
         OverlayWindowController.shared.hideDot()
-        statusMessage = "Task complete! 🎉"
+        statusMessage = L10n.t("task_complete")
         currentInstruction = "All done! You've completed the task."
-        Speaker.shared.speak("All done! You've completed the task.")
+        Speaker.shared.speak(L10n.t("spoken_done"))
         removeDebugHotkey()
         removeClickMonitor()
         removeKeyAdvanceMonitor()
@@ -964,15 +964,15 @@ final class GuidanceEngine: ObservableObject {
 
         // Fast-path navigation so "next"/"go back"/"repeat" don't need a round trip.
         if lower.contains("go back") || lower.contains("previous") {
-            Speaker.shared.speak("Going back.")
+            Speaker.shared.speak(L10n.t("spoken_going_back"))
             previousStep(); return
         }
         if lower.contains("skip") || lower.contains("next step") || lower == "next" {
-            Speaker.shared.speak("Skipping ahead.")
+            Speaker.shared.speak(L10n.t("spoken_skipping"))
             nextStep(); return
         }
         if lower.contains("repeat") || lower.contains("say again") || lower.contains("show me again") {
-            Speaker.shared.speak("Here it is again.")
+            Speaker.shared.speak(L10n.t("spoken_again"))
             relocate(); return
         }
 

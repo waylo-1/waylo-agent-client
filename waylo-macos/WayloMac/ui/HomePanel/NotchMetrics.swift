@@ -8,8 +8,15 @@ enum NotchMetrics {
         let hasNotch: Bool
     }
 
+    /// The display the panel should anchor to: the built-in (notched) screen
+    /// when present — a notch UI on an external monitor makes no sense — else
+    /// whatever is main. Multi-display safe.
+    static var anchorScreen: NSScreen? {
+        NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
+    }
+
     static func current() -> Info {
-        guard let screen = NSScreen.main else {
+        guard let screen = anchorScreen else {
             return Info(width: 180, height: 32, hasNotch: false)
         }
         let top = screen.safeAreaInsets.top

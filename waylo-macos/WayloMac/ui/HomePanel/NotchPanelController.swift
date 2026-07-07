@@ -87,7 +87,9 @@ final class NotchPanelController: NSWindowController {
     // MARK: - Layout (content-sized, no fixed oversized window)
 
     private func applyState() {
-        guard let window = window, let screen = NSScreen.main else { return }
+        // Anchor to the BUILT-IN (notched) display when there is one — a notch
+        // panel floating on an external monitor makes no sense.
+        guard let window = window, let screen = NotchMetrics.anchorScreen else { return }
         let expanded = NotchPanelController.expansion.expanded
         let running = GuidanceEngine.shared.isRunning
 
@@ -103,9 +105,18 @@ final class NotchPanelController: NSWindowController {
         let fitting = hostingController.view.fittingSize
         let height = max(28, min(fitting.height, screen.frame.height - 40))
 
+        // On a notched Mac the panel hugs the physical notch (that center strip
+        // has no menu items). On non-notch Macs the menu bar center is REAL
+        // menu-bar space, so hang the panel just below it instead of covering it.
+        var top = screen.frame.maxY
+        if !NotchMetrics.current().hasNotch {
+            let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
+            top -= max(0, menuBarHeight)
+        }
+
         let rect = NSRect(
             x: screen.frame.midX - panelWidth / 2,
-            y: screen.frame.maxY - height,
+            y: top - height,
             width: panelWidth,
             height: height
         )
