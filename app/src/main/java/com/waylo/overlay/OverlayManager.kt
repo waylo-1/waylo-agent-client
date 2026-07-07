@@ -235,6 +235,7 @@ object OverlayManager {
         val wm = windowManager ?: return
         try {
             wm.removeView(arrow)
+            Log.e(TAG, "hideArrow: removed successfully")
         } catch (e: Exception) {
             Log.e(TAG, "hideArrow exception: ${e.message}")
         } finally {

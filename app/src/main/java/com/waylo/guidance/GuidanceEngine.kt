@@ -47,6 +47,21 @@ object GuidanceEngine {
     // the local guessPackage() heuristic in that case.
     private var currentAppPackage: String? = null
 
+    /**
+     * Bumped every time a new guidance session actually begins (see
+     * [start]). advanceFrom()/checkLookaheadSkip()/tryVisionFallback()'s
+     * NewSteps recovery all schedule their `executeStep()` continuation on
+     * the top-level [scope] rather than [currentStepScope] (deliberately —
+     * `executeStep()` cancels `stepJob`, so scheduling on a scope tied to
+     * that job risks the continuation cancelling itself mid-call). That
+     * means those continuations are NOT cancelled by [stop]/[taskComplete].
+     * Each one captures the generation at schedule-time and checks it still
+     * matches at fire-time, so a stale continuation from a task that already
+     * ended (or was superseded by a new one started in the meantime) can't
+     * resurrect it or hijack a newer task's steps.
+     */
+    private var taskGeneration = 0
+
     // --- Per-step advancement bookkeeping ---
 
     /** When the current step's instruction was spoken. All dwell checks are relative to this. */
@@ -79,6 +94,17 @@ object GuidanceEngine {
     /** Flipped by accessibility events to wake the locate loop early instead of waiting out its poll tick. */
     private var locateRescanRequested = false
 
+    /**
+     * Debounce for [checkLookaheadSkip]: the step index it saw confidently
+     * present on the PREVIOUS check. A skip only commits once the SAME
+     * target is confirmed on two consecutive checks — device testing showed
+     * a single transient/flickery match (score cleared isConfident for one
+     * scan, then vanished on the very next real search) could otherwise
+     * hijack a step instantly, before its own on-device/partial-match/vision
+     * escalation ever got a chance to run. Reset per-step in [executeStep].
+     */
+    private var pendingSkipTargetIndex: Int? = null
+
     private var currentStepPhase: StepPhase? = null
     private var currentVerification: Verification = Verification.TapInApp
 
@@ -107,6 +133,16 @@ object GuidanceEngine {
 
     /** How long we patiently look for a step's target before re-speaking with the fallbackHint. */
     private const val LOCATE_TIMEOUT_MS = 30_000L
+
+    /**
+     * Shorter patient window used instead of [LOCATE_TIMEOUT_MS] for steps
+     * [looksLikeImageOnlyTarget] flags — image-only elements (e.g. a round
+     * profile picture) routinely carry no text/contentDescription at all, so
+     * the tree/OCR layers can never confidently find them and waiting the
+     * full 30s before trying partial-match/YOLO/vision just delays the
+     * layers actually capable of finding them.
+     */
+    private const val IMAGE_ONLY_LOCATE_TIMEOUT_MS = 6_000L
 
     /** If the target is found but the user hasn't acted in this long, repeat the instruction once. */
     private const val PATIENCE_MS = 15_000L
@@ -170,6 +206,7 @@ object GuidanceEngine {
         currentAppPackage = appPackage
         isRunning = true
         lastAdvanceAt = 0L
+        taskGeneration++ // invalidates any stale advanceFrom/checkLookaheadSkip/vision-recovery continuation still pending from a previous session
         Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps. appPackage=$appPackage")
         executeStep(0)
     }
@@ -262,6 +299,7 @@ object GuidanceEngine {
 
     /** Stop guidance, clear the dot/arrow, and silence the voice. */
     fun stop() {
+        if (!isRunning) return // idempotent — a repeat call (e.g. the dev-tool Stop button pressed twice) is a no-op
         isRunning = false
         stepJob?.cancel()
         stepJob = null
@@ -347,6 +385,7 @@ object GuidanceEngine {
         hasAnnouncedFoundThisStep = false
         tapEvidenceCheckInFlight = false
         locateRescanRequested = false
+        pendingSkipTargetIndex = null
         advancing = false
 
         stepJob?.cancel()
@@ -406,7 +445,12 @@ object GuidanceEngine {
         pkg: String?,
         spoken: String
     ) {
-        var deadline = SystemClock.elapsedRealtime() + LOCATE_TIMEOUT_MS
+        // Image-only targets (e.g. a round profile picture) routinely carry
+        // no text/contentDescription the tree/OCR layers can match at all —
+        // waiting the full patient window before trying partial-match/YOLO/
+        // vision just delays the layers actually capable of finding them.
+        val timeoutMs = if (looksLikeImageOnlyTarget(step)) IMAGE_ONLY_LOCATE_TIMEOUT_MS else LOCATE_TIMEOUT_MS
+        var deadline = SystemClock.elapsedRealtime() + timeoutMs
 
         while (isRunning && currentIndex == index && !pausedForFinancialApp) {
             val result = locateOnDevice(index, step, pkg)
@@ -430,9 +474,9 @@ object GuidanceEngine {
                 // Vision fallback also missed. Never guess a dot position —
                 // gently re-prompt with the fallback hint and open a fresh
                 // patient window instead of giving up on the user.
-                Log.e(TAG, "locateStep: still not found after ${LOCATE_TIMEOUT_MS}ms, re-speaking fallbackHint.")
+                Log.e(TAG, "locateStep: still not found after ${timeoutMs}ms, re-speaking fallbackHint.")
                 speakFallbackHint(step)
-                deadline = SystemClock.elapsedRealtime() + LOCATE_TIMEOUT_MS
+                deadline = SystemClock.elapsedRealtime() + timeoutMs
             }
 
             waitForRescanTrigger()
@@ -459,11 +503,20 @@ object GuidanceEngine {
      * Every decision is logged with both steps' descriptions and the full
      * set of lookahead scores considered, tagged `STEP_SKIP` for later audit.
      *
+     * Debounced via [pendingSkipTargetIndex]: a skip only commits once the
+     * SAME target has been confidently seen on two consecutive checks, and
+     * only once at least [MIN_DWELL_MS] has passed since the step was shown
+     * — device testing showed a single transient match (present for one
+     * scan, gone on the very next) could otherwise hijack a step within tens
+     * of milliseconds, before its own on-device/partial-match/vision
+     * escalation ever got a chance to run.
+     *
      * @return the absolute step index jumped to, or null if no lookahead step
      * qualified (the caller's normal timeout/vision-fallback path continues).
      */
     private fun checkLookaheadSkip(index: Int): Int? {
         if (!isRunning || currentIndex != index || pausedForFinancialApp) return null
+        if (SystemClock.elapsedRealtime() - stepShownAt < MIN_DWELL_MS) return null
 
         val lookahead = ((index + 1)..(index + LOOKAHEAD_STEPS))
             .mapNotNull { i -> steps.getOrNull(i)?.let { i to it } }
@@ -481,6 +534,16 @@ object GuidanceEngine {
             val match = matches[i] ?: continue
             if (!match.isConfident()) continue
 
+            if (pendingSkipTargetIndex != targetIndex) {
+                pendingSkipTargetIndex = targetIndex
+                Log.e(
+                    TAG,
+                    "STEP_SKIP_PENDING: step ${index + 1} -> step ${targetIndex + 1} " +
+                        "(score=${match.score}) seen once, confirming next scan before jumping."
+                )
+                return null
+            }
+
             Log.e(
                 TAG,
                 "STEP_SKIP: step ${index + 1} ('${steps[index].findDescription}') not found this scan; " +
@@ -489,12 +552,15 @@ object GuidanceEngine {
             )
             val label = visibleLabelFor(match, targetStep.findDescription)
             WayloGuidanceService.instance?.speaker?.speak("I can see $label already — let's go there.")
+            val myGeneration = taskGeneration
             scope.launch {
                 delay(ANNOUNCEMENT_SETTLE_MS)
+                if (taskGeneration != myGeneration) return@launch // stale — a newer session started while this was pending
                 executeStep(targetIndex)
             }
             return targetIndex
         }
+        pendingSkipTargetIndex = null // this scan saw nothing confident — clear any pending candidate from a previous scan
         // No lookahead step qualified — still leave a trace (a distinct tag
         // from an actual skip) so a capture can show whether this even ran
         // and what it saw. Device testing showed actual STEP_SKIP jumps can
@@ -689,6 +755,11 @@ object GuidanceEngine {
                 Log.e(TAG, "revalidatePlacement: step $index's target no longer confirmable — parking dot and re-scanning.")
                 OverlayManager.hideDot()
                 placedResult = null
+                // If this step implies scrolling/swiping, the arrow should
+                // reappear now that we're back to searching — it must
+                // persist until the target is confidently (re-)found, not
+                // just for its original brief window.
+                impliedScrollDirection(step)?.let { OverlayManager.showArrow(it) }
                 // NOTE: hasAnnouncedFoundThisStep is deliberately NOT reset
                 // here. "When you see the red dot, tap it." must be said at
                 // most once per step, including across a temporary loss and
@@ -793,9 +864,13 @@ object GuidanceEngine {
                 steps = steps.take(index) + result.steps
                 // Re-run the current index (now the first recovery step) on the
                 // top-level scope — not launchInStep — since executeStep() is
-                // about to replace stepJob entirely.
+                // about to replace stepJob entirely. Not tied to stepJob, so
+                // guard with the generation token (see taskGeneration's doc)
+                // in case a newer session starts before this fires.
+                val myGeneration = taskGeneration
                 scope.launch {
                     delay(1500)
+                    if (taskGeneration != myGeneration) return@launch
                     executeStep(index)
                 }
                 true
@@ -997,6 +1072,7 @@ object GuidanceEngine {
         advancing = true
         currentStepPhase = null // stop reacting to further signals for this step immediately
         Log.e(TAG, "advanceFrom($index): verified, advancing to step ${index + 2}.")
+        val myGeneration = taskGeneration
         scope.launch {
             val now = SystemClock.elapsedRealtime()
             val sinceLastAdvance = now - lastAdvanceAt
@@ -1005,6 +1081,10 @@ object GuidanceEngine {
             }
             lastAdvanceAt = SystemClock.elapsedRealtime()
             delay(SETTLE_DELAY_MS) // let the new screen settle before scanning for the next target
+            // A brand-new session may have started (taskGeneration bumped)
+            // while this was in flight — this scope isn't tied to stepJob
+            // (see taskGeneration's doc), so it isn't auto-cancelled by that.
+            if (taskGeneration != myGeneration) return@launch
             executeStep(index + 1)
         }
     }
@@ -1063,6 +1143,24 @@ object GuidanceEngine {
         }
     }
 
+    private val IMAGE_ONLY_TYPES = setOf("ICON_BUTTON", "IMAGE")
+    private val IMAGE_ONLY_VISUAL_WORDS = Regex("\\b(picture|photo|avatar|image|thumbnail)\\b", RegexOption.IGNORE_CASE)
+
+    /**
+     * Whether [step]'s target is likely an image-only element (e.g. a round
+     * profile picture) with no text/contentDescription for the tree/OCR
+     * layers to ever match confidently — used to shrink the patient window
+     * before escalating to partial-match/YOLO/vision (see
+     * [IMAGE_ONLY_LOCATE_TIMEOUT_MS]) rather than waiting the full
+     * [LOCATE_TIMEOUT_MS]. `internal` for the same unit-testability reason as
+     * [impliedScrollDirection].
+     */
+    internal fun looksLikeImageOnlyTarget(step: Step): Boolean {
+        val type = step.elementType?.uppercase()?.trim()
+        if (type !in IMAGE_ONLY_TYPES) return false
+        return IMAGE_ONLY_VISUAL_WORDS.containsMatchIn(step.visualDescription.orEmpty())
+    }
+
     /** Known package names for common apps, keyed by a recognisable keyword. */
     private val KNOWN_PACKAGES = mapOf(
         "youtube" to "com.google.android.youtube",
@@ -1088,6 +1186,7 @@ object GuidanceEngine {
 
     /** Only reachable via [advanceFrom] on the verified last step — never a bare timeout. */
     private fun taskComplete() {
+        if (!isRunning) return // idempotent — guards a stale continuation racing a genuine completion
         stepJob?.cancel()
         stepJob = null
         currentStepScope = null
