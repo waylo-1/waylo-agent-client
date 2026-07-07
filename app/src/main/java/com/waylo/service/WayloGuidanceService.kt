@@ -12,6 +12,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.waylo.R
+import com.waylo.correction.CorrectionFlow
 import com.waylo.guidance.GuidanceEngine
 import com.waylo.overlay.OverlayManager
 import com.waylo.ui.MainActivity
@@ -71,6 +72,10 @@ class WayloGuidanceService : Service() {
         OverlayManager.init(this) // service context — overlay survives leaving the app
         Log.e("WAYLO_DOT", "OverlayManager initialized")
         // The dot is shown ONLY when GuidanceEngine.start() runs — never on service start.
+        // The correction-flow mic button is the fallback path into CorrectionFlow
+        // (primary path is the volume-down double-press) and stays up for the
+        // service's whole lifetime, not just during an active guidance run.
+        OverlayManager.showMicButton { CorrectionFlow.start() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

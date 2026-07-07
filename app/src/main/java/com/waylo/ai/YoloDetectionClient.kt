@@ -19,13 +19,22 @@ import java.util.concurrent.TimeUnit
  * the fallback chain (see [com.waylo.guidance.FallbackHandler]): cheaper and
  * faster than a Gemini Vision call, tried first when OCR misses.
  *
- * Contract verified against the service's `openapi.json` (`POST /detect`,
- * `DetectRequest`/`DetectResponse`). Unlike the earlier guessed contract, the
- * service does its own matching server-side from `target_label`/
- * `step_instruction`/`screen_region` — each returned element has no label/
- * text field, so there is no client-side label scoring here (unlike
- * ElementFinder/OcrAnalyzer). We just take the highest-confidence element and
- * accept it if it clears [MIN_CONFIDENCE].
+ * Contract re-verified live against `GET /openapi.json` on the deployed
+ * service (`POST /detect`, `DetectRequest`/`DetectResponse`/`DetectedElement`
+ * — field names match exactly: `screenshot_b64`/`target_label`/
+ * `step_instruction`/`screen_region` in, `elements`/`omni_count`/
+ * `macos_count`/`merged_count` out, each element carrying
+ * `x`/`y`/`w`/`h`/`cx`/`cy`/`confidence`/`source`/`ax_class`). The service
+ * does its own matching server-side from `target_label`/`step_instruction`/
+ * `screen_region` — no label/text field to score against client-side (unlike
+ * ElementFinder/OcrAnalyzer) — so we just take the highest-confidence element
+ * and accept it if it clears [MIN_CONFIDENCE]. `source`/`ax_class` are
+ * captured on [Detection] (previously silently discarded) for logging/
+ * future use, not currently used to pick between candidates.
+ *
+ * What's still genuinely unverified: whether x/y/w/h/cx/cy are normalized
+ * (0-1) or pixel values — the schema doesn't declare a range, hence the
+ * per-element <=1.0 heuristic in [parseElements].
  */
 object YoloDetectionClient {
 
@@ -51,7 +60,13 @@ object YoloDetectionClient {
     data class Detection(
         val centerX: Int,
         val centerY: Int,
-        val confidence: Float
+        val confidence: Float,
+        /** Which detector produced this element ("omni"/"macos"/merged, per the service's *_count fields) — verified present in DetectedElement, previously discarded. */
+        val source: String? = null,
+        /** Server-side semantic class for this element (e.g. an icon/image/button classification), if the service assigned one — previously discarded. */
+        val axClass: String? = null,
+        /** SHA-256 of the exact JPEG bytes sent for this detection — a lightweight reference for [com.waylo.ai.FailureReportClient.reportAutoSuccess] (never the raw image). */
+        val screenshotHash: String? = null
     )
 
     /**
@@ -107,7 +122,12 @@ object YoloDetectionClient {
     ): List<Detection>? {
         val baos = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
-        val base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+        val jpegBytes = baos.toByteArray()
+        val base64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+        // Hash of the exact bytes sent — a cheap, non-identifying reference
+        // for success-pair logging (see Detection.screenshotHash) so we never
+        // need to store/re-upload the actual image for a routine success.
+        val screenshotHash = sha256Hex(jpegBytes)
 
         val body = JSONObject().apply {
             put("screenshot_b64", base64)
@@ -130,8 +150,11 @@ object YoloDetectionClient {
         // The screenshot we send is exactly bitmap.width x bitmap.height, so
         // that's also the right frame to de-normalize into (matches whatever
         // resolution OverlayManager expects for this bitmap's coordinates).
-        return parseElements(responseBody, bitmap.width, bitmap.height)
+        return parseElements(responseBody, bitmap.width, bitmap.height, screenshotHash)
     }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     /**
      * Parses `DetectResponse.elements`. Coordinates may be normalized (0-1)
@@ -140,7 +163,7 @@ object YoloDetectionClient {
      * scale cx/cy by [bitmapWidth]/[bitmapHeight]; otherwise treat cx/cy as
      * already being pixels. Logs which branch was taken.
      */
-    private fun parseElements(json: String, bitmapWidth: Int, bitmapHeight: Int): List<Detection> {
+    private fun parseElements(json: String, bitmapWidth: Int, bitmapHeight: Int, screenshotHash: String): List<Detection> {
         val obj = JSONObject(json)
         val array = obj.optJSONArray("elements") ?: return emptyList()
         Log.d(
@@ -169,11 +192,18 @@ object YoloDetectionClient {
                 Log.d(TAG, "YoloDetectionClient: element $i is pixel coordinates (x=$x y=$y w=$w h=$h)")
             }
 
+            val source = e.optString("source").takeIf { it.isNotBlank() }
+            val axClass = e.optString("ax_class").takeIf { it.isNotBlank() }
+            Log.d(TAG, "YoloDetectionClient: element $i source=$source ax_class=$axClass confidence=${e.optDouble("confidence", 0.0)}")
+
             result.add(
                 Detection(
                     centerX = cx.toInt(),
                     centerY = cy.toInt(),
-                    confidence = e.optDouble("confidence", 0.0).toFloat()
+                    confidence = e.optDouble("confidence", 0.0).toFloat(),
+                    source = source,
+                    axClass = axClass,
+                    screenshotHash = screenshotHash
                 )
             )
         }

@@ -2,9 +2,12 @@ package com.waylo.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.waylo.correction.CorrectionFlow
 
 /**
  * Reads the UI tree of whatever app is currently on screen.
@@ -25,7 +28,17 @@ class WayloAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: WayloAccessibilityService? = null
             private set
+
+        /** Two volume-down presses this close together (ms) open the correction flow (see [CorrectionFlow]). */
+        private const val DOUBLE_PRESS_WINDOW_MS = 800L
     }
+
+    /** className from the most recent TYPE_WINDOW_STATE_CHANGED event — best-effort current Activity name, for correction-flow payloads. */
+    @Volatile
+    var lastActivityClassName: String? = null
+        private set
+
+    private var lastVolumeDownAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -61,6 +74,7 @@ class WayloAccessibilityService : AccessibilityService() {
         // GuidanceEngine acts on the same event.
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                lastActivityClassName = event.className?.toString()
                 com.waylo.guidance.FinancialAppGuard.onForegroundPackageChanged(pkg)
                 com.waylo.guidance.GuidanceEngine.onWindowStateChanged(pkg)
             }
@@ -68,11 +82,40 @@ class WayloAccessibilityService : AccessibilityService() {
                 com.waylo.guidance.GuidanceEngine.onContentChanged(pkg)
             }
             AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                // The correction flow's "capture the next tap as the correct
+                // target" gets first look — it's a separate concern from
+                // step-tap verification and must not be missed just because
+                // GuidanceEngine's own onViewClicked also runs on this event.
+                CorrectionFlow.onNodeClicked(event.source)
                 com.waylo.guidance.GuidanceEngine.onViewClicked(event.source)
             }
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
                 com.waylo.guidance.GuidanceEngine.onTextChanged(event.source)
             }
+        }
+    }
+
+    /**
+     * Requires [AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS]
+     * (set in [onServiceConnected]). Two KEYCODE_VOLUME_DOWN key-DOWN events
+     * within [DOUBLE_PRESS_WINDOW_MS] of each other open the correction flow
+     * and consume both key events (volume is not adjusted); a single press
+     * is left alone (returns false) so normal volume control still works.
+     */
+    override fun onKeyEvent(event: KeyEvent?): Boolean {
+        if (event?.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN || event.action != KeyEvent.ACTION_DOWN) {
+            return super.onKeyEvent(event)
+        }
+        val now = SystemClock.elapsedRealtime()
+        val sinceLast = now - lastVolumeDownAt
+        return if (sinceLast in 1..DOUBLE_PRESS_WINDOW_MS) {
+            lastVolumeDownAt = 0L // consumed — a third rapid press starts a fresh pair, not a second trigger
+            Log.d(TAG, "Volume-down double-press detected — opening correction flow.")
+            CorrectionFlow.start()
+            true
+        } else {
+            lastVolumeDownAt = now
+            false
         }
     }
 

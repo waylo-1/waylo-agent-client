@@ -4,13 +4,18 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
+import com.waylo.BuildConfig
+import com.waylo.ai.FailureReportClient
 import com.waylo.ai.GeminiVisionClient
 import com.waylo.ai.Step
 import com.waylo.ai.YoloDetectionClient
 import com.waylo.ocr.OcrAnalyzer
 import com.waylo.screenshot.ScreenCaptureManager
 import com.waylo.service.WayloGuidanceService
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -46,6 +51,9 @@ object FallbackHandler {
         /** Could not recover. */
         data class Failed(val reason: String) : FallbackResult()
     }
+
+    /** Fire-and-forget scope for opt-in success-pair logging — must never delay returning a real result to the caller. */
+    private val loggingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun speak(text: String) {
         WayloGuidanceService.instance?.speaker?.speak(text)
@@ -111,7 +119,32 @@ object FallbackHandler {
                         screenRegion = screenRegion
                     )
                     if (yoloMatch != null) {
-                        Log.d(TAG, "Layer 2b YOLO hit confidence=${yoloMatch.confidence} at (${yoloMatch.centerX},${yoloMatch.centerY})")
+                        Log.d(
+                            TAG,
+                            "Layer 2b YOLO hit confidence=${yoloMatch.confidence} at (${yoloMatch.centerX},${yoloMatch.centerY}) " +
+                                "source=${yoloMatch.source} ax_class=${yoloMatch.axClass}"
+                        )
+                        // Opt-in (see BuildConfig.LOG_YOLO_SUCCESSES): log this
+                        // hit as a training pair too, not just misses. Fire-
+                        // and-forget — must never delay placing the dot.
+                        if (BuildConfig.LOG_YOLO_SUCCESSES) {
+                            loggingScope.launch {
+                                FailureReportClient.reportAutoSuccess(
+                                    sessionId = GuidanceEngine.getSessionId(),
+                                    stepNumber = stepIndex + 1,
+                                    findDescription = findDesc,
+                                    targetPackage = GuidanceEngine.getCurrentAppPackage(),
+                                    chosenBox = FailureReportClient.ChosenBox(
+                                        centerX = yoloMatch.centerX,
+                                        centerY = yoloMatch.centerY,
+                                        confidence = yoloMatch.confidence,
+                                        source = yoloMatch.source,
+                                        axClass = yoloMatch.axClass
+                                    ),
+                                    screenshotHash = yoloMatch.screenshotHash
+                                )
+                            }
+                        }
                         return@withContext FallbackResult.Found(yoloMatch.centerX, yoloMatch.centerY, null)
                     }
                     Log.d(TAG, "Layer 2b YOLO miss/low-confidence for '$findDesc'")

@@ -45,6 +45,12 @@ object OverlayManager {
     var isArrowAttached = false
         private set
 
+    private var micButtonView: MicButtonView? = null
+
+    @Volatile
+    var isMicButtonAttached = false
+        private set
+
     fun init(ctx: Context) {
         context = ctx.applicationContext // ALWAYS use applicationContext
         windowManager = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -244,9 +250,79 @@ object OverlayManager {
         }
     }
 
+    /**
+     * Show the persistent correction-flow mic button, bottom-right corner —
+     * the fallback path into `CorrectionFlow` for when the volume-down
+     * double-press can't be captured. Unlike the dot/arrow, this window IS
+     * touchable. Idempotent: a second call while already shown is a no-op.
+     */
+    fun showMicButton(onTap: () -> Unit) {
+        if (isMicButtonAttached) return
+
+        val ctx = context ?: run {
+            Log.e(TAG, "showMicButton: context is null, cannot show mic button")
+            return
+        }
+        val wm = windowManager ?: run {
+            Log.e(TAG, "showMicButton: windowManager is null, cannot show mic button")
+            return
+        }
+        if (!Settings.canDrawOverlays(ctx)) {
+            Log.e(TAG, "showMicButton: SYSTEM_ALERT_WINDOW not granted!")
+            return
+        }
+
+        val metrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealMetrics(metrics)
+
+        val mic = MicButtonView(ctx)
+        mic.onTap = onTap
+        mic.measure(0, 0)
+        val margin = (24 * ctx.resources.displayMetrics.density).toInt()
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            // Deliberately NOT FLAG_NOT_TOUCHABLE — this button must receive taps.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            x = margin
+            y = margin
+        }
+
+        try {
+            wm.addView(mic, params)
+            micButtonView = mic
+            isMicButtonAttached = true
+            Log.e(TAG, "showMicButton: SUCCESS")
+        } catch (e: Exception) {
+            Log.e(TAG, "showMicButton addView FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
+        }
+    }
+
+    fun hideMicButton() {
+        val mic = micButtonView ?: return
+        val wm = windowManager ?: return
+        try {
+            wm.removeView(mic)
+            Log.e(TAG, "hideMicButton: removed successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "hideMicButton exception: ${e.message}")
+        } finally {
+            micButtonView = null
+            isMicButtonAttached = false
+        }
+    }
+
     fun destroy() {
         hideDot()
         hideArrow()
+        hideMicButton()
         windowManager = null
         context = null
         Log.e(TAG, "OverlayManager destroyed.")

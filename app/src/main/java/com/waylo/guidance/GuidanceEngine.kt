@@ -42,6 +42,9 @@ object GuidanceEngine {
     private var isRunning = false
     private var currentTask: String = ""
 
+    /** Unique per guidance session — tags every /failure report (detection misses, corrections, success pairs) so they can be grouped/replayed together. */
+    private var sessionId: String = java.util.UUID.randomUUID().toString()
+
     // App package the backend resolved for this plan (enriched /plan response).
     // Null for older/cached plans or the hardcoded demo tasks; falls back to
     // the local guessPackage() heuristic in that case.
@@ -82,11 +85,22 @@ object GuidanceEngine {
     /** Whether the "gentle repeat" patience nudge has already fired for the current step. */
     private var hasRepeatedThisStep = false
 
-    /** Whether the "when you see the red dot, tap it" follow-up has already been queued for the current step. */
-    private var hasAnnouncedFoundThisStep = false
-
     /** Guards against overlapping async tap-verification lookups from a burst of content-change events. */
     private var tapEvidenceCheckInFlight = false
+
+    /**
+     * The package name from the most recent TYPE_WINDOW_STATE_CHANGED/
+     * TYPE_WINDOW_CONTENT_CHANGED event — i.e. our best signal for "what's
+     * actually in the foreground right now". Updated unconditionally
+     * (before the isRunning/etc. guards) in [onWindowStateChanged]/
+     * [onContentChanged] so it's fresh the moment guidance needs it, and
+     * persists across steps (this is a continuous signal, not per-step
+     * state — only [hasAnnouncedWrongApp] resets per step).
+     */
+    private var lastKnownForegroundPackage: String? = null
+
+    /** Whether the "this isn't the right place" nudge has already been said for the CURRENT excursion out of the expected app. Reset per-step, and again as soon as the user's back in the expected app (so a second excursion gets its own one-time nudge). */
+    private var hasAnnouncedWrongApp = false
 
     /** What's currently under the dot for this step, so periodic re-validation can tell if it's gone or beaten. */
     private var placedResult: ScreenAnalysisPipeline.PipelineResult? = null
@@ -206,6 +220,7 @@ object GuidanceEngine {
         currentAppPackage = appPackage
         isRunning = true
         lastAdvanceAt = 0L
+        sessionId = java.util.UUID.randomUUID().toString()
         taskGeneration++ // invalidates any stale advanceFrom/checkLookaheadSkip/vision-recovery continuation still pending from a previous session
         Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps. appPackage=$appPackage")
         executeStep(0)
@@ -382,10 +397,10 @@ object GuidanceEngine {
         placedResult = null
         uncertainChecks = 0
         hasRepeatedThisStep = false
-        hasAnnouncedFoundThisStep = false
         tapEvidenceCheckInFlight = false
         locateRescanRequested = false
         pendingSkipTargetIndex = null
+        hasAnnouncedWrongApp = false
         advancing = false
 
         stepJob?.cancel()
@@ -450,9 +465,34 @@ object GuidanceEngine {
         // waiting the full patient window before trying partial-match/YOLO/
         // vision just delays the layers actually capable of finding them.
         val timeoutMs = if (looksLikeImageOnlyTarget(step)) IMAGE_ONLY_LOCATE_TIMEOUT_MS else LOCATE_TIMEOUT_MS
-        var deadline = SystemClock.elapsedRealtime() + timeoutMs
+        // Anchored to stepShownAt (when this step first began), NOT to
+        // "now" — locateStep() can be re-entered mid-step by
+        // revalidatePlacement() (a placement briefly found then lost), and
+        // that must NOT hand the step a brand-new full patient window each
+        // time. Device testing showed a step whose search kept getting
+        // reset this way (a borderline on-device match found, then
+        // invalidated a few seconds later, repeatedly) never actually
+        // reached its deadline across 3 separate captures — partial-match/
+        // vision/YOLO were never once exercised as a result. Only the
+        // "opened a fresh patient window after a full escalation attempt"
+        // reset below anchors to "now", since that's a genuinely new window
+        // after already trying everything once.
+        var deadline = stepShownAt + timeoutMs
 
         while (isRunning && currentIndex == index && !pausedForFinancialApp) {
+            // Never search (or place/reference the dot) while the user is
+            // somewhere other than this step's expected app — that's not a
+            // "target hard to find" problem, and a stray match from the
+            // wrong screen must never get placed. Wait here until a window
+            // change brings them back, rather than burning the patient
+            // window on a screen we already know is wrong.
+            if (!isInExpectedApp(index)) {
+                handleWrongApp()
+                waitForRescanTrigger()
+                continue
+            }
+            hasAnnouncedWrongApp = false // back on track — a future excursion gets its own one-time nudge
+
             val result = locateOnDevice(index, step, pkg)
             if (result != null) {
                 onTargetLocated(index, step, spoken, result)
@@ -683,16 +723,20 @@ object GuidanceEngine {
     }
 
     /**
-     * The target cleared the confidence floor: show the dot, tell the user to
-     * tap it, and switch into the WAITING_FOR_ACTION phase where the
-     * accessibility-event handlers below take over verification.
+     * The target cleared the confidence floor: show the dot and switch into
+     * the WAITING_FOR_ACTION phase where the accessibility-event handlers
+     * below take over verification.
      *
-     * The full instruction was already spoken (flushing) at the start of the
-     * step in [executeStep] — this follow-up MUST use [speakQueued], not
-     * [speak]/QUEUE_FLUSH, or it cancels that instruction mid-sentence
-     * whenever the target is found quickly (the common case: on-device
-     * matches often resolve in under 100ms, well before a multi-second
-     * instruction finishes playing). Guarded to fire at most once per step.
+     * Speech policy: the step's instruction (already spoken once, flushing,
+     * at the start of the step in [executeStep] — it already references the
+     * red dot per the plan's own phrasing, e.g. "Look for the red dot on
+     * your profile picture and tap it.") is the ONLY announcement for
+     * finding the target. There is deliberately no separate "tap it" /
+     * "when you see the red dot" follow-up here, and none on re-scan,
+     * revalidation, or the dot moving — repeating that got noisy fast.
+     * Total speech per step is: the instruction once, at most one gentle
+     * idle nudge ([schedulePatienceCheck]), and the fallbackHint if truly
+     * stuck ([speakFallbackHint]) — nothing else.
      */
     private fun onTargetLocated(index: Int, step: Step, spoken: String, result: ScreenAnalysisPipeline.PipelineResult) {
         if (!isRunning || currentIndex != index) return
@@ -702,10 +746,6 @@ object GuidanceEngine {
         OverlayManager.hideArrow()
         OverlayManager.showDotAtResult(result, spoken)
         placedResult = result
-        if (!hasAnnouncedFoundThisStep) {
-            hasAnnouncedFoundThisStep = true
-            WayloGuidanceService.instance?.speaker?.speakQueued("When you see the red dot, tap it.")
-        }
         dotShownAt = SystemClock.elapsedRealtime()
         currentStepPhase = StepPhase.WAITING_FOR_ACTION
         uncertainChecks = 0
@@ -733,6 +773,22 @@ object GuidanceEngine {
             delay(REVALIDATE_INTERVAL_MS)
             if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
 
+            val pkg = if (index == 0) (currentAppPackage ?: guessPackage(currentTask, step.findDescription)) else null
+
+            // The user may have wandered into a different app entirely while
+            // the dot sat waiting for a tap — the dot must not stay visible
+            // in that case (see locateStep()'s matching gate). Park it and
+            // drop back to LOCATING, where that same gate takes over.
+            if (!isInExpectedApp(index)) {
+                Log.e(TAG, "revalidatePlacement: step $index — no longer in the expected app, parking dot.")
+                OverlayManager.hideDot()
+                placedResult = null
+                currentStepPhase = StepPhase.LOCATING
+                val service = WayloGuidanceService.instance ?: return
+                locateStep(service, index, step, pkg, shortLabel(step.instruction))
+                return
+            }
+
             // Screen-aware step skipping also applies here, deliberately
             // WITHOUT gating on the current target being absent (unlike the
             // LOCATING-phase call in locateStep()): device testing showed the
@@ -746,7 +802,6 @@ object GuidanceEngine {
             // that sitting unacted-on for several seconds in that capture.
             if (checkLookaheadSkip(index) != null) return
 
-            val pkg = if (index == 0) (currentAppPackage ?: guessPackage(currentTask, step.findDescription)) else null
             val fresh = locateOnDevice(index, step, pkg)
 
             if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
@@ -760,11 +815,6 @@ object GuidanceEngine {
                 // persist until the target is confidently (re-)found, not
                 // just for its original brief window.
                 impliedScrollDirection(step)?.let { OverlayManager.showArrow(it) }
-                // NOTE: hasAnnouncedFoundThisStep is deliberately NOT reset
-                // here. "When you see the red dot, tap it." must be said at
-                // most once per step, including across a temporary loss and
-                // re-find of the SAME step's target — only a genuine step
-                // change (executeStep) should allow it to be said again.
                 currentStepPhase = StepPhase.LOCATING
                 val service = WayloGuidanceService.instance ?: return
                 locateStep(service, index, step, pkg, shortLabel(step.instruction))
@@ -891,6 +941,7 @@ object GuidanceEngine {
      * may have just revealed the current step's target.
      */
     fun onWindowStateChanged(pkg: String) {
+        lastKnownForegroundPackage = pkg
         if (!isRunning || steps.isEmpty() || pausedForFinancialApp) return
         locateRescanRequested = true
 
@@ -924,6 +975,7 @@ object GuidanceEngine {
      * Feeds the tap-in-app verification check and nudges the locate loop.
      */
     fun onContentChanged(pkg: String) {
+        lastKnownForegroundPackage = pkg
         if (!isRunning || steps.isEmpty() || pausedForFinancialApp) return
         locateRescanRequested = true
 
@@ -1161,6 +1213,45 @@ object GuidanceEngine {
         return IMAGE_ONLY_VISUAL_WORDS.containsMatchIn(step.visualDescription.orEmpty())
     }
 
+    /**
+     * Whether the last known foreground app matches what step [index]
+     * expects: any launcher package for step 0 (we're meant to be on the
+     * home screen looking for the app icon), or [currentAppPackage] for
+     * every later step. Fails open (returns true) when we have no signal
+     * yet ([lastKnownForegroundPackage] null) or no known expected package
+     * for this plan (older/cached plans) — this is a guard against a KNOWN
+     * mismatch, not a hard requirement we can always verify.
+     */
+    private fun isInExpectedApp(index: Int): Boolean =
+        isInExpectedApp(index, lastKnownForegroundPackage, currentAppPackage)
+
+    /**
+     * Pure core of [isInExpectedApp] — takes the foreground/expected package
+     * as parameters instead of reading the mutable fields directly, so it's
+     * unit-testable without touching this object's live-singleton-entangled
+     * state, same rationale as [impliedScrollDirection]/
+     * [looksLikeImageOnlyTarget]. `internal` for that reason.
+     */
+    internal fun isInExpectedApp(index: Int, foregroundPackage: String?, expectedAppPackage: String?): Boolean {
+        val fg = foregroundPackage ?: return true
+        return if (index == 0) {
+            ElementFinder.isLauncherPackage(fg)
+        } else {
+            expectedAppPackage == null || fg == expectedAppPackage
+        }
+    }
+
+    /** Hide any overlay and say the wrong-app nudge once per excursion (see [hasAnnouncedWrongApp]). */
+    private fun handleWrongApp() {
+        OverlayManager.hideDot()
+        OverlayManager.hideArrow()
+        if (!hasAnnouncedWrongApp) {
+            hasAnnouncedWrongApp = true
+            Log.e(TAG, "handleWrongApp: foreground=$lastKnownForegroundPackage, expected=$currentAppPackage — nudging back.")
+            WayloGuidanceService.instance?.speaker?.speak("This isn't the right place — please press the back button to go back.")
+        }
+    }
+
     /** Known package names for common apps, keyed by a recognisable keyword. */
     private val KNOWN_PACKAGES = mapOf(
         "youtube" to "com.google.android.youtube",
@@ -1201,4 +1292,19 @@ object GuidanceEngine {
     fun getCurrentStep(): Step? = steps.getOrNull(currentIndex)
 
     fun isActive(): Boolean = isRunning
+
+    /** Current guidance session id — tags /failure reports (corrections, success pairs) so they group with the run they came from. */
+    fun getSessionId(): String = sessionId
+
+    /** 1-based step number matching the backend's own stepNumber field, or null if no step is active. */
+    fun getCurrentStepNumber(): Int? = if (isRunning) currentIndex + 1 else null
+
+    /** Best-effort "what's actually foreground right now", for correction-flow/failure-report payloads. */
+    fun getLastKnownForegroundPackage(): String? = lastKnownForegroundPackage
+
+    /** The task/plan's own target app package (enriched /plan response), for correction-flow/failure-report payloads. */
+    fun getCurrentAppPackage(): String? = currentAppPackage
+
+    /** The user's original task request (e.g. "how to find youtube history"), for correction-flow/failure-report payloads. */
+    fun getCurrentTaskDescription(): String? = currentTask.takeIf { it.isNotBlank() }
 }

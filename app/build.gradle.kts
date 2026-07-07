@@ -26,6 +26,12 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Opt-in: log successful YOLO detections to the backend as training
+        // pairs too, not just misses — see YoloDetectionClient/FallbackHandler
+        // and the backend's /failure `source=auto_success` path. Off by
+        // default since it POSTs on every YOLO hit, not just failures.
+        buildConfigField("boolean", "LOG_YOLO_SUCCESSES", "false")
     }
 
     signingConfigs {
@@ -65,6 +71,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 
     testOptions {
