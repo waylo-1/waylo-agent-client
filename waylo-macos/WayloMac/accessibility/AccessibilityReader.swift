@@ -270,6 +270,15 @@ final class AccessibilityReader {
         guard let items = childrenRef as? [AXUIElement] else { return false }
 
         for item in items {
+            // An OPEN menu shows up as a child AXMenu of the menu-bar item.
+            // (kAXSelectedAttribute alone misses it — that's why clicking
+            // "Format" logged "screen unchanged" while its menu was open.)
+            var childrenRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(item, kAXChildrenAttribute as CFString, &childrenRef)
+            if let menus = childrenRef as? [AXUIElement],
+               menus.contains(where: { copyStringAttribute($0, kAXRoleAttribute) == "AXMenu" }) {
+                return true
+            }
             var selectedRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(item, kAXSelectedAttribute as CFString, &selectedRef) == .success,
                let selected = selectedRef as? Bool, selected {

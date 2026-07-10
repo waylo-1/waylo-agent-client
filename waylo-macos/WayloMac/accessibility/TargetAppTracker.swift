@@ -104,6 +104,22 @@ final class TargetAppTracker {
         if result == .success {
             electronUnlocked.insert(pid)
             DebugLogger.log("TRACKER", "AXManualAccessibility enabled for pid \(pid) (Electron-style app)")
+            return
+        }
+        // Electron/Chromium apps often reject the attribute until their window
+        // exists, so a set at activation time silently fails and their whole AX
+        // tree stays invisible (Spotify's every step fell through to Nova).
+        // Retry once shortly after; log the failure either way so it can't hide.
+        DebugLogger.log("TRACKER", "AXManualAccessibility set failed for pid \(pid) (AXError \(result.rawValue)) — retrying in 1.5s")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self, !self.electronUnlocked.contains(pid) else { return }
+            let retry = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            if retry == .success {
+                self.electronUnlocked.insert(pid)
+                DebugLogger.log("TRACKER", "AXManualAccessibility enabled on retry for pid \(pid)")
+            } else {
+                DebugLogger.log("TRACKER", "AXManualAccessibility still unavailable for pid \(pid) (AXError \(retry.rawValue)) — not an Electron app, or it refuses AX")
+            }
         }
     }
 }
