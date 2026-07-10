@@ -49,20 +49,28 @@ enum LanguagePreference: String, CaseIterable {
     /// robotic / wrong-accented, especially for Hindi; a premium Siri voice is
     /// far better but must be downloaded by the user (see `voiceQualityHint`).
     /// nil lets AVSpeech fall back to the system default.
+    /// Resolved voice per language, cached (enumerating speechVoices() on every
+    /// spoken step was wasteful and flooded the log).
+    private static var voiceCache: [String: AVSpeechSynthesisVoice?] = [:]
+
     var voice: AVSpeechSynthesisVoice? {
+        if let cached = Self.voiceCache[rawValue] { return cached }
         let prefix = String(rawValue.prefix(2))  // "hi", "pa", "en"
         let matching = AVSpeechSynthesisVoice.speechVoices()
             .filter { $0.language.hasPrefix(prefix) }
-        guard !matching.isEmpty else {
+        let resolved: AVSpeechSynthesisVoice?
+        if matching.isEmpty {
             DebugLogger.log("TTS", "no installed voice for \(rawValue) — using system default")
-            return AVSpeechSynthesisVoice(language: rawValue)
+            resolved = AVSpeechSynthesisVoice(language: rawValue)
+        } else {
+            // Rank by quality: .premium (3) > .enhanced (2) > .default (1).
+            resolved = matching.max { rank($0.quality) < rank($1.quality) }
+            if let best = resolved {
+                DebugLogger.log("TTS", "voice for \(rawValue): '\(best.name)' quality=\(qualityName(best.quality))")
+            }
         }
-        // Rank by quality: .premium (3) > .enhanced (2) > .default (1).
-        let best = matching.max { rank($0.quality) < rank($1.quality) }
-        if let best = best {
-            DebugLogger.log("TTS", "voice for \(rawValue): '\(best.name)' quality=\(qualityName(best.quality))")
-        }
-        return best
+        Self.voiceCache[rawValue] = resolved
+        return resolved
     }
 
     private func rank(_ q: AVSpeechSynthesisVoiceQuality) -> Int {

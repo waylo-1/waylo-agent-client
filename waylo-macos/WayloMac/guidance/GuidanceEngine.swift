@@ -711,10 +711,16 @@ final class GuidanceEngine: ObservableObject {
         }
     }
 
-    /// A frame is highlightable when it looks like a control, not a container:
-    /// oversized frames (whole panels/windows) fall back to the dot.
+    /// A frame is highlightable when it looks like a CONTROL, not a container.
+    /// Wide-but-short things (a browser address/search bar, a full-width text
+    /// field) are legit controls and SHOULD get the outline — the old 480pt
+    /// width cap wrongly demoted them to a bare dot. A panel/window is rejected
+    /// by height (tall) or sheer area, not width alone.
     private func highlightableFrame(_ frame: CGRect?) -> CGRect? {
-        guard let f = frame, f.width >= 8, f.height >= 8, f.width <= 480, f.height <= 240 else { return nil }
+        guard let f = frame, f.width >= 8, f.height >= 8,
+              f.width <= 900, f.height <= 160,
+              f.width * f.height <= 90_000       // reject big panels (e.g. 700×300)
+        else { return nil }
         return f
     }
 

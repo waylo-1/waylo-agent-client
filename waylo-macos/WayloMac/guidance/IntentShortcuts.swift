@@ -17,7 +17,9 @@ enum IntentShortcuts {
     /// Returns a matched intent, or nil → send the task to the planner.
     static func match(_ task: String) -> Intent? {
         let text = task.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = text.lowercased()
+        // Strip conversational filler up front so natural speech matches:
+        // "can you search…", "hey Waylo please open…", "I want to google…".
+        let lower = stripFiller(text.lowercased())
 
         // 1. Explicit URL / domain anywhere in the task.
         if let url = explicitURL(in: text) {
@@ -38,7 +40,7 @@ enum IntentShortcuts {
         //    the app actually resolves on this Mac (else the planner guides
         //    the user through Dock/Spotlight, which teaches more anyway).
         for prefix in ["open ", "launch ", "start "] where lower.hasPrefix(prefix) {
-            let name = text.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            let name = String(lower.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
             let words = name.split(separator: " ")
             guard !name.isEmpty, words.count <= 3 else { continue }
             if let url = resolveApp(named: name) {
@@ -84,12 +86,24 @@ enum IntentShortcuts {
         return nil
     }
 
+    /// Removes leading conversational filler so natural phrasings match:
+    /// "can you", "could you", "please", "i want to", "i'd like to", "hey",
+    /// "ok", "waylo". Applied repeatedly (they stack: "hey waylo can you …").
+    private static func stripFiller(_ text: String) -> String {
+        var s = text.trimmingCharacters(in: .whitespaces)
+        let fillers = #"^(?:hey\s+|ok\s+|okay\s+|so\s+|um\s+|waylo[,\s]+|please\s+|can you\s+|could you\s+|would you\s+|will you\s+|i want to\s+|i wanna\s+|i'd like to\s+|i would like to\s+|let's\s+|lets\s+|help me\s+)"#
+        while let r = s.range(of: fillers, options: [.regularExpression, .caseInsensitive]) {
+            s = String(s[r.upperBound...]).trimmingCharacters(in: .whitespaces)
+        }
+        return s
+    }
+
     private static func searchQuery(in lowerIn: String, original: String) -> (String, String)? {
-        // Drop a leading "open chrome/safari/the browser and …" so a spoken
-        // "open Chrome and search X on Google" still counts as a web search
+        // Drop a leading "open chrome/safari/google/the browser and …" so a
+        // spoken "open Google and search X" still counts as a web search
         // (open + search is redundant — the URL opens in the default browser).
         var lower = lowerIn
-        if let r = lower.range(of: #"^\s*(?:open|launch|start|go to)\s+(?:the\s+)?(?:chrome|safari|firefox|edge|browser|google chrome)\s+(?:and\s+)?"#,
+        if let r = lower.range(of: #"^\s*(?:open|launch|start|go to|goto)\s+(?:the\s+|a\s+)?(?:chrome|google chrome|google|safari|firefox|edge|browser|web browser)\s+(?:and\s+)?"#,
                                options: .regularExpression) {
             lower = String(lower[r.upperBound...])
         }
