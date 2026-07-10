@@ -584,6 +584,18 @@ final class GuidanceEngine: ObservableObject {
                 return
             }
 
+            // A USER-CHOICE step (pick which chat / which file / which contact):
+            // don't point at one specific item — let the user choose any and
+            // advance on their click. Detected from the description.
+            if isUserChoiceStep(step) {
+                currentTargetAX = resolution.axPoint
+                presentTargetVisual(resolution)
+                state = .showing
+                statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click the one you want"
+                installAnyClickAdvance(forStep: currentStepIndex, bufferSeconds: 2.0)
+                return
+            }
+
             // Assist mode: perform safe clicks ourselves (destructive steps
             // still fall back to point-and-confirm inside autoPerform).
             if mode == .assist && step.action == .click {
@@ -778,8 +790,29 @@ final class GuidanceEngine: ObservableObject {
     /// True when auto-clicking this step could destroy/commit something the
     /// user didn't explicitly confirm. Over-gating is safe (the user just
     /// clicks it themselves); under-gating is not.
+    /// True when the step asks the user to pick among equivalent items only
+    /// they can choose (which chat/contact/file/conversation). Waylo can't
+    /// know which one — point loosely and advance on any click. The planner
+    /// may also mark these `advanceOnAnyClick`; this catches the ones it misses.
+    private func isUserChoiceStep(_ step: Step) -> Bool {
+        if step.advanceOnAnyClick { return true }
+        let t = "\(step.instruction) \(step.elementDescription)".lowercased()
+        let chooseWords = ["which chat", "the chat", "a chat", "choose a", "select the chat",
+                           "which contact", "the contact", "which conversation", "the person",
+                           "which file", "the file you", "which photo", "the photo you"]
+        // Only when the target has no exact label of its own (a specific button
+        // like "Send" is NOT a free choice).
+        let noFixedLabel = step.targetLabel.trimmingCharacters(in: .whitespaces).isEmpty
+        return noFixedLabel && chooseWords.contains { t.contains($0) }
+    }
+
     private func isDestructiveStep(_ step: Step) -> Bool {
-        let t = "\(step.instruction) \(step.targetLabel) \(step.elementDescription)".lowercased()
+        // Gate on WHAT IS CLICKED (targetLabel / element), NOT the instruction:
+        // the instruction narrates the goal and often names the destructive
+        // verb on a perfectly safe intermediate step ("click the chat you want
+        // to SEND the photo to" clicks a chat, sends nothing). Judging the
+        // whole sentence wrongly gated every step of a "send…" task.
+        let t = "\(step.targetLabel) \(step.elementDescription)".lowercased()
         let danger = ["empty", "delete", "erase", "remove", "discard", "uninstall",
                       "format", "don't save", "dont save", "send", "pay", "buy",
                       "purchase", "shut down", "restart", "log out", "sign out"]
