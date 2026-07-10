@@ -226,6 +226,29 @@ final class AccessibilityReader {
         return nil
     }
 
+    /// Whether an element is an ON/selected toggle (radio button, checkbox,
+    /// tab, or a toolbar button that acts as a toggle). Returns nil when the
+    /// element isn't a toggle or its state is unreadable. Used to skip a
+    /// "click to open/show X" step when X is ALREADY open — clicking an
+    /// already-selected toggle turns it back OFF (Pages' Format button closed
+    /// the panel it was supposed to open).
+    func isToggleOn(_ element: AXUIElement) -> Bool? {
+        let role = copyStringAttribute(element, kAXRoleAttribute)
+        let toggleRoles: Set<String> = ["AXRadioButton", "AXCheckBox", "AXToggle", "AXTab"]
+        // A plain AXButton can also toggle (e.g. an inspector button) — only
+        // trust it when it actually exposes a 0/1 value.
+        let isToggleRole = toggleRoles.contains(role)
+
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+              let value = valueRef else { return isToggleRole ? nil : nil }
+
+        if let n = value as? Int { return n != 0 }
+        if let b = value as? Bool { return b }
+        if let n = value as? NSNumber { return n.intValue != 0 }
+        return nil
+    }
+
     /// A cheap fingerprint of the target app's visible state: app name, window
     /// count, focused-window title, and whether a sheet/dialog is up. Comparing
     /// it before/after an action answers "did that click visibly DO anything?"

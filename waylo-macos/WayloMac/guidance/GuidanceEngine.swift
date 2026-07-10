@@ -555,6 +555,19 @@ final class GuidanceEngine: ObservableObject {
         }
 
         if let resolution = resolution {
+            // ALREADY DONE? If this step opens/shows/selects a toggle that is
+            // already ON (e.g. Pages' Format panel is already open), clicking
+            // it would turn it back OFF. Skip straight to the next step.
+            if let el = resolution.axElement, stepIsAlreadySatisfied(step, element: el) {
+                DebugLogger.log("ENGINE", "step \(currentStepIndex + 1) already satisfied (toggle on) — skipping without clicking")
+                Speaker.shared.speak("That's already open, moving on.")
+                let next = currentStepIndex + 1
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard token == locateToken, isRunning else { return }
+                await executeStep(index: next)
+                return
+            }
+
             reportSuccess(step: step, resolution: resolution)
             applyUpdatedInstruction(resolution.updatedInstruction)
 
@@ -601,21 +614,58 @@ final class GuidanceEngine: ObservableObject {
     /// "in the Text panel, look for the small colour wheel" beats a wrong dot.
     private func describeTargetInstead(step: Step) {
         OverlayWindowController.shared.hideDot()
-        state = .manual
+        // MUST be .showing: the any-click advance monitor only fires in the
+        // .showing state, so using .manual here (the old bug) meant the user's
+        // clicks were ignored and the guide never advanced.
+        state = .showing
 
         let what = [step.elementDescription, step.findDescription, step.instruction]
             .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? step.instruction
         let whereText = regionPhrase(step.screenRegion)
-        let spoken = whereText.isEmpty
-            ? "I can't point to it exactly. Look for \(what). Click it and I'll continue."
-            : "I can't point to it exactly. \(whereText), look for \(what). Click it and I'll continue."
+        let base = whereText.isEmpty
+            ? "I can't point to it exactly. Find \(what) yourself"
+            : "I can't point to it exactly. \(whereText), find \(what)"
+        let spoken = "\(base). Click it, or press Control Option Command N when you've found it, and I'll continue."
 
         currentInstruction = spoken
-        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click it and I'll continue"
+        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click it (or ⌃⌥⌘N) and I'll continue"
         OverlayWindowController.shared.showBanner(spoken)
         Speaker.shared.speak(spoken)
         DebugLogger.log("DESCRIBE", "not confident — describing instead of guessing: '\(what)'")
+        // Advance when the user clicks the thing themselves…
         installAnyClickAdvance(forStep: currentStepIndex, bufferSeconds: 2.0)
+        // …or when they press ⌃⌥⌘N to say "found it, continue".
+        installManualAdvanceHotkey(forStep: currentStepIndex)
+    }
+
+    /// In describe mode, ⌃⌥⌘N means "I found it, move on" (as well as its
+    /// normal re-detect role). Registered transiently for the current step.
+    private func installManualAdvanceHotkey(forStep stepIndex: Int) {
+        keyObserverId = HotkeyManager.shared.addKeyObserver(keyCode: 45, flags: HotkeyManager.cmdOptCtrl) { [weak self] in
+            Task { @MainActor in
+                guard let self = self, self.isRunning, self.state == .showing,
+                      self.currentStepIndex == stepIndex else { return }
+                DebugLogger.log("DESCRIBE", "user pressed ⌃⌥⌘N — advancing from described step \(stepIndex + 1)")
+                self.removeClickMonitor()
+                self.removeKeyAdvanceMonitor()
+                let next = stepIndex + 1
+                await ScreenCapturer.shared.settleAfterAction()
+                guard self.isRunning, self.currentStepIndex == stepIndex else { return }
+                await self.executeStep(index: next)
+            }
+        }
+    }
+
+    /// True when the step wants to OPEN/SHOW/SELECT a toggle that is already on
+    /// — clicking it again would undo it. Only for activate-intent steps; a
+    /// "turn off"/"close"/"uncheck" step legitimately clicks an on toggle.
+    private func stepIsAlreadySatisfied(_ step: Step, element: AXUIElement) -> Bool {
+        guard AccessibilityReader.shared.isToggleOn(element) == true else { return false }
+        let t = "\(step.instruction) \(step.elementDescription)".lowercased()
+        let deactivate = ["turn off", "close", "hide", "uncheck", "deselect", "disable", "collapse"]
+        if deactivate.contains(where: { t.contains($0) }) { return false }
+        let activate = ["open", "show", "select", "click", "go to", "switch to", "enable", "turn on", "expand", "reveal"]
+        return activate.contains { t.contains($0) }
     }
 
     /// Human phrasing for where a region is, used by the describe fallback.
