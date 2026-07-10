@@ -592,10 +592,44 @@ final class GuidanceEngine: ObservableObject {
             if await beginScrollAssist(step: step, token: token) { return }
             guard token == locateToken, isRunning else { return }
         }
+        describeTargetInstead(step: step)
+    }
+
+    /// Nothing could locate the target CONFIDENTLY. Rather than plant a dot on
+    /// a guess — which sends the user to the wrong control and cascades through
+    /// the rest of the guide — describe the target in words, name the region it
+    /// lives in, and advance as soon as the user clicks anything. An honest
+    /// "in the Text panel, look for the small colour wheel" beats a wrong dot.
+    private func describeTargetInstead(step: Step) {
         OverlayWindowController.shared.hideDot()
         state = .manual
-        statusMessage = L10n.t("manual_fallback")
-        Speaker.shared.speak(L10n.t("spoken_not_found"))
+
+        let what = [step.elementDescription, step.findDescription, step.instruction]
+            .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? step.instruction
+        let whereText = regionPhrase(step.screenRegion)
+        let spoken = whereText.isEmpty
+            ? "I can't point to it exactly. Look for \(what). Click it and I'll continue."
+            : "I can't point to it exactly. \(whereText), look for \(what). Click it and I'll continue."
+
+        currentInstruction = spoken
+        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click it and I'll continue"
+        OverlayWindowController.shared.showBanner(spoken)
+        Speaker.shared.speak(spoken)
+        DebugLogger.log("DESCRIBE", "not confident — describing instead of guessing: '\(what)'")
+        installAnyClickAdvance(forStep: currentStepIndex, bufferSeconds: 2.0)
+    }
+
+    /// Human phrasing for where a region is, used by the describe fallback.
+    private func regionPhrase(_ region: ScreenRegion) -> String {
+        switch region {
+        case .menuBar:     return "In the menu bar at the very top"
+        case .ribbon:      return "In the toolbar at the top of the window"
+        case .sidebar:     return "In the panel on the side of the window"
+        case .dialog:      return "In the box that just opened"
+        case .statusBar:   return "At the bottom of the window"
+        case .spreadsheet: return "In the main area of the window"
+        case .fullScreen:  return ""
+        }
     }
 
     // MARK: - Target presentation (dotted region highlight, dot fallback)

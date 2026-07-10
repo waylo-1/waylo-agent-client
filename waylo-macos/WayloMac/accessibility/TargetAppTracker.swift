@@ -90,6 +90,9 @@ final class TargetAppTracker {
     /// PIDs we've already unlocked, so the attribute isn't re-set (and
     /// re-logged) on every single app switch.
     private var electronUnlocked = Set<pid_t>()
+    /// PIDs that don't support AXManualAccessibility (native apps: Chrome,
+    /// Finder, Pages…). Remembered so we stop retrying and flooding the log.
+    private var electronUnavailable = Set<pid_t>()
 
     /// Chromium/Electron apps (Slack, Spotify, VS Code, Discord, Chrome…)
     /// render their AX tree ONLY after a client sets AXManualAccessibility on
@@ -98,7 +101,7 @@ final class TargetAppTracker {
     /// target change. (Not AXEnhancedUserInterface — that one changes window
     /// behavior and is known to break window managers.)
     private func enableElectronAccessibility(pid: pid_t) {
-        guard !electronUnlocked.contains(pid) else { return }
+        guard !electronUnlocked.contains(pid), !electronUnavailable.contains(pid) else { return }
         let app = AXUIElementCreateApplication(pid)
         let result = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         if result == .success {
@@ -118,7 +121,8 @@ final class TargetAppTracker {
                 self.electronUnlocked.insert(pid)
                 DebugLogger.log("TRACKER", "AXManualAccessibility enabled on retry for pid \(pid)")
             } else {
-                DebugLogger.log("TRACKER", "AXManualAccessibility still unavailable for pid \(pid) (AXError \(retry.rawValue)) — not an Electron app, or it refuses AX")
+                self.electronUnavailable.insert(pid)   // native app — stop retrying/logging
+                DebugLogger.log("TRACKER", "AXManualAccessibility unavailable for pid \(pid) — native app (won't retry)")
             }
         }
     }

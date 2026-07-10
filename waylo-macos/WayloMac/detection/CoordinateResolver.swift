@@ -115,9 +115,22 @@ final class CoordinateResolver {
         // targetLabel, or for icon targets (which rely on AXDescription/tooltips).
         // For a labelled text target it pollutes the match — e.g. matching the
         // "System Settings" header for an "Appearance" step — so we skip it.
-        if (targetType == .icon || targetLabel.isEmpty),
-           let element = axSearch(axQuery, region: screenRegion, screen: screen, allowSystemUI: false,
-                                  preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect) {
+        // A description-only match is weak evidence. If the element has NO name
+        // of its own (empty title AND description) we matched on role or an
+        // incidental value — pointing at it is a guess, and a wrong dot is
+        // worse than an honest "look here, it's the small colour wheel".
+        let descMatch = axSearch(axQuery, region: screenRegion, screen: screen, allowSystemUI: false,
+                                 preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect)
+            .flatMap { el -> AXElementInfo? in
+                let named = !el.title.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !el.description.trimmingCharacters(in: .whitespaces).isEmpty
+                if !named {
+                    DebugLogger.log("RESOLVE", "L0-AX-desc match is UNNAMED (role=\(el.role)) — refusing to guess")
+                }
+                return named ? el : nil
+            }
+
+        if (targetType == .icon || targetLabel.isEmpty), let element = descMatch {
             if passesRegion(element.center, screenRegion, screen: screen) {
                 print("[Resolver] L0 AX hit (desc) '\(element.title)' \(element.center)")
                 DebugLogger.logResolution("L0-AX-desc", found: true, point: element.center, label: element.title)

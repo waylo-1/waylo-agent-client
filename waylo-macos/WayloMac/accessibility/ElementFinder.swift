@@ -193,6 +193,12 @@ final class ElementFinder {
                 score += 45
             } else if element.role == "AXStaticText" || element.role == "AXRow" || element.role == "AXCell" {
                 score -= 30
+            } else if element.role == "AXMenuBarItem" || element.role == "AXMenuItem" {
+                // A toolbar BUTTON step must never match the menu bar. Pages has
+                // both a "Format" menu (menu bar) and a "Format" button
+                // (toolbar); the menu-bar item used to win on an exact title
+                // match and the whole guide then walked into the wrong menu.
+                score -= 60
             }
         }
 
