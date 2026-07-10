@@ -524,11 +524,16 @@ final class GuidanceEngine: ObservableObject {
         )
         guard token == locateToken, isRunning else { return }
 
-        // Retry ONCE after 800ms — the app may be mid-animation (a menu opening,
+        // Retry ONCE after 400ms — the app may be mid-animation (a menu opening,
         // a window appearing) so the AX tree / screenshot are momentarily stale.
+        // The retry is LOCAL-ONLY (AX + OCR): if the target became visible after
+        // the animation, those fast layers catch it in ~0.5s. Re-running the
+        // slow YOLO+Nova (≈13s each) a second time on a now-stable screen almost
+        // never succeeds and used to DOUBLE the wait before the describe/recover
+        // fallback. So a genuine vision miss goes straight to recovery.
         if resolution == nil {
-            DebugLogger.log("ENGINE", "RETRY after 800ms (step \(currentStepIndex + 1)) — all layers missed")
-            try? await Task.sleep(nanoseconds: 800_000_000)
+            DebugLogger.log("ENGINE", "RETRY (local-only) after 400ms (step \(currentStepIndex + 1)) — layers missed")
+            try? await Task.sleep(nanoseconds: 400_000_000)
             guard token == locateToken, isRunning else { return }
             if let fresh = await ScreenCapturer.shared.captureActiveScreen() {
                 guard token == locateToken, isRunning else { return }
@@ -544,6 +549,7 @@ final class GuidanceEngine: ObservableObject {
                     stepIndex: step.index,
                     totalSteps: steps.count,
                     cacheKey: step.labelCacheKey,
+                    localOnly: true,
                     targetType: step.targetType,
                     controlKind: step.controlKind,
                     anchorText: step.anchorText,
