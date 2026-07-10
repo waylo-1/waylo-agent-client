@@ -90,18 +90,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerHotkeys() {
         let hk = HotkeyManager.shared
-        // ⌃⌥⌘ V — voice command (speak a task, or a mid-guide correction).
-        hk.register(keyCode: 9, name: "voice") {
-            Task { @MainActor in VoiceCommandEngine.shared.activate() }
-        }
+        // ⌃⌥⌘ V — HOLD to talk: speak a task (or mid-guide correction) for as
+        // long as it's held; release to run the whole transcript.
+        hk.registerHold(keyCode: 9, name: "voice",
+            onPress: { Task { @MainActor in VoiceCommandEngine.shared.beginPushToTalk() } },
+            onRelease: { Task { @MainActor in VoiceCommandEngine.shared.endPushToTalk() } })
         // ⌃⌥⌘ N — re-detect the current step (fresh screenshot → Nova recovery).
         hk.register(keyCode: 45, name: "re-detect") {
             Task { @MainActor in GuidanceEngine.shared.debugRelocate() }
         }
-        // ⌃⌥⌘ A — ask a question by voice.
-        hk.register(keyCode: 0, name: "ask") {
-            Task { @MainActor in ConversationEngine.shared.activate() }
-        }
+        // ⌃⌥⌘ A — HOLD to ask a question by voice.
+        hk.registerHold(keyCode: 0, name: "ask",
+            onPress: { Task { @MainActor in ConversationEngine.shared.beginPushToTalk() } },
+            onRelease: { Task { @MainActor in ConversationEngine.shared.endPushToTalk() } })
         // ⌃⌥⌘ Q — ask a free-form question answered from what's on screen.
         hk.register(keyCode: 12, name: "screen-question") {
             Task { @MainActor in ConversationEngine.shared.askAboutScreen() }

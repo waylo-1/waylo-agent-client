@@ -18,8 +18,8 @@ final class VoiceCommandEngine: ObservableObject {
 
     private init() {}
 
-    /// Begin listening for a spoken command (invoked by the ⌃⌥⌘V hotkey).
-    func activate() {
+    /// Hold-to-talk START (⌃⌥⌘V held): begin capturing until release.
+    func beginPushToTalk() {
         guard state == .idle else { return }
         state = .listening
 
@@ -28,15 +28,22 @@ final class VoiceCommandEngine: ObservableObject {
         Speaker.shared.stop()
         let running = GuidanceEngine.shared.isRunning
         OverlayWindowController.shared.showBanner(running
-            ? "Listening… tell me what to fix or do next"
-            : "Listening… what would you like to do?")
-        DebugLogger.log("VOICE", "listening (guideRunning=\(running))")
+            ? "Listening… hold and speak, release when done"
+            : "Listening… hold ⌃⌥⌘V and speak, release when done")
+        DebugLogger.log("VOICE", "push-to-talk begin (guideRunning=\(running))")
 
-        MicHandler.shared.listen { [weak self] transcript in
+        MicHandler.shared.startPushToTalk { [weak self] transcript in
             DispatchQueue.main.async {
                 Task { @MainActor in await self?.handle(transcript) }
             }
         }
+    }
+
+    /// Hold-to-talk END (⌃⌥⌘V released): finalize and process the transcript.
+    func endPushToTalk() {
+        guard state == .listening else { return }
+        OverlayWindowController.shared.showBanner("Got it, thinking…", autoDismissAfter: 4)
+        MicHandler.shared.endPushToTalk()
     }
 
     private func handle(_ transcript: String?) async {

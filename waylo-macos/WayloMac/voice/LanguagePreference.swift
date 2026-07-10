@@ -44,9 +44,48 @@ enum LanguagePreference: String, CaseIterable {
         return SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     }
 
-    /// TTS voice; nil lets AVSpeech pick the system default (utterances with a
-    /// nil voice still speak, so an unsupported language degrades gracefully).
+    /// TTS voice — picks the HIGHEST-QUALITY installed voice for this language
+    /// (premium > enhanced > default). The default compact voices sound
+    /// robotic / wrong-accented, especially for Hindi; a premium Siri voice is
+    /// far better but must be downloaded by the user (see `voiceQualityHint`).
+    /// nil lets AVSpeech fall back to the system default.
     var voice: AVSpeechSynthesisVoice? {
-        AVSpeechSynthesisVoice(language: rawValue)
+        let prefix = String(rawValue.prefix(2))  // "hi", "pa", "en"
+        let matching = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix(prefix) }
+        guard !matching.isEmpty else {
+            DebugLogger.log("TTS", "no installed voice for \(rawValue) — using system default")
+            return AVSpeechSynthesisVoice(language: rawValue)
+        }
+        // Rank by quality: .premium (3) > .enhanced (2) > .default (1).
+        let best = matching.max { rank($0.quality) < rank($1.quality) }
+        if let best = best {
+            DebugLogger.log("TTS", "voice for \(rawValue): '\(best.name)' quality=\(qualityName(best.quality))")
+        }
+        return best
+    }
+
+    private func rank(_ q: AVSpeechSynthesisVoiceQuality) -> Int {
+        switch q {
+        case .premium: return 3
+        case .enhanced: return 2
+        default: return 1
+        }
+    }
+
+    private func qualityName(_ q: AVSpeechSynthesisVoiceQuality) -> String {
+        switch q {
+        case .premium: return "premium"
+        case .enhanced: return "enhanced"
+        default: return "default(compact)"
+        }
+    }
+
+    /// True when only the low-quality compact voice is installed for this
+    /// language — the panel can then prompt the user to download a better one.
+    var hasOnlyCompactVoice: Bool {
+        let prefix = String(rawValue.prefix(2))
+        let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix(prefix) }
+        return !voices.isEmpty && voices.allSatisfy { $0.quality == .default }
     }
 }

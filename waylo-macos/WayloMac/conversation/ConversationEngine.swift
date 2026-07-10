@@ -25,21 +25,28 @@ final class ConversationEngine: ObservableObject {
 
     // MARK: - Flow
 
-    /// Begin listening for a question (pauses any running guide).
-    func activate() {
+    /// Hold-to-ask START (⌃⌥⌘A held): pause the guide and capture until release.
+    func beginPushToTalk() {
         guard state == .idle || state == .awaitingResume else { return }
         if GuidanceEngine.shared.isRunning {
             GuidanceEngine.shared.pauseGuide()
         }
         state = .listening
-        OverlayWindowController.shared.showBanner("Listening… ask your question")
+        OverlayWindowController.shared.showBanner("Listening… hold ⌃⌥⌘A and ask, release when done")
         Speaker.shared.stop()
 
-        MicHandler.shared.listen { [weak self] transcript in
+        MicHandler.shared.startPushToTalk { [weak self] transcript in
             DispatchQueue.main.async {
                 Task { @MainActor in await self?.handleTranscription(transcript) }
             }
         }
+    }
+
+    /// Hold-to-ask END (⌃⌥⌘A released): finalize and answer.
+    func endPushToTalk() {
+        guard state == .listening else { return }
+        OverlayWindowController.shared.showBanner("Thinking…", autoDismissAfter: 4)
+        MicHandler.shared.endPushToTalk()
     }
 
     private func handleTranscription(_ text: String?) async {

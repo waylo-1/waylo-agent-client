@@ -26,6 +26,8 @@ final class MicHandler: NSObject, SFSpeechRecognizerDelegate {
     /// timeout (or a cancelled task's error callback) can never finalize a
     /// NEWER listening session early.
     private var sessionID = 0
+    /// True while a hold-to-talk capture is running (no fixed 6s window).
+    private var pushToTalkActive = false
 
     override private init() {
         super.init()
@@ -41,11 +43,40 @@ final class MicHandler: NSObject, SFSpeechRecognizerDelegate {
         }
     }
 
+    /// Push-to-talk: start listening now and keep going until `endPushToTalk()`
+    /// is called (on hotkey RELEASE). The whole held utterance becomes the
+    /// transcript — no fixed window. A 30s safety cap prevents a stuck key from
+    /// recording forever.
+    func startPushToTalk(completion: @escaping (String?) -> Void) {
+        listen(completion: completion, pushToTalk: true)
+    }
+
+    /// Stops a push-to-talk capture and finalizes whatever was heard.
+    func endPushToTalk() {
+        guard pushToTalkActive else { return }
+        pushToTalkActive = false
+        DebugLogger.log("MIC", "push-to-talk released — finalizing (buffers=\(bufferCount), partial='\(latestTranscript)')")
+        recognitionRequest?.endAudio()
+        if audioEngine.isRunning {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
+        let session = sessionID
+        // Give the recognizer up to ~1s to emit a final result, else use the partial.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self = self, session == self.sessionID, !self.didComplete else { return }
+            self.finish(self.latestTranscript.isEmpty ? nil : self.latestTranscript, session: session)
+        }
+    }
+
     /// Listens for a single utterance and calls `completion` with the transcript.
-    func listen(completion: @escaping (String?) -> Void) {
+    /// `pushToTalk`: when true, there is no fixed 6s window — capture runs until
+    /// `endPushToTalk()` (with a 30s safety cap).
+    func listen(completion: @escaping (String?) -> Void, pushToTalk: Bool = false) {
         stopListening()
         sessionID += 1
         let session = sessionID
+        pushToTalkActive = pushToTalk
 
         // Pick up a language change made in the panel since the last listen.
         let pref = LanguagePreference.current
@@ -123,11 +154,14 @@ final class MicHandler: NSObject, SFSpeechRecognizerDelegate {
             }
         }
 
-        // Stop capturing after 6s and let the recognizer finalize the partial.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+        // Tap mode: fixed 6s window. Hold mode: no window (endPushToTalk stops
+        // it), but a 30s safety cap so a stuck key can't record forever.
+        let cap: Double = pushToTalk ? 30 : 6
+        DispatchQueue.main.asyncAfter(deadline: .now() + cap) { [weak self] in
             guard let self = self, session == self.sessionID,
                   self.audioEngine.isRunning, !self.didComplete else { return }
-            DebugLogger.log("MIC", "6s timeout — finalizing (buffers=\(self.bufferCount), partial='\(self.latestTranscript)')")
+            DebugLogger.log("MIC", "\(Int(cap))s cap — finalizing (buffers=\(self.bufferCount), partial='\(self.latestTranscript)')")
+            self.pushToTalkActive = false
             self.recognitionRequest?.endAudio()
             self.audioEngine.stop()
             self.audioEngine.inputNode.removeTap(onBus: 0)

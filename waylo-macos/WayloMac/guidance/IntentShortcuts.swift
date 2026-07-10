@@ -84,18 +84,30 @@ enum IntentShortcuts {
         return nil
     }
 
-    private static func searchQuery(in lower: String, original: String) -> (String, String)? {
+    private static func searchQuery(in lowerIn: String, original: String) -> (String, String)? {
+        // Drop a leading "open chrome/safari/the browser and …" so a spoken
+        // "open Chrome and search X on Google" still counts as a web search
+        // (open + search is redundant — the URL opens in the default browser).
+        var lower = lowerIn
+        if let r = lower.range(of: #"^\s*(?:open|launch|start|go to)\s+(?:the\s+)?(?:chrome|safari|firefox|edge|browser|google chrome)\s+(?:and\s+)?"#,
+                               options: .regularExpression) {
+            lower = String(lower[r.upperBound...])
+        }
+
+        // Patterns match at the START of the (cleaned) string; the query can
+        // trail off with or without a "on google/youtube" suffix.
         let patterns: [(pattern: String, engine: String)] = [
-            (#"^(?:search|look up|find)\s+(?:for\s+)?(.+?)\s+on\s+google$"#, "google"),
-            (#"^(?:search|look up|find)\s+(?:for\s+)?(.+?)\s+on\s+youtube$"#, "youtube"),
-            (#"^google\s+(?:for\s+)?(.+)$"#, "google"),
-            (#"^youtube\s+(.+)$"#, "youtube"),
-            (#"^search\s+(?:google|the web)\s+for\s+(.+)$"#, "google"),
+            (#"^(?:search|look up|find)\s+(?:for\s+)?(.+?)\s+on\s+youtube\b.*$"#, "youtube"),
+            (#"^(?:search|look up|find)\s+(?:for\s+)?(.+?)\s+on\s+google\b.*$"#, "google"),
             (#"^search\s+youtube\s+for\s+(.+)$"#, "youtube"),
+            (#"^search\s+(?:google|the web)\s+for\s+(.+)$"#, "google"),
+            (#"^(?:search|look up|find)\s+(?:for\s+)?(.+)$"#, "google"),   // bare "search X"
+            (#"^youtube\s+(.+)$"#, "youtube"),
+            (#"^google\s+(?:for\s+)?(.+)$"#, "google"),
         ]
         for (pattern, engine) in patterns {
-            if let q = lower.firstCapture(for: pattern), !q.isEmpty {
-                return (q.trimmingCharacters(in: .whitespaces), engine)
+            if let q = lower.firstCapture(for: pattern)?.trimmingCharacters(in: .whitespaces), !q.isEmpty {
+                return (q, engine)
             }
         }
         return nil

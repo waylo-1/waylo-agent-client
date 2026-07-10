@@ -41,7 +41,21 @@ final class HotkeyManager: @unchecked Sendable {
         let action: (_ axPoint: CGPoint, _ isRight: Bool) -> Void
     }
 
+    /// A push-to-talk hotkey: `onPress` fires on keyDown, `onRelease` on the
+    /// keyUp of the SAME key — so the user holds it to talk and releases to
+    /// finalize. Consumes both events.
+    struct HoldHotkey {
+        let keyCode: CGKeyCode
+        let flags: CGEventFlags
+        let name: String
+        let onPress: () -> Void
+        let onRelease: () -> Void
+    }
+
     private var hotkeys: [Hotkey] = []
+    private var holdHotkeys: [HoldHotkey] = []
+    /// The key currently held down as a push-to-talk hotkey (nil = none).
+    private var activeHoldKey: CGKeyCode?
     private var observers: [KeyObserver] = []
     private var clickObservers: [ClickObserver] = []
     private var eventTap: CFMachPort?
@@ -61,6 +75,13 @@ final class HotkeyManager: @unchecked Sendable {
 
     func register(keyCode: CGKeyCode, flags: CGEventFlags = HotkeyManager.cmdOptCtrl, name: String, action: @escaping () -> Void) {
         hotkeys.append(Hotkey(keyCode: keyCode, flags: flags, name: name, action: action))
+    }
+
+    /// Registers a hold-to-talk hotkey (fires onPress on keyDown, onRelease on
+    /// keyUp of the same key).
+    func registerHold(keyCode: CGKeyCode, flags: CGEventFlags = HotkeyManager.cmdOptCtrl, name: String,
+                      onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
+        holdHotkeys.append(HoldHotkey(keyCode: keyCode, flags: flags, name: name, onPress: onPress, onRelease: onRelease))
     }
 
     /// Adds a transient observe-only matcher (does NOT consume the event). Returns
@@ -102,6 +123,7 @@ final class HotkeyManager: @unchecked Sendable {
         guard eventTap == nil else { return }
 
         let mask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
             | (1 << CGEventType.leftMouseDown.rawValue)
             | (1 << CGEventType.rightMouseDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
@@ -152,11 +174,37 @@ final class HotkeyManager: @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
 
+        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+
+        // keyUp: only interesting to end a push-to-talk hold. We match on the
+        // KEY ALONE (not modifiers) because the user often lifts ⌘/⌥/⌃ before
+        // the letter, so by keyUp the modifier flags may already be gone.
+        if type == .keyUp {
+            if let held = activeHoldKey, held == keyCode {
+                activeHoldKey = nil
+                for h in holdHotkeys where h.keyCode == keyCode {
+                    DebugLogger.log("HOTKEY", "hold '\(h.name)' released")
+                    h.onRelease()
+                }
+                return nil // consume the matching keyUp
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
         guard type == .keyDown else { return Unmanaged.passUnretained(event) }
 
-        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let mods = event.flags.rawValue & Self.significantMask
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+
+        // Push-to-talk hotkeys: start on keyDown, hold consumes auto-repeats.
+        for h in holdHotkeys where h.keyCode == keyCode && mods == h.flags.rawValue {
+            if !isRepeat {
+                activeHoldKey = keyCode
+                DebugLogger.log("HOTKEY", "hold '\(h.name)' pressed")
+                h.onPress()
+            }
+            return nil
+        }
 
         for hotkey in hotkeys where hotkey.keyCode == keyCode && mods == hotkey.flags.rawValue {
             // Consume the combo (incl. auto-repeats) so it never leaks to other

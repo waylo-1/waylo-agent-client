@@ -219,6 +219,21 @@ struct HomePanelView: View {
             .controlSize(.small)
             .onChange(of: language) { LanguagePreference.current = language }
 
+            // Nudge to download a better voice when only the robotic compact
+            // one is installed (common for Hindi — only "Lekha compact" ships).
+            if language != .english && language.hasOnlyCompactVoice {
+                Button {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Download a clearer \(language.displayName) voice", systemImage: "speaker.wave.2")
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .help("Opens Spoken Content → System Voice → Manage Voices, where you can download an enhanced voice")
+            }
+
             if isLoading {
                 HStack(spacing: 8) {
                     ProgressView().scaleEffect(0.8)
