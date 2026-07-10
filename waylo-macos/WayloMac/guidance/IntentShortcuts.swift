@@ -103,25 +103,6 @@ enum IntentShortcuts {
 
     /// Finds an installed app by (case-insensitive) display name.
     private static func resolveApp(named name: String) -> URL? {
-        let fm = FileManager.default
-        let dirs = ["/Applications", "/System/Applications",
-                    "/System/Applications/Utilities",
-                    ("~/Applications" as NSString).expandingTildeInPath]
-        for dir in dirs {
-            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            if let hit = items.first(where: {
-                $0.hasSuffix(".app") &&
-                $0.dropLast(4).caseInsensitiveCompare(name) == .orderedSame
-            }) {
-                return URL(fileURLWithPath: "\(dir)/\(hit)")
-            }
-        }
-        // Already-running app with that name also counts.
-        if let running = NSWorkspace.shared.runningApplications.first(where: {
-            ($0.localizedName ?? "").caseInsensitiveCompare(name) == .orderedSame
-        }), let url = running.bundleURL {
-            return url
-        }
-        return nil
+        AppLauncher.resolveApp(named: name)
     }
 }

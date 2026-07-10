@@ -113,6 +113,7 @@ final class GuidanceEngine: ObservableObject {
         removeKeyAdvanceMonitor()
         removeDebugHotkey()
         OverlayWindowController.shared.hideDot()
+        HelperButtonController.shared.hide()
         Speaker.shared.stop()
         currentTargetAX = nil
         windowSnapshot = []
@@ -154,6 +155,7 @@ final class GuidanceEngine: ObservableObject {
         state = .idle
         locateToken += 1
         OverlayWindowController.shared.hideDot()
+        HelperButtonController.shared.hide()
         Speaker.shared.stop()
         removeDebugHotkey()
         removeClickMonitor()
@@ -224,6 +226,7 @@ final class GuidanceEngine: ObservableObject {
         currentStepIndex = index
         currentInstruction = step.instruction
         statusMessage = "Step \(index + 1) of \(steps.count)"
+        HelperButtonController.shared.hide()
         removeClickMonitor()
         removeKeyAdvanceMonitor()
         currentTargetAX = nil
@@ -238,11 +241,86 @@ final class GuidanceEngine: ObservableObject {
         // step (e.g. targetLabel "Press Command+Space"). Don't run the locator on
         // that forever — reroute it to a key/info step that just shows a banner.
         let effective = keystrokeRerouted(step) ?? step
+
+        // "Open <app>" / "click the Bin in the Dock" is a solved problem: the OS
+        // launches it directly. Dock icons carry NO text, so vision is doing its
+        // hardest work for something we can just ask macOS to do.
+        if effective.action == .click, let launch = AppLauncher.target(for: effective) {
+            await runLauncherStep(effective, launch: launch)
+            return
+        }
+
         switch effective.action {
         case .click:
             await locateAndShow(step: effective)
         case .type, .key, .info:
             presentNonClickStep(effective)
+        }
+    }
+
+    // MARK: - Launcher steps (open an app / the Trash — no vision needed)
+
+    /// In ASSIST mode: just open it and move on.
+    /// In TEACH mode: point at the Dock icon when AX knows it (that's the whole
+    /// teaching value), but always offer a one-click "open it for me" escape —
+    /// and if AX can't find the icon, open it rather than sending the user to a
+    /// vision model that will guess at a textless glyph.
+    private func runLauncherStep(_ step: Step, launch: AppLauncher.Target) async {
+        locateToken += 1
+        let token = locateToken
+        removeClickMonitor()
+        currentTargetAX = nil
+        let name = launch.displayName
+
+        func performOpen() {
+            HelperButtonController.shared.hide()
+            OverlayWindowController.shared.hideDot()
+            let spoken = AppLauncher.open(launch)
+            Speaker.shared.speak(spoken)
+            statusMessage = spoken
+            snapshotWindows()
+            let idx = currentStepIndex
+            Task { @MainActor in
+                await ScreenCapturer.shared.settleAfterAction()
+                guard self.isRunning, self.currentStepIndex == idx else { return }
+                await self.executeStep(index: idx + 1)
+            }
+        }
+
+        if mode == .assist {
+            DebugLogger.log("LAUNCH", "assist mode → opening '\(name)' directly")
+            state = .showing
+            performOpen()
+            return
+        }
+
+        // Teach mode: show the icon if the accessibility tree knows where it is.
+        let dockIcon = AccessibilityReader.shared.getSystemUIElements().first {
+            $0.role == "AXDockItem" && $0.title.caseInsensitiveCompare(name) == .orderedSame
+        }
+        guard token == locateToken, isRunning else { return }
+
+        if let icon = dockIcon {
+            DebugLogger.log("LAUNCH", "teach mode → pointing at Dock icon '\(icon.title)'")
+            currentTargetAX = icon.center
+            OverlayWindowController.shared.showHighlight(axRect: icon.frame, caption: currentInstruction)
+            state = .showing
+            statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click \(name) in the Dock"
+            installClickMonitor(target: icon.center, targetRect: icon.frame,
+                                forStep: currentStepIndex, secondary: isSecondaryClickStep(step))
+        } else {
+            DebugLogger.log("LAUNCH", "teach mode → AX can't see '\(name)' in the Dock; offering to open it")
+            state = .showing
+            statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — find \(name) in the Dock, or let me open it"
+            Speaker.shared.speak("Look for \(name) in the Dock at the bottom. If you can't find it, press the button and I'll open it for you.")
+        }
+
+        // The escape hatch, always available on a launcher step.
+        HelperButtonController.shared.show(title: "Can't find it? Open \(name) for me") { [weak self] in
+            guard let self = self, self.isRunning, self.currentStepIndex == step.index - 1
+                    || self.currentStepIndex < self.steps.count else { return }
+            DebugLogger.log("LAUNCH", "user asked Waylo to open '\(name)'")
+            performOpen()
         }
     }
 
@@ -897,6 +975,7 @@ final class GuidanceEngine: ObservableObject {
     private func onTaskComplete() async {
         state = .complete
         OverlayWindowController.shared.hideDot()
+        HelperButtonController.shared.hide()
         statusMessage = L10n.t("task_complete")
         currentInstruction = "All done! You've completed the task."
         Speaker.shared.speak(L10n.t("spoken_done"))
