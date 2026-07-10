@@ -181,14 +181,22 @@ final class CoordinateResolver {
             DebugLogger.log("RESOLVE", "LABEL_CACHE lookup MISS")
         }
 
+        // For a textless icon the vision layers need a CONCISE object name, not
+        // the planner's verbose location sentence ("The colour wheel icon is
+        // located to the right of the 'Text Colour' row…"). Sending that whole
+        // sentence made CLIP score every box 0.00 and Nova return not-found.
+        let visionQuery = targetLabel.isEmpty
+            ? Self.conciseObjectPhrase(elementDescription.isEmpty ? findDescription : elementDescription)
+            : targetLabel
+
         // --- Layer 2.5: Dual-model YOLO (OmniParser + Screen2AX) -----------
         // For ICON / logo targets (the planner marks these). YOLO locates icons
         // that have no readable text; text targets skip it and go to Nova.
         if targetType == .icon || targetLabel.isEmpty {
-            DebugLogger.log("PIPELINE", "icon target → trying L2.5 YOLO")
+            DebugLogger.log("PIPELINE", "icon target → trying L2.5 YOLO (query='\(visionQuery)')")
             if let detection = await YOLODetector.shared.detect(
                 capture: capture,
-                targetLabel: targetLabel,
+                targetLabel: visionQuery,
                 elementDescription: elementDescription,
                 screenRegion: screenRegion,
                 stepInstruction: stepInstruction
@@ -211,7 +219,8 @@ final class CoordinateResolver {
         DebugLogger.log("RESOLVE", "L3 Nova fallback invoked")
         // Fold any positional anchor into the description so Nova aims correctly
         // (e.g. "Send button … (located to the right of 'Add a caption')").
-        var novaDescription = elementDescription
+        // Use the CONCISE object name for a textless icon (see visionQuery).
+        var novaDescription = targetLabel.isEmpty ? visionQuery : elementDescription
         if !anchorText.isEmpty && !anchorPosition.isEmpty {
             novaDescription += " (located to the \(anchorPosition) of \"\(anchorText)\")"
         }
@@ -368,6 +377,18 @@ final class CoordinateResolver {
             } else {
                 candidates = all
             }
+            // The macOS MENU BAR (File/Edit/Format…) must only satisfy a
+            // menuBar-region step. Otherwise "the Format button in the toolbar"
+            // matched Pages' menu-bar Format MENU on an exact title tie and the
+            // whole guide walked into the wrong menu. A dropped-down menu's
+            // items (AXMenuItem) are NOT excluded — those are legit targets.
+            if region != .menuBar {
+                let noMenuBar = candidates.filter { $0.role != "AXMenuBarItem" }
+                if noMenuBar.count != candidates.count {
+                    DebugLogger.log("AX", "menu-bar filter (region=\(region.rawValue)): \(candidates.count) → \(noMenuBar.count)")
+                    candidates = noMenuBar
+                }
+            }
             // When a DIALOG/SHEET is focused, prefer elements inside it: its
             // "Empty Bin" button must outrank the identical toolbar "Empty"
             // sitting behind it — the user can only interact with the modal
@@ -443,6 +464,31 @@ final class CoordinateResolver {
             }
         }
         return Array(NSOrderedSet(array: out)) as? [String] ?? out
+    }
+
+    /// Reduces a verbose planner description to the OBJECT it names, dropping
+    /// the location clause. "The colour wheel icon is located to the right of
+    /// the 'Text Colour' row in the Style tab" → "colour wheel icon". Vision
+    /// models need the thing, not directions to it (the anchor carries those).
+    static func conciseObjectPhrase(_ desc: String) -> String {
+        var s = desc.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Cut at the first locational connective.
+        let cutMarkers = [" is located", " located ", " to the right", " to the left",
+                          " that appears", " which appears", " in the ", " on the ",
+                          " at the ", " next to ", " below ", " above ", " near "]
+        let lower = s.lowercased()
+        var cut = s.count
+        for m in cutMarkers {
+            if let r = lower.range(of: m) {
+                cut = min(cut, lower.distance(from: lower.startIndex, to: r.lowerBound))
+            }
+        }
+        if cut < s.count {
+            s = String(s.prefix(cut))
+        }
+        // Drop a leading article.
+        s = s.replacingOccurrences(of: #"(?i)^\s*(the|a|an)\s+"#, with: "", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func isStrongTitleMatch(query: String, element: AXElementInfo) -> Bool {

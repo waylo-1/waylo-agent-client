@@ -582,16 +582,15 @@ final class GuidanceEngine: ObservableObject {
         // that in ~2s. The old order sent the user scrolling for ~18s even
         // when the element was already on screen under a different name.
         guard token == locateToken, isRunning else { return }
+        // Recovery (attemptRecovery) already triggers scroll assist itself when
+        // the /recover model says the element is genuinely off-screen (it
+        // returns a scrollDirection). We do NOT scroll-assist as a blind
+        // fallback just because a scroll area exists — the element is usually
+        // on screen and simply unnamed, and a pointless scroll prompt is worse
+        // than an honest description (user feedback: scroll must be necessary,
+        // not a catch-all).
         if await attemptRecovery(step: step, capture: capture, token: token) { return }
         guard token == locateToken, isRunning else { return }
-        // Recovery produced nothing usable — the element may genuinely be off
-        // screen. Only offer to scroll when the screen ACTUALLY has a
-        // scrollable area (a long settings/list pane). Menus, the menu bar,
-        // and small dialogs can't scroll.
-        if AccessibilityReader.shared.targetHasScrollArea() {
-            if await beginScrollAssist(step: step, token: token) { return }
-            guard token == locateToken, isRunning else { return }
-        }
         describeTargetInstead(step: step)
     }
 
