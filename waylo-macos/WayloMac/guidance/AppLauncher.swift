@@ -42,10 +42,13 @@ enum AppLauncher {
             || text.contains("control-click") || text.contains("control click")
             || text.contains("context menu")
 
-        // The Trash / Bin, when the step is about opening it (not emptying it).
+        // The Trash / Bin, when the step OPENS it. "Empty Bin"/"Empty Trash" is
+        // a button inside the window — check the targetLabel, not the whole
+        // sentence, or the task "empty the trash" disables its own first step.
+        let label = step.targetLabel.lowercased()
+        let targetIsEmptyButton = label.hasPrefix("empty")
         let mentionsTrash = text.contains("trash") || text.contains("bin")
-        if mentionsTrash, !wantsContextMenu,
-           !text.contains("empty"),          // "Empty Bin" is a button, not a launch
+        if mentionsTrash, !wantsContextMenu, !targetIsEmptyButton,
            text.contains("dock") || text.contains("open") || text.contains("click") {
             return .trash
         }

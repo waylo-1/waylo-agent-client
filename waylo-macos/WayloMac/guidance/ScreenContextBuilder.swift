@@ -45,11 +45,19 @@ enum ScreenContextBuilder {
             }
         }
 
-        // Dock apps — tells the planner what can be launched with one click.
-        let dock = AccessibilityReader.shared.getSystemUIElements()
+        // Dock apps — tells the planner what can be launched with one click,
+        // and (critically) what this Mac CALLS them: on en_IN/en_GB the Trash
+        // is titled "Bin". The Trash is always the LAST Dock item, so a naive
+        // prefix() truncated it out of the snapshot and the planner kept
+        // guessing "Trash" — keep it explicitly.
+        let allDock = AccessibilityReader.shared.getSystemUIElements()
             .filter { $0.role == "AXDockItem" && !$0.title.isEmpty }
-            .prefix(maxDockItems)
             .map(\.title)
+        var dock = Array(allDock.prefix(maxDockItems))
+        if let trash = allDock.last(where: { ["trash", "bin"].contains($0.lowercased()) }),
+           !dock.contains(trash) {
+            dock.append(trash)
+        }
         if !dock.isEmpty {
             lines.append("Dock: " + dock.joined(separator: ", "))
         }
