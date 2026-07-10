@@ -54,7 +54,7 @@ final class LocalVisionDetector {
                                    y: axRect.minY - axTopOfScreen,
                                    width: axRect.width, height: axRect.height)
         } else if region != .fullScreen {
-            localCropRect = ScreenRegionHelper.localRect(for: region, screenSize: screen.frame.size)
+            localCropRect = ScreenRegionHelper.localRect(for: region, on: screen)
         }
 
         if let local = localCropRect {
