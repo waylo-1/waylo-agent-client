@@ -150,10 +150,13 @@ final class CoordinateResolver {
            let cachedLabel = await WayloAPIClient.shared.lookupLabel(appName: appName, stepDescription: cacheKey) {
             DebugState.shared.update(cache: "HIT \(cachedLabel)")
             DebugLogger.log("RESOLVE", "LABEL_CACHE lookup HIT '\(cachedLabel)'")
-            if let element = axSearch(cachedLabel, region: screenRegion, screen: screen, allowSystemUI: true),
-               passesRegion(element.center, screenRegion, screen: screen) {
-                DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT, skipped L3 — '\(cachedLabel)' \(element.center)")
-                DebugLogger.logResolution("label-cache-AX", found: true, point: element.center, label: cachedLabel)
+            // The cached label may itself be in the wrong dialect (an older run
+            // cached the planner's "Trash" on a Mac whose Dock says "Bin").
+            for candidate in Self.labelVariants(cachedLabel) {
+                guard let element = axSearch(candidate, region: screenRegion, screen: screen, allowSystemUI: true),
+                      passesRegion(element.center, screenRegion, screen: screen) else { continue }
+                DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT, skipped L3 — '\(candidate)' \(element.center)")
+                DebugLogger.logResolution("label-cache-AX", found: true, point: element.center, label: candidate)
                 DebugState.shared.update(layer: "cache→L0 AX", dot: element.center)
                 return Resolution(axPoint: element.center, updatedInstruction: "",
                                   axElement: element.axElement, targetFrame: element.frame)
@@ -392,21 +395,34 @@ final class CoordinateResolver {
 
     /// True when every word of `query` appears in the element's title — a strong,
     /// specific match (guards the Dock fallback against generic keyword hits).
-    /// The label plus dialect/locale variants. macOS localizes core UI words by
-    /// region: on en_IN / en_GB / en_AU the Trash is "Bin" ("Empty Trash" →
-    /// "Empty Bin"), and older docs say "Preferences" where modern macOS says
-    /// "Settings". The planner writes US English, the screen may not.
+    /// macOS renames core UI elements by region. On an en_IN / en_GB / en_AU
+    /// Mac the Dock's Trash is titled **"Bin"** ("Empty Trash" → "Empty Bin"),
+    /// while the filesystem still calls it Trash — so `FileManager.displayName`
+    /// can't be trusted either. The planner writes US English; the screen may
+    /// not. Every pair below is checked in BOTH directions, so this works
+    /// whichever dialect the planner and the Mac happen to use.
+    private static let dialectPairs: [(String, String)] = [
+        ("trash", "bin"),
+        ("preferences", "settings"),
+        ("favorites", "favourites"),
+        ("color", "colour"),
+        ("customize", "customise"),
+        ("organize", "organise"),
+        ("center", "centre"),
+        ("gray", "grey"),
+        ("catalog", "catalogue"),
+        ("license", "licence"),
+        ("dialog", "dialogue"),
+        ("fullscreen", "full screen"),
+    ]
+
+    /// The label plus its dialect variants, original first (so an exact match
+    /// on what the planner said always wins when both exist on screen).
     static func labelVariants(_ label: String) -> [String] {
         guard !label.isEmpty else { return [] }
         var out = [label]
-        let pairs: [(String, String)] = [
-            ("trash", "bin"),
-            ("preferences", "settings"),
-            ("favourites", "favorites"),
-            ("colour", "color"),
-        ]
         let lower = label.lowercased()
-        for (a, b) in pairs {
+        for (a, b) in dialectPairs {
             if lower.contains(a) {
                 out.append(label.replacingOccurrences(of: a, with: b, options: .caseInsensitive))
             } else if lower.contains(b) {
