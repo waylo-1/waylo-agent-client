@@ -57,6 +57,24 @@ final class AccessibilityReader {
         return elements(forPID: pid, roles: Self.interactiveRoles)
     }
 
+    /// The Dock's on-screen frame (AX coords), or nil. Used to hard-reject
+    /// vision detections for "… in the Dock" targets that land elsewhere (a
+    /// desktop folder icon once won a "Trash icon in the Dock" step).
+    func dockFrame() -> CGRect? {
+        guard let dock = NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
+        let app = AXUIElementCreateApplication(dock.processIdentifier)
+        var childrenRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &childrenRef)
+        guard let children = childrenRef as? [AXUIElement] else { return nil }
+        // The Dock's "list" child is the icon strip itself.
+        for child in children where copyStringAttribute(child, kAXRoleAttribute) == "AXList" {
+            let frame = copyFrame(child)
+            if frame.width > 60, frame.height > 20 { return frame }
+        }
+        return nil
+    }
+
     /// Returns labelled elements from system UI processes (Dock, menu-bar extras).
     /// These own things like the Trash / app icons in the Dock, which never
     /// appear in the frontmost app's AX tree.

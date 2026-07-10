@@ -91,9 +91,16 @@ final class CoordinateResolver {
         }
 
         // --- Layer 0: Accessibility tree (role + anchor aware) -------------
-        if !targetLabel.isEmpty,
-           let found = axSearchDetailed(targetLabel, region: screenRegion, screen: screen, allowSystemUI: true,
-                                        preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect) {
+        // Try the planner's label, then locale/dialect variants of it: on an
+        // en_IN/en_GB Mac the Dock item is "Bin", never "Trash", and an exact
+        // AX match on the planner's word legitimately fails.
+        for candidate in Self.labelVariants(targetLabel) where !candidate.isEmpty {
+            guard let found = axSearchDetailed(candidate, region: screenRegion, screen: screen, allowSystemUI: true,
+                                               preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect)
+            else { continue }
+            if candidate != targetLabel {
+                DebugLogger.log("RESOLVE", "matched locale variant '\(candidate)' for planner label '\(targetLabel)'")
+            }
             let element = found.best
             print("[Resolver] L0 AX hit '\(element.title)' \(element.center)")
             DebugLogger.logResolution("L0-AX", found: true, point: element.center, label: "\(element.title) [\(element.role)]")
@@ -385,6 +392,30 @@ final class CoordinateResolver {
 
     /// True when every word of `query` appears in the element's title — a strong,
     /// specific match (guards the Dock fallback against generic keyword hits).
+    /// The label plus dialect/locale variants. macOS localizes core UI words by
+    /// region: on en_IN / en_GB / en_AU the Trash is "Bin" ("Empty Trash" →
+    /// "Empty Bin"), and older docs say "Preferences" where modern macOS says
+    /// "Settings". The planner writes US English, the screen may not.
+    static func labelVariants(_ label: String) -> [String] {
+        guard !label.isEmpty else { return [] }
+        var out = [label]
+        let pairs: [(String, String)] = [
+            ("trash", "bin"),
+            ("preferences", "settings"),
+            ("favourites", "favorites"),
+            ("colour", "color"),
+        ]
+        let lower = label.lowercased()
+        for (a, b) in pairs {
+            if lower.contains(a) {
+                out.append(label.replacingOccurrences(of: a, with: b, options: .caseInsensitive))
+            } else if lower.contains(b) {
+                out.append(label.replacingOccurrences(of: b, with: a, options: .caseInsensitive))
+            }
+        }
+        return Array(NSOrderedSet(array: out)) as? [String] ?? out
+    }
+
     private func isStrongTitleMatch(query: String, element: AXElementInfo) -> Bool {
         let titleWords = Set(element.title.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty })
         let queryWords = query.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
@@ -457,7 +488,9 @@ final class CoordinateResolver {
         // the full phrase (plus quoted phrases). Do NOT fragment it into single
         // words — that's what made "Change Password" chase a stray "Password".
         if !targetLabel.isEmpty {
-            add(targetLabel)
+            // Include locale variants ("Empty Trash" → "Empty Bin") so OCR can
+            // read what's actually printed on an en_IN / en_GB screen.
+            for variant in Self.labelVariants(targetLabel) { add(variant) }
             for match in quotedPhrases(in: instruction) { add(match) }
             return result
         }

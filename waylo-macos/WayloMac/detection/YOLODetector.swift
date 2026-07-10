@@ -22,14 +22,22 @@ struct YOLOElement: Decodable {
     let confidence: Double
     let source: String   // "screen2ax" | "omniparser"
     let axClass: String? // "AXButton", "AXLink", ... (nil for omniparser)
-    /// CLIP similarity of this box vs the step's target text, softmaxed across
-    /// the scored boxes (0–1). The box that best MEANS the target scores high.
+    /// RELATIVE: similarity softmaxed across the scored boxes. Says which box
+    /// is most target-like — but a softmax always crowns a winner, even when
+    /// the target isn't on screen at all.
     let matchScore: Double?
+    /// ABSOLUTE: raw similarity (SigLIP: calibrated sigmoid probability) of
+    /// this crop vs the target text. This is the "is the target actually here"
+    /// check. Without gating on it, an absent target still yields a confident
+    /// wrong winner — which is exactly how a desktop folder won a "Trash icon
+    /// in the Dock" step.
+    let matchConf: Double?
 
     enum CodingKeys: String, CodingKey {
         case x, y, w, h, cx, cy, confidence, source
         case axClass = "ax_class"
         case matchScore = "match_score"
+        case matchConf = "match_conf"
     }
 }
 
@@ -72,6 +80,12 @@ final class YOLODetector {
 
     /// Entry point. Returns the best matching element, or nil so
     /// CoordinateResolver falls through to L3 (Nova).
+    /// Minimum ABSOLUTE match confidence. A SigLIP sigmoid probability below
+    /// this means "the target text does not describe this crop" — regardless of
+    /// how it ranks against the other boxes. Tuned conservatively: a miss costs
+    /// one Nova call, a false accept points the user at the wrong thing.
+    private static let minMatchConf = 0.10
+
     func detect(
         capture: ScreenCapturer.Capture,
         targetLabel: String,
@@ -115,12 +129,24 @@ final class YOLODetector {
             return nil
         }
 
+        // "… in the Dock" targets must land inside the Dock. Deterministic and
+        // free: the Dock's real frame comes from AX, no model can override it.
+        var dockOnly: CGRect?
+        let contextText = "\(elementDescription) \(stepInstruction)".lowercased()
+        if contextText.contains("dock") {
+            dockOnly = await MainActor.run { AccessibilityReader.shared.dockFrame() }
+            if let d = dockOnly {
+                DebugLogger.log("L2.5", "Dock target → restricting to Dock frame \(Int(d.width))x\(Int(d.height)) at (\(Int(d.minX)),\(Int(d.minY)))")
+            }
+        }
+
         guard let best = selectBestMatch(
             elements: response.elements,
             targetLabel: targetLabel,
             elementDescription: elementDescription,
             screenRegion: screenRegion,
-            screen: screen
+            screen: screen,
+            restrictTo: dockOnly
         ) else {
             DebugLogger.log("L2.5", "no element matched semantic criteria, falling through to L3")
             DebugState.shared.yoloResult = "MISS (no match)"
@@ -145,7 +171,8 @@ final class YOLODetector {
         targetLabel: String,
         elementDescription: String,
         screenRegion: ScreenRegion,
-        screen: NSScreen
+        screen: NSScreen,
+        restrictTo: CGRect? = nil
     ) -> YOLOCandidate? {
         let expectedAXClass = inferExpectedAXClass(
             targetLabel: targetLabel.lowercased(),
@@ -158,6 +185,8 @@ final class YOLODetector {
             let axFrame = normalizedToAXRect(x: element.x, y: element.y, w: element.w, h: element.h, screen: screen)
 
             guard isValidAXPoint(axPoint, screenRegion: screenRegion, screen: screen) else { continue }
+            // Hard geometric constraint (e.g. Dock) — no score can override it.
+            if let rect = restrictTo, !rect.insetBy(dx: -10, dy: -10).contains(axPoint) { continue }
 
             var score = 0.0
             // CLIP semantic match vs the step's target text — the strongest
@@ -190,9 +219,20 @@ final class YOLODetector {
         //   - the expected AX class matched, or
         //   - the region narrowed the field to a single unambiguous candidate.
         let ms = winner.element.matchScore ?? 0
+        let conf = winner.element.matchConf ?? 0
         let runnerUpMS = candidates
             .filter { $0.element.matchScore != nil && $0.axPoint != winner.axPoint }
             .map { $0.element.matchScore! }.max() ?? 0
+
+        // ABSOLUTE gate first: a softmax always crowns a winner, even when the
+        // target isn't on screen. If the model doesn't independently believe
+        // this crop matches the target text, NOTHING here is acceptable —
+        // defer to Nova rather than confidently point at the wrong thing.
+        if winner.element.matchConf != nil && conf < Self.minMatchConf {
+            DebugLogger.log("L2.5", "REJECTED: matchScore=\(String(format: "%.2f", ms)) looks decisive but absolute conf=\(String(format: "%.3f", conf)) < \(Self.minMatchConf) — target likely NOT among the boxes → L3 Nova")
+            return nil
+        }
+
         let semanticWinner = ms >= 0.35 && ms >= runnerUpMS * 1.5
         let classMatched = expectedAXClass != nil
             && winner.element.axClass == expectedAXClass
@@ -202,7 +242,7 @@ final class YOLODetector {
             return nil
         }
         if semanticWinner {
-            DebugLogger.log("L2.5", "CLIP semantic winner: matchScore=\(String(format: "%.2f", ms)) (runner-up \(String(format: "%.2f", runnerUpMS)))")
+            DebugLogger.log("L2.5", "semantic winner: score=\(String(format: "%.2f", ms)) (runner-up \(String(format: "%.2f", runnerUpMS))) conf=\(String(format: "%.3f", conf))")
         }
         return winner
     }
