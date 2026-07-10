@@ -227,7 +227,38 @@ final class AccessibilityReader {
             }
         }
         let sheet = targetFocusedDialogFrame() != nil
-        return "\(TargetAppTracker.shared.targetName)|\(windows.count)|\(focusedTitle)|\(sheet)"
+        // Opening a menu is a real screen change but adds no window — without
+        // this, clicking "Insert" (menu drops down) looked like "nothing
+        // happened" to the verification signal.
+        let menu = targetHasOpenMenu()
+        return "\(TargetAppTracker.shared.targetName)|\(windows.count)|\(focusedTitle)|\(sheet)|\(menu)"
+    }
+
+    /// True when the target app currently has an open menu (a menu-bar menu
+    /// dropped down, or a context menu). Cheap: only inspects the menu bar's
+    /// immediate children for a selected item, not the whole tree.
+    func targetHasOpenMenu() -> Bool {
+        let pid = TargetAppTracker.shared.targetPID
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let pid = pid else { return false }
+        let app = AXUIElementCreateApplication(pid)
+
+        var menuBarRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &menuBarRef) == .success,
+              let menuBar = menuBarRef else { return false }
+
+        var childrenRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(menuBar as! AXUIElement, kAXChildrenAttribute as CFString, &childrenRef)
+        guard let items = childrenRef as? [AXUIElement] else { return false }
+
+        for item in items {
+            var selectedRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(item, kAXSelectedAttribute as CFString, &selectedRef) == .success,
+               let selected = selectedRef as? Bool, selected {
+                return true
+            }
+        }
+        return false
     }
 
     /// Every window of the target app with its frame (AX coords) and subrole.

@@ -48,6 +48,15 @@ final class TargetAppTracker {
                 return
             }
 
+            // Transient system UI (a notification banner, Spotlight, Control
+            // Center, the screenshot bar) briefly "activates" and would
+            // otherwise HIJACK the target mid-guide — the AX reader would then
+            // search the notification instead of the user's app.
+            if Self.isTransientSystemUI(app) {
+                DebugLogger.log("TRACKER", "ignoring transient system UI '\(app.localizedName ?? "?")' (\(bid)) — keeping target='\(self.targetName)'")
+                return
+            }
+
             let old = self.targetName
             self.targetPID = app.processIdentifier
             self.targetName = app.localizedName ?? ""
@@ -56,6 +65,32 @@ final class TargetAppTracker {
         }
     }
 
+    /// True for system UI that momentarily takes focus but is never the app
+    /// the user is being guided through: notification banners, Spotlight,
+    /// Control Center, the screenshot toolbar, Dock, etc.
+    private static func isTransientSystemUI(_ app: NSRunningApplication) -> Bool {
+        // Agents/accessory processes never own a real document window.
+        if app.activationPolicy != .regular { return true }
+        let bid = (app.bundleIdentifier ?? "").lowercased()
+        let blocked = [
+            "com.apple.usernotificationcenter",
+            "com.apple.notificationcenterui",
+            "com.apple.spotlight",
+            "com.apple.controlcenter",
+            "com.apple.systemuiserver",
+            "com.apple.dock",
+            "com.apple.screencaptureui",
+            "com.apple.wifi.wifiagent",
+            "com.apple.coreservices.uiagent",
+            "com.apple.loginwindow",
+        ]
+        return blocked.contains { bid == $0 || bid.hasPrefix($0) }
+    }
+
+    /// PIDs we've already unlocked, so the attribute isn't re-set (and
+    /// re-logged) on every single app switch.
+    private var electronUnlocked = Set<pid_t>()
+
     /// Chromium/Electron apps (Slack, Spotify, VS Code, Discord, Chrome…)
     /// render their AX tree ONLY after a client sets AXManualAccessibility on
     /// them — otherwise they look empty to L0 and everything falls to vision.
@@ -63,9 +98,11 @@ final class TargetAppTracker {
     /// target change. (Not AXEnhancedUserInterface — that one changes window
     /// behavior and is known to break window managers.)
     private func enableElectronAccessibility(pid: pid_t) {
+        guard !electronUnlocked.contains(pid) else { return }
         let app = AXUIElementCreateApplication(pid)
         let result = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         if result == .success {
+            electronUnlocked.insert(pid)
             DebugLogger.log("TRACKER", "AXManualAccessibility enabled for pid \(pid) (Electron-style app)")
         }
     }
