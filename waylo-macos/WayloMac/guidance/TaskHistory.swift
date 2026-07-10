@@ -30,19 +30,24 @@ final class TaskHistory: ObservableObject {
         if entries.count > maxEntries { entries.removeLast(entries.count - maxEntries) }
     }
 
-    /// 👍 — remember this plan as the correct one for the task.
+    /// 👍 — remember this plan as the correct one for the task, and COMMIT the
+    /// training examples the user's clicks verified during the run. This tick
+    /// is the only path by which a screenshot ever leaves the machine.
     func markCorrect(_ entry: Entry) {
         guard let i = entries.firstIndex(where: { $0.id == entry.id }) else { return }
         entries[i].feedback = .correct
         WayloAPIClient.shared.learnPlan(task: entry.task, steps: entry.steps)
-        DebugLogger.log("HISTORY", "marked CORRECT → learning plan for '\(entry.task)'")
+        TrainingHarvest.shared.commitVerified()
+        DebugLogger.log("HISTORY", "marked CORRECT → learning plan + committing verified training data")
     }
 
-    /// 👎 — forget this plan so the wrong path isn't reused next time.
+    /// 👎 — forget this plan, and throw away every staged training example:
+    /// a guide the user calls wrong must never become training data.
     func markWrong(_ entry: Entry) {
         guard let i = entries.firstIndex(where: { $0.id == entry.id }) else { return }
         entries[i].feedback = .wrong
         WayloAPIClient.shared.forgetPlan(task: entry.task)
-        DebugLogger.log("HISTORY", "marked WRONG → forgetting plan for '\(entry.task)'")
+        TrainingHarvest.shared.rejectAll()
+        DebugLogger.log("HISTORY", "marked WRONG → forgetting plan + rejecting training data")
     }
 }

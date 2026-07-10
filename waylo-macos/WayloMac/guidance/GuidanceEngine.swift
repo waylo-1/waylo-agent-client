@@ -93,6 +93,7 @@ final class GuidanceEngine: ObservableObject {
         stepCount = plan.steps.count
         taskName = plan.task
         planLocked = plan.demo
+        TrainingHarvest.shared.beginGuide(task: plan.task)
         currentStepIndex = 0
         isRunning = true
         installDebugHotkey()
@@ -582,6 +583,9 @@ final class GuidanceEngine: ObservableObject {
             DebugLogger.log("ASSIST", "AXPress \(pressed ? "OK" : "failed → synthetic click")")
         }
         if !pressed { performSyntheticClick(at: resolution.axPoint) }
+        // NOTE: assist mode deliberately does NOT mark the example verified —
+        // Waylo clicked its own prediction, so a "success" here would just be
+        // the model agreeing with itself. Only a human click is ground truth.
         advanceAfterClick(stepIndex: stepIndex)
     }
 
@@ -1079,6 +1083,9 @@ final class GuidanceEngine: ObservableObject {
         let insideRect = targetRect.map { $0.insetBy(dx: -12, dy: -12).contains(clickAX) } ?? false
         let inTarget = insideRect || dist <= clickToleranceAX
         if inTarget {
+            // The user clicked where we pointed → any staged training example
+            // for this step was a correct prediction.
+            TrainingHarvest.shared.markVerified(stepIndex: stepIndex)
             advanceAfterClick(stepIndex: stepIndex)
             return
         }
@@ -1157,6 +1164,10 @@ final class GuidanceEngine: ObservableObject {
             let element = AccessibilityReader.shared.elementAt(axPoint: clickAX)
             let label = element.map { $0.title.isEmpty ? $0.description : $0.title } ?? ""
             DebugLogger.log("CORRECT", "user's click WORKED — learning '\(label)' as the real target for step \(stepIndex + 1)")
+
+            // Our predicted box was WRONG — never train on it. (The corrected
+            // target is reported below as ground truth instead.)
+            TrainingHarvest.shared.discard(stepIndex: stepIndex)
 
             // 1. Label cache: next run of this step resolves to the user's
             //    element via AX and skips vision entirely.

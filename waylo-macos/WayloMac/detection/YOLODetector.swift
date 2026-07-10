@@ -269,52 +269,35 @@ final class YOLODetector {
     /// training images requires an explicit user decision (dev-tools toggle).
     static let captureTrainingImagesKey = "waylo.captureTrainingImages"
 
-    /// Called when L3 (Nova) succeeds — appends a labelled example to a local
-    /// JSONL file for future YOLO fine-tuning. Fire-and-forget, failures ignored.
-    /// `nonisolated` so the file write stays off the main actor.
-    ///
-    /// When the user has opted in (`captureTrainingImagesKey`), the downscaled
-    /// screenshot is saved next to the log so the example is actually
-    /// trainable (bbox-only entries have no pixels to learn from).
-    nonisolated func logTrainingExample(
-        appName: String,
-        targetLabel: String,
-        controlKind: String,
-        screenRegion: String,
-        novaBBox: [Double],   // raw [xMin, yMin, xMax, yMax] on 0–1000 scale
-        pixelWidth: Int,
-        pixelHeight: Int,
-        image: CGImage?
-    ) {
+    /// Writes ONE user-verified training example to the local JSONL (+ image
+    /// when the user opted in). Called only from `TrainingHarvest.commitVerified()`
+    /// — never straight off a raw detection, because an unconfirmed box may be
+    /// wrong and would poison the training set.
+    nonisolated func writeTrainingExample(_ example: TrainingHarvest.Example) {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first!.appendingPathComponent("Sahayak", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
         var entry: [String: Any] = [
             "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "app_name": appName,
-            "target_label": targetLabel,
-            "control_kind": controlKind,
-            "screen_region": screenRegion,
-            "bbox_0_1000": novaBBox,
-            "image_pixel_width": pixelWidth,
-            "image_pixel_height": pixelHeight,
+            "app_name": example.appName,
+            "target_label": example.targetLabel,
+            "control_kind": example.controlKind,
+            "screen_region": example.screenRegion,
+            "bbox_0_1000": example.bbox,
+            "image_pixel_width": example.pixelWidth,
+            "image_pixel_height": example.pixelHeight,
+            "verified": true,
         ]
 
-        // Opt-in image capture: downscaled JPEG (same 1280px compressor used
-        // for uploads) into training_images/, referenced from the JSONL entry.
-        if UserDefaults.standard.bool(forKey: Self.captureTrainingImagesKey),
-           let image = image,
-           let (b64, size) = ScreenCapturer.compressedJPEGBase64(image, maxWidth: 1280),
-           let jpeg = Data(base64Encoded: b64) {
+        // Image (opt-in only) written next to the log so the example is
+        // actually trainable — bbox-only rows have no pixels to learn from.
+        if let b64 = example.imageBase64, let jpeg = Data(base64Encoded: b64) {
             let imagesDir = dir.appendingPathComponent("training_images", isDirectory: true)
             try? FileManager.default.createDirectory(at: imagesDir, withIntermediateDirectories: true)
-            let name = "\(Int(Date().timeIntervalSince1970 * 1000)).jpg"
-            let fileURL = imagesDir.appendingPathComponent(name)
-            if (try? jpeg.write(to: fileURL)) != nil {
+            let name = "\(Int(Date().timeIntervalSince1970 * 1000))-\(example.stepIndex).jpg"
+            if (try? jpeg.write(to: imagesDir.appendingPathComponent(name))) != nil {
                 entry["image_file"] = "training_images/\(name)"
-                entry["saved_image_width"] = Int(size.width)
-                entry["saved_image_height"] = Int(size.height)
             }
         }
 
@@ -330,6 +313,6 @@ final class YOLODetector {
         } else {
             try? line.data(using: .utf8)?.write(to: file)
         }
-        DebugLogger.log("L2.5", "training example logged\(entry["image_file"] != nil ? " (with image)" : "") to yolo_training_log.jsonl")
+        DebugLogger.log("HARVEST", "wrote verified example '\(example.targetLabel)'\(entry["image_file"] != nil ? " (with image)" : " (bbox only)")")
     }
 }

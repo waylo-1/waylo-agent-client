@@ -429,8 +429,8 @@ struct HomePanelView: View {
 
             Toggle(isOn: $captureTrainingImages) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Save YOLO training screenshots").font(.caption)
-                    Text("Stores downscaled screenshots on-device when Nova finds an element, for fine-tuning")
+                    Text("Contribute training screenshots").font(.caption)
+                    Text("Only for steps you clicked correctly AND marked ✓. Saved on-device and sent to Waylo to improve detection.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
