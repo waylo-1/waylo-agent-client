@@ -211,8 +211,12 @@ final class CoordinateResolver {
         // paid vision layers because it's fast and very specific.
         if targetType == .icon || targetLabel.isEmpty {
             let colorText = "\(elementDescription) \(findDescription) \(stepInstruction)"
+            // Confine the colour search to the app's window (or the just-opened
+            // window) so a red Dock icon / menu-bar glyph can't win.
+            let colorWindow = effectivePreferRect ?? AccessibilityReader.shared.targetFocusedWindowFrame()
             if let colorName = ColorDetector.colorMentioned(in: colorText),
-               let hit = colorDetector.find(colorName: colorName, in: image, on: screen, region: screenRegion),
+               let hit = colorDetector.find(colorName: colorName, in: image, on: screen,
+                                            region: screenRegion, within: colorWindow),
                passesRegion(hit.point, screenRegion, screen: screen) {
                 DebugLogger.logResolution("COLOR", found: true, point: hit.point, label: "\(colorName) blob")
                 DebugState.shared.update(layer: "Colour \(colorName)")

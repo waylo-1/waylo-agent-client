@@ -45,9 +45,11 @@ final class ColorDetector {
     }
 
     /// Finds the largest blob of `colorName` and returns its AX-global centre
-    /// and bounding box. `region` optionally restricts the search.
+    /// and bounding box. `within` (AX-global) restricts the search — pass the
+    /// target app's window so a red Dock icon can't win a "red camera button"
+    /// step; `region` is the coarser fallback when there's no window.
     func find(colorName: String, in image: CGImage, on screen: NSScreen,
-              region: ScreenRegion = .fullScreen) -> Hit? {
+              region: ScreenRegion = .fullScreen, within: CGRect? = nil) -> Hit? {
         guard let range = Self.colors[colorName] else { return nil }
 
         // Downscale for speed — 200px wide is plenty to locate a button. The
@@ -65,9 +67,20 @@ final class ColorDetector {
         ctx.interpolationQuality = .medium
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: scaleW, height: scaleH))
 
-        // Restrict to the region's rows/cols (in the downscaled image) if set.
+        // Restrict the search rectangle (in downscaled px). Prefer the app
+        // window (`within`, AX-global), else the coarse region. This is what
+        // keeps a red Dock icon or menu-bar glyph from beating the real
+        // in-window control.
         var xMin = 0, xMax = scaleW, yMin = 0, yMax = scaleH
-        if let local = ScreenRegionHelper.localRect(for: region, on: screen) {
+        let axTopForCrop = ScreenCoordinates.primaryHeight - screen.frame.maxY
+        let localRect: CGRect? = {
+            if let w = within {
+                return CGRect(x: w.minX - screen.frame.minX, y: w.minY - axTopForCrop,
+                              width: w.width, height: w.height)
+            }
+            return ScreenRegionHelper.localRect(for: region, on: screen)
+        }()
+        if let local = localRect {
             let s = CGFloat(scaleW) / screen.frame.width
             xMin = max(0, Int(local.minX * s)); xMax = min(scaleW, Int(local.maxX * s))
             yMin = max(0, Int(local.minY * s)); yMax = min(scaleH, Int(local.maxY * s))
