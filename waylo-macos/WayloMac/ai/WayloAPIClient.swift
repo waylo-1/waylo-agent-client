@@ -122,6 +122,31 @@ final class WayloAPIClient {
         }
     }
 
+    // MARK: - POST /resolve/spotify (name → Spotify URI, for autonomous play)
+
+    /// Resolves a free-text query ("drake", "one dance drake") to a playable
+    /// Spotify URI via the backend (Spotify Web API search). Returns nil when
+    /// the backend has no Spotify key configured or the search fails — the
+    /// caller then falls back to opening the in-app search. Never throws.
+    func resolveSpotifyURI(query: String) async -> String? {
+        guard !query.isEmpty, let url = URL(string: "\(baseURL)/resolve/spotify") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 6
+        guard let body = try? JSONSerialization.data(withJSONObject: ["query": query]) else { return nil }
+        request.httpBody = body
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let uri = obj["uri"] as? String, uri.hasPrefix("spotify:") else { return nil }
+            return uri
+        } catch {
+            return nil
+        }
+    }
+
     /// Caches a working AX label for a step (fire-and-forget).
     func storeLabel(appName: String, stepDescription: String, axLabel: String) {
         guard !appName.isEmpty, !stepDescription.isEmpty, !axLabel.isEmpty,

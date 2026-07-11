@@ -502,6 +502,18 @@ struct HomePanelView: View {
             return
         }
 
+        // Autonomous app control ("play drake on spotify", "pause the music",
+        // "directions to X") — AppleScript / URI schemes, no plan, no vision.
+        if let action = AppActions.match(task) {
+            taskText = ""
+            errorMessage = nil
+            Task { @MainActor in
+                let spoken = await AppActions.perform(action)
+                Speaker.shared.speak(spoken)
+            }
+            return
+        }
+
         isLoading = true
         errorMessage = nil
 

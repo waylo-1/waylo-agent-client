@@ -81,6 +81,17 @@ final class VoiceCommandEngine: ObservableObject {
             return
         }
 
+        // Autonomous app control ("play drake on spotify", "pause the music",
+        // "directions to the airport") — driven via AppleScript / URI schemes,
+        // not the vision pipeline. Also instant, no plan, no cost.
+        if let action = AppActions.match(task) {
+            let spoken = await AppActions.perform(action)
+            OverlayWindowController.shared.showBanner(spoken, autoDismissAfter: 5)
+            Speaker.shared.speak(spoken)
+            state = .idle
+            return
+        }
+
         OverlayWindowController.shared.showBanner("Planning: “\(task)”…")
         Speaker.shared.speak("Okay, let me figure that out.")
         do {
