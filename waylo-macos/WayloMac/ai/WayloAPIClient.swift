@@ -155,6 +155,11 @@ final class WayloAPIClient {
         ])
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            // A 404 means the backend predates /act — say so instead of a
+            // generic "lost connection" (that misdirects debugging).
+            if (response as? HTTPURLResponse)?.statusCode == 404 {
+                throw APIError.serverMessage("The server needs an update before I can do tasks myself — it doesn't have agent mode yet.")
+            }
             if let detail = Self.serverErrorDetail(from: data) { throw APIError.serverMessage(detail) }
             throw APIError.serverError
         }
