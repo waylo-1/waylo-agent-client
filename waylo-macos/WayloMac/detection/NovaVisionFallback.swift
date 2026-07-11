@@ -21,6 +21,10 @@ final class NovaVisionFallback {
         /// Raw bounding box [xMin,yMin,xMax,yMax] on the 0–1000 scale, surfaced
         /// for YOLO training-data collection.
         let rawBBox: [Double]?
+        /// Nova's self-reported confidence (0–1) that the box is the EXACT
+        /// element — low means "I'm guessing", so the caller should describe
+        /// rather than plant a dot on a wrong icon.
+        var confidence: Double? = nil
     }
 
     /// `image`/`screen`: the captured display image and its screen.
@@ -64,7 +68,10 @@ final class NovaVisionFallback {
             DebugLogger.log("NOVA", "computed axPoint=\(axPoint.map { String(format: "(%.1f,%.1f)", $0.x, $0.y) } ?? "nil")")
             // Prefer the label Nova returns; fall back to the label we sent.
             let resolvedLabel = (response.label?.isEmpty == false) ? response.label! : label
-            return Result(axPoint: axPoint, axFrame: axFrame, updatedInstruction: "", updatedFindDescription: "", novaLabel: resolvedLabel, rawBBox: bbox)
+            if let c = response.confidence {
+                DebugLogger.log("NOVA", "confidence=\(String(format: "%.2f", c))")
+            }
+            return Result(axPoint: axPoint, axFrame: axFrame, updatedInstruction: "", updatedFindDescription: "", novaLabel: resolvedLabel, rawBBox: bbox, confidence: response.confidence)
         } catch {
             print("[NovaVisionFallback] request failed: \(error)")
             DebugLogger.log("NOVA", "request failed: \(error.localizedDescription)")

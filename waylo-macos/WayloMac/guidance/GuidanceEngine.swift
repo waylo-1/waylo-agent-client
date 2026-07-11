@@ -1490,6 +1490,8 @@ final class GuidanceEngine: ObservableObject {
         if text.contains("return") || text.contains("enter") { return (36, flags) }
         if text.contains("escape") || text.contains(" esc") { return (53, flags) }
         if text.contains("tab") { return (48, flags) }
+        // Number after a modifier — e.g. screenshot shortcuts ⌘⇧3 / ⌘⇧4 / ⌘⇧5.
+        if !flags.isEmpty, let code = Self.numberKeyCode(in: text) { return (code, flags) }
         if let letter = Self.letterAfterModifier(in: text), let code = Self.letterKeyCode(letter) {
             return (code, flags)
         }
@@ -1530,6 +1532,20 @@ final class GuidanceEngine: ObservableObject {
                 continue outer  // next word isn't a combo letter — try another modifier
             }
         }
+        return nil
+    }
+
+    /// Finds a digit (0–9) mentioned in a shortcut and returns its US-ANSI
+    /// keycode — for screenshot combos like ⌘⇧3, ⌘⇧4, ⌘⇧5.
+    private static func numberKeyCode(in text: String) -> CGKeyCode? {
+        // US-ANSI keycodes: 1..9,0 → 18,19,20,21,23,22,26,28,25,29.
+        let map: [Character: CGKeyCode] = [
+            "1": 18, "2": 19, "3": 20, "4": 21, "5": 23,
+            "6": 22, "7": 26, "8": 28, "9": 25, "0": 29
+        ]
+        // Prefer a digit that follows a modifier word/symbol ("shift 4", "⌘⇧3").
+        if let letter = letterAfterModifier(in: text), let c = map[letter] { return c }
+        for ch in text where map[ch] != nil { return map[ch] }
         return nil
     }
 

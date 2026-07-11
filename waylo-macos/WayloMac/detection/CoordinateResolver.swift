@@ -17,6 +17,11 @@ final class CoordinateResolver {
     private let visionDetector = LocalVisionDetector()
     private let novaFallback = NovaVisionFallback()
 
+    /// Below this Nova self-reported confidence, we describe the target instead
+    /// of pointing at what Nova admits is a guess. Conservative: a miss costs a
+    /// spoken description; a false accept points the user at the wrong icon.
+    static let novaMinConfidence = 0.55
+
     private init() {}
 
     struct Resolution {
@@ -237,6 +242,17 @@ final class CoordinateResolver {
             screen: screen,
             ocrContext: ocrContext
         ) {
+            // Nova low-confidence guard: if Nova admits it's guessing at the
+            // element (common for tiny unlabelled icons in AX-hostile apps like
+            // WhatsApp/Electron), do NOT plant a dot on a likely-wrong icon —
+            // return nil so the engine describes the target and lets the user
+            // click. "Don't point when unsure" > a confident wrong dot.
+            if let point = result.axPoint, let conf = result.confidence, conf < Self.novaMinConfidence {
+                DebugLogger.log("RESOLVE", "L3 Nova REJECTED: confidence \(String(format: "%.2f", conf)) < \(Self.novaMinConfidence) — describing instead of pointing at a guess")
+                DebugLogger.logResolution("L3-Nova", found: false, point: point, label: "low-conf \(targetLabel)")
+                DebugState.shared.update(layer: "L3 Nova (low-conf → describe)")
+                return nil
+            }
             if let point = result.axPoint {
                 print("[Resolver] L3 hit \(point)")
                 DebugLogger.logResolution("L3-Nova", found: true, point: point, label: targetLabel)

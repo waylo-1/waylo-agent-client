@@ -215,7 +215,9 @@ final class WayloAPIClient {
         let found = (obj["found"] as? Bool) ?? false
         let bbox = (obj["bbox"] as? [Double])
         let label = obj["label"] as? String
-        return NovaVisionResponse(found: found, bbox: bbox, label: label)
+        let confidence = (obj["confidence"] as? Double)
+            ?? (obj["confidence"] as? NSNumber)?.doubleValue
+        return NovaVisionResponse(found: found, bbox: bbox, label: label, confidence: confidence)
     }
 
     // MARK: - POST /plan/learn (remember a corrected plan)
@@ -437,6 +439,7 @@ struct NovaVisionResponse {
     let found: Bool
     let bbox: [Double]?   // [xMin, yMin, xMax, yMax] on a 0–1000 scale
     let label: String?
+    var confidence: Double? = nil  // Nova's self-reported 0–1 confidence
 }
 
 struct VisionFallbackResponse: Codable {
