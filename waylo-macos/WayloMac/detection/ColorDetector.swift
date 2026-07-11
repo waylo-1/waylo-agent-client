@@ -39,10 +39,15 @@ final class ColorDetector {
         return nil
     }
 
-    /// Finds the largest blob of `colorName` and returns its AX-global centre.
-    /// `region` optionally restricts the search (crop) the same way OCR does.
+    struct Hit {
+        let point: CGPoint   // AX-global centre of the blob
+        let frame: CGRect    // AX-global bounding box (for the region outline)
+    }
+
+    /// Finds the largest blob of `colorName` and returns its AX-global centre
+    /// and bounding box. `region` optionally restricts the search.
     func find(colorName: String, in image: CGImage, on screen: NSScreen,
-              region: ScreenRegion = .fullScreen) -> CGPoint? {
+              region: ScreenRegion = .fullScreen) -> Hit? {
         guard let range = Self.colors[colorName] else { return nil }
 
         // Downscale for speed — 200px wide is plenty to locate a button. The
@@ -81,19 +86,22 @@ final class ColorDetector {
         }
         guard anyMatch else { return nil }
 
-        // Largest 4-connected blob via iterative flood fill.
+        // Largest 4-connected blob via iterative flood fill (tracking bounds).
         var visited = [Bool](repeating: false, count: scaleW * scaleH)
-        var best: (count: Int, sx: Int, sy: Int) = (0, 0, 0)
+        var best: (count: Int, sx: Int, sy: Int, minX: Int, maxX: Int, minY: Int, maxY: Int) = (0,0,0,0,0,0,0)
         var stack: [Int] = []
         for start in 0..<(scaleW * scaleH) where mask[start] && !visited[start] {
             stack.removeAll(keepingCapacity: true)
             stack.append(start)
             visited[start] = true
             var count = 0, sumX = 0, sumY = 0
+            var minX = scaleW, maxX = 0, minY = scaleH, maxY = 0
             while let p = stack.popLast() {
                 count += 1
-                sumX += p % scaleW; sumY += p / scaleW
                 let px = p % scaleW, py = p / scaleW
+                sumX += px; sumY += py
+                minX = min(minX, px); maxX = max(maxX, px)
+                minY = min(minY, py); maxY = max(maxY, py)
                 for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1)] {
                     let nx = px + dx, ny = py + dy
                     guard nx >= 0, nx < scaleW, ny >= 0, ny < scaleH else { continue }
@@ -101,7 +109,7 @@ final class ColorDetector {
                     if mask[np] && !visited[np] { visited[np] = true; stack.append(np) }
                 }
             }
-            if count > best.count { best = (count, sumX, sumY) }
+            if count > best.count { best = (count, sumX, sumY, minX, maxX, minY, maxY) }
         }
 
         // Reject noise (too small) and full-window fills (too big — a coloured
@@ -112,18 +120,24 @@ final class ColorDetector {
             return nil
         }
 
-        // Blob centroid (downscaled px) → LOGICAL screen-local → AX-global.
-        // The downscaled scaleW×scaleH image maps onto the screen's LOGICAL
-        // frame (not the retina pixel size), so scale by frame/scaled — this is
-        // what keeps the dot correct on a 2x display.
+        // Blob centroid + bounds (downscaled px) → LOGICAL screen-local →
+        // AX-global. The downscaled scaleW×scaleH image maps onto the screen's
+        // LOGICAL frame (not the retina pixel size), so scale by frame/scaled —
+        // this is what keeps the coords correct on a 2x display.
+        let kx = screen.frame.width / CGFloat(scaleW)
+        let ky = screen.frame.height / CGFloat(scaleH)
+        let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
         let cxDown = CGFloat(best.sx) / CGFloat(best.count)
         let cyDown = CGFloat(best.sy) / CGFloat(best.count)
-        let localX = cxDown * screen.frame.width / CGFloat(scaleW)
-        let localY = cyDown * screen.frame.height / CGFloat(scaleH)
-        let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
-        let point = CGPoint(x: screen.frame.minX + localX, y: axTop + localY)
+        let point = CGPoint(x: screen.frame.minX + cxDown * kx, y: axTop + cyDown * ky)
+        // Bounding box, padded a touch so the outline sits around the control.
+        let frame = CGRect(
+            x: screen.frame.minX + CGFloat(best.minX) * kx - 4,
+            y: axTop + CGFloat(best.minY) * ky - 4,
+            width: CGFloat(best.maxX - best.minX + 1) * kx + 8,
+            height: CGFloat(best.maxY - best.minY + 1) * ky + 8)
         DebugLogger.log("COLOR", "\(colorName): blob \(best.count)px → ax=(\(Int(point.x)),\(Int(point.y)))")
-        return point
+        return Hit(point: point, frame: frame)
     }
 
     /// RGB (0–255) → HSV with H in 0–360, S and V in 0–1.

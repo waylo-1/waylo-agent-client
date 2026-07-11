@@ -212,11 +212,11 @@ final class CoordinateResolver {
         if targetType == .icon || targetLabel.isEmpty {
             let colorText = "\(elementDescription) \(findDescription) \(stepInstruction)"
             if let colorName = ColorDetector.colorMentioned(in: colorText),
-               let p = colorDetector.find(colorName: colorName, in: image, on: screen, region: screenRegion),
-               passesRegion(p, screenRegion, screen: screen) {
-                DebugLogger.logResolution("COLOR", found: true, point: p, label: "\(colorName) blob")
+               let hit = colorDetector.find(colorName: colorName, in: image, on: screen, region: screenRegion),
+               passesRegion(hit.point, screenRegion, screen: screen) {
+                DebugLogger.logResolution("COLOR", found: true, point: hit.point, label: "\(colorName) blob")
                 DebugState.shared.update(layer: "Colour \(colorName)")
-                return Resolution(axPoint: p, updatedInstruction: "")
+                return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
             }
         }
 

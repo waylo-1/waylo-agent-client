@@ -15,11 +15,20 @@ enum ScreenContextBuilder {
     private static let maxElements = 36
     private static let maxDockItems = 14
 
+    /// System-wide dark mode. Read live so it's always current.
+    static var isDarkMode: Bool {
+        UserDefaults.standard.string(forKey: "AppleInterfaceStyle")?.lowercased() == "dark"
+    }
+
     static func build() -> String {
         var lines: [String] = []
 
         let appName = TargetAppTracker.shared.targetName
         lines.append("Frontmost app: \(appName.isEmpty ? "(unknown)" : appName)")
+        // System appearance — so the planner can describe controls by their
+        // actual shade ("dark Save button" vs "white Save button"). Auto-
+        // detected (no need to ask the user; updates if they switch).
+        lines.append("Appearance: \(Self.isDarkMode ? "Dark mode" : "Light mode")")
 
         if let windows = windowSummary(), !windows.isEmpty {
             lines.append("Windows: \(windows)")
