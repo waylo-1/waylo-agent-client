@@ -252,10 +252,35 @@ final class GuidanceEngine: ObservableObject {
 
         switch effective.action {
         case .click:
-            await locateAndShow(step: effective)
+            // A user-choice step ("click the photo you just took", "pick a
+            // chat") has NO single correct target — only the user knows which
+            // item they mean. Running the detector risks pointing at the wrong
+            // thing (e.g. the colour layer grabbing the red camera button on
+            // the "click your new photo" step). Skip detection entirely:
+            // describe it and advance on any click.
+            if isUserChoiceStep(effective) {
+                presentUserChoiceStep(effective)
+            } else {
+                await locateAndShow(step: effective)
+            }
         case .type, .key, .info:
             presentNonClickStep(effective)
         }
+    }
+
+    /// Present a user-choice step WITHOUT running detection: show the
+    /// instruction, drop no dot (there is no single right target), and advance
+    /// on any click. Keeps Waylo from confidently pointing at the wrong item.
+    private func presentUserChoiceStep(_ step: Step) {
+        locateToken += 1
+        removeClickMonitor()
+        OverlayWindowController.shared.hideDot()
+        currentTargetAX = nil
+        state = .showing
+        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click the one you want"
+        // A short dwell so the click that COMPLETED the previous step doesn't
+        // instantly satisfy this one.
+        installAnyClickAdvance(forStep: currentStepIndex, bufferSeconds: 1.2)
     }
 
     // MARK: - Launcher steps (open an app / the Trash — no vision needed)
@@ -799,7 +824,10 @@ final class GuidanceEngine: ObservableObject {
         let t = "\(step.instruction) \(step.elementDescription)".lowercased()
         let chooseWords = ["which chat", "the chat", "a chat", "choose a", "select the chat",
                            "which contact", "the contact", "which conversation", "the person",
-                           "which file", "the file you", "which photo", "the photo you"]
+                           "which file", "the file you", "which photo", "the photo you",
+                           "the photo you took", "photo that just appeared", "just appeared",
+                           "you just took", "thumbnail", "photo strip", "in the strip",
+                           "photo you captured", "the picture you"]
         // Only when the target has no exact label of its own (a specific button
         // like "Send" is NOT a free choice).
         let noFixedLabel = step.targetLabel.trimmingCharacters(in: .whitespaces).isEmpty

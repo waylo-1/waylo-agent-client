@@ -210,7 +210,13 @@ final class CoordinateResolver {
         // description names a colour and the target is an icon. Runs BEFORE the
         // paid vision layers because it's fast and very specific.
         if targetType == .icon || targetLabel.isEmpty {
-            let colorText = "\(elementDescription) \(findDescription) \(stepInstruction)"
+            // Only the TARGET's own descriptors — NOT the full instruction. The
+            // instruction is a sentence that often names a coloured LANDMARK
+            // ("click the photo below the RED camera button"); feeding it here
+            // fired the red detector on a step whose real target is the photo,
+            // pointing back at the camera button. The concise element/find
+            // description names the target itself.
+            let colorText = "\(elementDescription) \(findDescription)"
             // Confine the colour search to the app's window (or the just-opened
             // window) so a red Dock icon / menu-bar glyph can't win.
             let colorWindow = effectivePreferRect ?? AccessibilityReader.shared.targetFocusedWindowFrame()
