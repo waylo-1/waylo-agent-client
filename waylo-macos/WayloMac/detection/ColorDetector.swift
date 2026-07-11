@@ -52,10 +52,14 @@ final class ColorDetector {
               region: ScreenRegion = .fullScreen, within: CGRect? = nil) -> Hit? {
         guard let range = Self.colors[colorName] else { return nil }
 
-        // Downscale for speed — 200px wide is plenty to locate a button. The
-        // downscaled image represents the screen's LOGICAL frame (coordinates
-        // are mapped back via frame/scaled, so retina 2x is handled).
-        let scaleW = 200
+        // Downscale for speed. 200px was too coarse: a ~60pt control (Photo
+        // Booth's red camera button) shrank to ~6px — right at the noise floor,
+        // so the same button read 34px one run and 4px the next (rejected).
+        // 420px keeps small buttons at a solid ~15px while flood-fill over
+        // ~420×270 is still ~1ms. The downscaled image represents the screen's
+        // LOGICAL frame (coordinates map back via frame/scaled, so retina 2x is
+        // handled).
+        let scaleW = 420
         let scaleH = max(1, Int(CGFloat(scaleW) * CGFloat(image.height) / CGFloat(image.width)))
 
         var pixels = [UInt8](repeating: 0, count: scaleW * scaleH * 4)
