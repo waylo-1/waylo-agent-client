@@ -16,6 +16,7 @@ final class CoordinateResolver {
 
     private let visionDetector = LocalVisionDetector()
     private let novaFallback = NovaVisionFallback()
+    private let colorDetector = ColorDetector()
 
     /// Below this Nova self-reported confidence, we describe the target instead
     /// of pointing at what Nova admits is a guess. Conservative: a miss costs a
@@ -131,8 +132,18 @@ final class CoordinateResolver {
                     || !el.description.trimmingCharacters(in: .whitespaces).isEmpty
                 if !named {
                     DebugLogger.log("RESOLVE", "L0-AX-desc match is UNNAMED (role=\(el.role)) — refusing to guess")
+                    return nil
                 }
-                return named ? el : nil
+                // For an ICON target the description names the thing itself
+                // ("camera button"). If the matched element's LABEL shares NO
+                // real keyword with it (only generic words like "button"), we
+                // matched a different labelled control — "camera button" grabbed
+                // "Effects". Reject and let colour/vision find the real icon.
+                if !Self.descShareKeyword(query: axQuery, element: el) {
+                    DebugLogger.log("RESOLVE", "L0-AX-desc '\(el.title.isEmpty ? el.description : el.title)' shares no keyword with '\(axQuery)' — not the icon, deferring")
+                    return nil
+                }
+                return el
             }
 
         if (targetType == .icon || targetLabel.isEmpty), let element = descMatch {
@@ -193,6 +204,21 @@ final class CoordinateResolver {
         let visionQuery = targetLabel.isEmpty
             ? Self.conciseObjectPhrase(elementDescription.isEmpty ? findDescription : elementDescription)
             : targetLabel
+
+        // --- Colour layer: a distinctly-coloured control (red camera button,
+        // green send arrow…). On-device pixel analysis, ~30ms, only when the
+        // description names a colour and the target is an icon. Runs BEFORE the
+        // paid vision layers because it's fast and very specific.
+        if targetType == .icon || targetLabel.isEmpty {
+            let colorText = "\(elementDescription) \(findDescription) \(stepInstruction)"
+            if let colorName = ColorDetector.colorMentioned(in: colorText),
+               let p = colorDetector.find(colorName: colorName, in: image, on: screen, region: screenRegion),
+               passesRegion(p, screenRegion, screen: screen) {
+                DebugLogger.logResolution("COLOR", found: true, point: p, label: "\(colorName) blob")
+                DebugState.shared.update(layer: "Colour \(colorName)")
+                return Resolution(axPoint: p, updatedInstruction: "")
+            }
+        }
 
         // --- Layer 2.5: Dual-model YOLO (OmniParser + Screen2AX) -----------
         // For ICON / logo targets (the planner marks these). YOLO locates icons
@@ -505,6 +531,23 @@ final class CoordinateResolver {
         // Drop a leading article.
         s = s.replacingOccurrences(of: #"(?i)^\s*(the|a|an)\s+"#, with: "", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// True when the matched element's label shares at least one real
+    /// (non-stop-word) keyword with the query. Guards icon-by-description
+    /// matches from latching onto an unrelated labelled control.
+    static func descShareKeyword(query: String, element: AXElementInfo) -> Bool {
+        let stop: Set<String> = ["the", "a", "an", "button", "icon", "in", "on", "of",
+                                 "to", "for", "and", "or", "menu", "item", "click", "tap",
+                                 "bar", "top", "bottom", "left", "right", "toolbar", "at"]
+        func words(_ s: String) -> Set<String> {
+            Set(s.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.count > 1 && !stop.contains($0) })
+        }
+        let q = words(query)
+        guard !q.isEmpty else { return true }  // nothing to check against
+        let el = words("\(element.title) \(element.description) \(element.helpText)")
+        return !q.isDisjoint(with: el)
     }
 
     private func isStrongTitleMatch(query: String, element: AXElementInfo) -> Bool {
