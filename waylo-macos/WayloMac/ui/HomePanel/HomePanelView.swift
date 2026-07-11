@@ -196,19 +196,26 @@ struct HomePanelView: View {
                 .tint(.red)
                 .disabled(taskText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
 
-            Toggle(isOn: Binding(
-                get: { engine.mode == .assist },
-                set: { engine.mode = $0 ? .assist : .teach }
-            )) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Do it for me").font(.caption)
-                    Text("Waylo clicks safe steps itself; risky ones you confirm")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Picker("Mode", selection: Binding(
+                    get: { engine.mode },
+                    set: { engine.mode = $0 }
+                )) {
+                    Text("Teach me").tag(GuideMode.teach)
+                    Text("Do it with me").tag(GuideMode.assist)
+                    Text("Do it for me").tag(GuideMode.agent)
                 }
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .labelsHidden()
+                Text(engine.mode == .agent
+                     ? "Waylo does the whole task itself; risky actions still ask you first"
+                     : engine.mode == .assist
+                     ? "Waylo clicks safe steps itself; risky ones you confirm"
+                     : "Waylo points and explains; you do the clicking")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
 
             Picker("Voice", selection: $language) {
                 ForEach(LanguagePreference.allCases, id: \.self) { lang in
@@ -510,6 +517,16 @@ struct HomePanelView: View {
             Task { @MainActor in
                 let spoken = await AppActions.perform(action)
                 Speaker.shared.speak(spoken)
+            }
+            return
+        }
+
+        // Agent mode: no plan — the observe→act loop does the task itself.
+        if engine.mode == .agent {
+            taskText = ""
+            errorMessage = nil
+            Task { @MainActor in
+                await AgentEngine.shared.run(task: task)
             }
             return
         }

@@ -122,6 +122,45 @@ final class WayloAPIClient {
         }
     }
 
+    // MARK: - POST /act (agent mode: observe → ONE next action)
+
+    struct AgentAction: Decodable {
+        let act: String
+        let id: Int?
+        let text: String?
+        let submit: Bool?
+        let combo: String?
+        let path: [String]?
+        let name: String?
+        let direction: String?
+        let seconds: Double?
+        let summary: String?
+        let question: String?
+        let say: String?
+        let confirm: Bool?
+    }
+
+    /// Sends the current numbered element list + history; returns the single
+    /// next action chosen by the model.
+    func agentAct(task: String, appName: String, context: String,
+                  elements: [[String: Any]], history: [String]) async throws -> AgentAction {
+        guard let url = URL(string: "\(baseURL)/act") else { throw APIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "task": task, "appName": appName, "context": context,
+            "elements": elements, "history": history,
+        ])
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            if let detail = Self.serverErrorDetail(from: data) { throw APIError.serverMessage(detail) }
+            throw APIError.serverError
+        }
+        return try JSONDecoder().decode(AgentAction.self, from: data)
+    }
+
     // MARK: - POST /resolve/spotify (name → Spotify URI, for autonomous play)
 
     /// Resolves a free-text query ("drake", "one dance drake") to a playable

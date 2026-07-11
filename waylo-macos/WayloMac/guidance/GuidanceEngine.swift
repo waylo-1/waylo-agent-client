@@ -20,8 +20,9 @@ enum GuidanceState {
 ///             Destructive steps (delete/empty/send/pay…) are NEVER auto-
 ///             clicked — they fall back to point-and-confirm.
 enum GuideMode: String {
-    case teach
-    case assist
+    case teach    // point + explain; the user clicks
+    case assist   // planned steps; Waylo performs safe clicks itself
+    case agent    // observe→act loop; Waylo does the whole task (AgentEngine)
 }
 
 /// The orchestrator. Walks through steps one at a time. For each step it shows a

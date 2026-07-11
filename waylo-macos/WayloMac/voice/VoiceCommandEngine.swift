@@ -92,6 +92,13 @@ final class VoiceCommandEngine: ObservableObject {
             return
         }
 
+        // Agent mode: no plan — the observe→act loop does the task itself.
+        if GuidanceEngine.shared.mode == .agent {
+            await AgentEngine.shared.run(task: task)
+            state = .idle
+            return
+        }
+
         OverlayWindowController.shared.showBanner("Planning: “\(task)”…")
         Speaker.shared.speak("Okay, let me figure that out.")
         do {

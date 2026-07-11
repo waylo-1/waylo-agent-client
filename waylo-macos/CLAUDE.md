@@ -10,6 +10,19 @@
 > - **Assist mode is the default** (`GuideMode.assist`): safe clicks are
 >   performed via AXPress/synthetic click; destructive steps (empty/delete/
 >   send/pay…) always fall back to point-and-confirm.
+> - **Agent mode** (`GuideMode.agent`, "Do it for me"): no upfront plan and no
+>   description→screen matching. An observe→decide→act→verify loop (`agent/`:
+>   `AgentEngine` + `AgentSnapshot` + `AgentExecutor`, backend `POST /act`):
+>   each turn the model sees the live AX tree as a NUMBERED element list and
+>   picks ONE action — press #id (AXPress on the held handle, no coordinates),
+>   type (AXValue/keystrokes), key combo, **menu path** (pressed through the
+>   closed AX menu tree — layout-proof), open_app, scroll, wait, done,
+>   ask_user. Each action's result ("screen changed"/"no visible change") is
+>   fed back so the model self-corrects. Failed/hallucinated actions land in
+>   history as "(FAILED to execute)" and the next turn tries another channel.
+>   Safety: `confirm:true` from the model OR local danger-word match on the
+>   target → explicit "Yes — do it" button (25s timeout = no); personal
+>   choices come back as ask_user; hard cap 16 actions/task.
 > - **Ambiguity**: near-tied confident AX matches show numbered badges
 >   (`CandidateBadgeView`); the user's click picks.
 > - **Grounded planning**: `/plan` is sent a live AX snapshot
