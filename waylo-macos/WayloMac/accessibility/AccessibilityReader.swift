@@ -355,12 +355,17 @@ final class AccessibilityReader {
         let descStr = copyStringAttribute(element, kAXDescriptionAttribute)
         let helpStr = copyStringAttribute(element, kAXHelpAttribute)
         let valueStr = copyStringAttribute(element, kAXValueAttribute)
+        // Developer-assigned identifier ("attachButton") — frequently the only
+        // name a textless icon carries. Junk (UUIDs, _NS internals) filtered.
+        let identStr = AXElementInfo.meaningfulIdentifier(
+            copyStringAttribute(element, "AXIdentifier"))
 
         let frame = copyFrame(element)
         let center = CGPoint(x: frame.midX, y: frame.midY)
 
         let isInteractive = roles.contains(roleStr)
-        let hasLabel = !titleStr.isEmpty || !descStr.isEmpty || !helpStr.isEmpty || !valueStr.isEmpty
+        let hasLabel = !titleStr.isEmpty || !descStr.isEmpty || !helpStr.isEmpty
+            || !valueStr.isEmpty || !identStr.isEmpty
         let isWindowChrome = Self.excludedSubroles.contains(subroleStr)
 
         // AXStaticText is included for AX-hostile apps (System Settings sidebar),
@@ -381,7 +386,8 @@ final class AccessibilityReader {
                 value: valueStr,
                 frame: frame,
                 center: center,
-                axElement: element
+                axElement: element,
+                identifier: identStr
             ))
         }
 
@@ -432,12 +438,36 @@ struct AXElementInfo {
     let frame: CGRect
     let center: CGPoint
     let axElement: AXUIElement
+    /// Developer-assigned AXIdentifier ("attachButton", "sendMessage") —
+    /// often the ONLY name a textless icon has. Humanized for matching.
+    var identifier: String = ""
 
     /// All text fields combined — used for scoring.
     var allText: String {
-        [role, title, description, helpText, value]
+        [role, title, description, helpText, value, Self.humanizeIdentifier(identifier)]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .lowercased()
+    }
+
+    /// "attachFileButton" / "attach-file_button" → "attach file button".
+    static func humanizeIdentifier(_ id: String) -> String {
+        guard !id.isEmpty else { return "" }
+        var s = id.replacingOccurrences(of: #"([a-z0-9])([A-Z])"#, with: "$1 $2",
+                                        options: .regularExpression)
+        s = s.replacingOccurrences(of: #"[-_.:]+"#, with: " ", options: .regularExpression)
+        return s.lowercased().trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Filters out machine junk (UUIDs, long hex, _NS internals) so only
+    /// human-meaningful identifiers are used for matching.
+    static func meaningfulIdentifier(_ id: String) -> String {
+        let t = id.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, t.count <= 48,
+              t.rangeOfCharacter(from: .letters) != nil,
+              !t.hasPrefix("_NS"), !t.hasPrefix("NSAuto"),
+              t.range(of: #"^[0-9a-fA-F-]{16,}$"#, options: .regularExpression) == nil
+        else { return "" }
+        return t
     }
 }

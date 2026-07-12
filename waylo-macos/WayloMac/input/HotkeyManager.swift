@@ -56,6 +56,16 @@ final class HotkeyManager: @unchecked Sendable {
     private var holdHotkeys: [HoldHotkey] = []
     /// The key currently held down as a push-to-talk hotkey (nil = none).
     private var activeHoldKey: CGKeyCode?
+    /// Modifier-key hold (hold RIGHT ⌘ alone = push-to-talk). Modifier keys
+    /// arrive as flagsChanged, not keyDown/keyUp, so they need their own path.
+    /// Never consumed — consuming modifier events wedges keyboard state.
+    private var modifierHold: (keyCode: CGKeyCode, name: String,
+                               onPress: () -> Void, onRelease: () -> Void)?
+    private var modifierHeldDown = false
+    /// Bare-Esc handler. Returns true when it actually stopped something (then
+    /// the Esc is consumed); false = nothing running, Esc passes through, so
+    /// we never steal Esc from other apps.
+    var escStopAction: (() -> Bool)?
     private var observers: [KeyObserver] = []
     private var clickObservers: [ClickObserver] = []
     private var eventTap: CFMachPort?
@@ -82,6 +92,18 @@ final class HotkeyManager: @unchecked Sendable {
     func registerHold(keyCode: CGKeyCode, flags: CGEventFlags = HotkeyManager.cmdOptCtrl, name: String,
                       onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
         holdHotkeys.append(HoldHotkey(keyCode: keyCode, flags: flags, name: name, onPress: onPress, onRelease: onRelease))
+    }
+
+    /// Right Command key (keycode 54). Holding it ALONE does nothing system-
+    /// wide, which makes it the perfect one-finger push-to-talk for people who
+    /// can't remember (or press) three-modifier combos.
+    static let rightCommandKeyCode: CGKeyCode = 54
+
+    /// Registers a MODIFIER hold (e.g. hold right ⌘ = talk, release = done).
+    /// Only one modifier hold is supported; observe-only (never consumed).
+    func registerModifierHold(keyCode: CGKeyCode, name: String,
+                              onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
+        modifierHold = (keyCode, name, onPress, onRelease)
     }
 
     /// Adds a transient observe-only matcher (does NOT consume the event). Returns
@@ -124,6 +146,7 @@ final class HotkeyManager: @unchecked Sendable {
 
         let mask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)   // modifier holds (right ⌘ PTT)
             | (1 << CGEventType.leftMouseDown.rawValue)
             | (1 << CGEventType.rightMouseDown.rawValue)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
@@ -175,6 +198,34 @@ final class HotkeyManager: @unchecked Sendable {
         }
 
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+
+        // Modifier hold (right ⌘ push-to-talk): modifiers fire flagsChanged.
+        // The keycode says WHICH key changed; the command flag says whether it
+        // went down or up. Observe-only — modifier events are never consumed.
+        if type == .flagsChanged {
+            if let hold = modifierHold, keyCode == hold.keyCode {
+                let isDown = event.flags.contains(.maskCommand)
+                if isDown && !modifierHeldDown {
+                    modifierHeldDown = true
+                    DebugLogger.log("HOTKEY", "modifier hold '\(hold.name)' pressed")
+                    hold.onPress()
+                } else if !isDown && modifierHeldDown {
+                    modifierHeldDown = false
+                    DebugLogger.log("HOTKEY", "modifier hold '\(hold.name)' released")
+                    hold.onRelease()
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+
+        // Bare Esc stops a running guide/agent. The handler reports whether it
+        // stopped anything; when nothing was running the Esc passes through.
+        if type == .keyDown, keyCode == 53,
+           event.flags.rawValue & Self.significantMask == 0,
+           let stop = escStopAction, stop() {
+            DebugLogger.log("HOTKEY", "Esc → stopped running guide/agent")
+            return nil // consume
+        }
 
         // keyUp: only interesting to end a push-to-talk hold. We match on the
         // KEY ALONE (not modifiers) because the user often lifts ⌘/⌥/⌃ before

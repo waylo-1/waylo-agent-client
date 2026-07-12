@@ -37,6 +37,10 @@ struct AgentSnapshot {
             if !e.info.title.isEmpty { d["title"] = String(e.info.title.prefix(60)) }
             if !e.info.description.isEmpty, e.info.description != e.info.title {
                 d["desc"] = String(e.info.description.prefix(60))
+            } else if e.info.title.isEmpty, !e.info.identifier.isEmpty {
+                // Textless icon whose only name is its developer identifier —
+                // humanized ("attachButton" → "attach button") it's a real label.
+                d["desc"] = AXElementInfo.humanizeIdentifier(e.info.identifier)
             }
             // AXHelp (tooltip) is often the ONLY name a textless icon has —
             // surface it so the decider can identify e.g. a paperclip.

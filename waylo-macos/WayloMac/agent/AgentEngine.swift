@@ -39,6 +39,7 @@ final class AgentEngine: ObservableObject {
         runToken += 1
         isRunning = false
         HelperButtonController.shared.hide()
+        OverlayWindowController.shared.hideDot()
         HotkeyManager.shared.removeClickObserver(clickObserverId)
         clickObserverId = nil
         statusMessage = ""

@@ -90,9 +90,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerHotkeys() {
         let hk = HotkeyManager.shared
+        // Esc — the universal "stop": ends a running guide or agent task. Only
+        // consumed when something was actually running (handler returns true).
+        hk.escStopAction = {
+            MainActor.assumeIsolated {
+                if AgentEngine.shared.isRunning {
+                    AgentEngine.shared.stop()
+                    Speaker.shared.stop()
+                    Speaker.shared.speak("Stopped.")
+                    OverlayWindowController.shared.hideDot()
+                    return true
+                }
+                if GuidanceEngine.shared.isRunning {
+                    GuidanceEngine.shared.stopGuidance()
+                    Speaker.shared.speak("Stopped.")
+                    return true
+                }
+                return false
+            }
+        }
         // ⌃⌥⌘ V — HOLD to talk: speak a task (or mid-guide correction) for as
         // long as it's held; release to run the whole transcript.
         hk.registerHold(keyCode: 9, name: "voice",
+            onPress: { Task { @MainActor in VoiceCommandEngine.shared.beginPushToTalk() } },
+            onRelease: { Task { @MainActor in VoiceCommandEngine.shared.endPushToTalk() } })
+        // HOLD RIGHT ⌘ — the one-finger push-to-talk. Same handlers as ⌃⌥⌘V,
+        // but a single key an elderly/non-technical user can actually remember
+        // and hold: "hold the right command key and speak."
+        hk.registerModifierHold(keyCode: HotkeyManager.rightCommandKeyCode, name: "voice",
             onPress: { Task { @MainActor in VoiceCommandEngine.shared.beginPushToTalk() } },
             onRelease: { Task { @MainActor in VoiceCommandEngine.shared.endPushToTalk() } })
         // ⌃⌥⌘ N — re-detect the current step (fresh screenshot → Nova recovery).

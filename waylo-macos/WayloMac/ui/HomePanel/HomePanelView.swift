@@ -3,6 +3,7 @@ import SwiftUI
 /// The floating task-input panel shown from the menu bar.
 struct HomePanelView: View {
     @StateObject private var engine = GuidanceEngine.shared
+    @StateObject private var agent = AgentEngine.shared
     @ObservedObject private var history = TaskHistory.shared
     @State private var taskText = ""
     @State private var isLoading = false
@@ -30,7 +31,11 @@ struct HomePanelView: View {
 
             Divider()
 
-            if !engine.isRunning {
+            if agent.isRunning {
+                // Agent mode ("Do it for me") in flight: live action feed +
+                // a way OUT — Esc or this button.
+                agentActivity
+            } else if !engine.isRunning {
                 // isRunning flips false the moment a guide finishes, so the
                 // completion state must be shown here — the .complete branch
                 // inside activeGuidance is never reached.
@@ -44,6 +49,31 @@ struct HomePanelView: View {
         }
         .padding(20)
         .frame(width: 340)
+    }
+
+    // MARK: - Agent activity ("Do it for me" running)
+
+    private var agentActivity: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Doing it for you…")
+                    .font(.headline)
+                Spacer()
+                Button("Stop") { agent.stop() }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+            }
+            if !agent.statusMessage.isEmpty {
+                Text(agent.statusMessage)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(3)
+            }
+            Text("Press Esc anytime to stop")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
     }
 
     // MARK: - Header
