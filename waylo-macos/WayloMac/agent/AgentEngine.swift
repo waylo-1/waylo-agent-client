@@ -82,6 +82,7 @@ final class AgentEngine: ObservableObject {
         var history: [String] = []
         var lastFingerprint: Int? = nil
         var userHandoffs = 0
+        var lastBrokenKey: String? = nil
 
         for actionIndex in 1...Self.maxActions {
             guard token == runToken else { return }
@@ -97,7 +98,10 @@ final class AgentEngine: ObservableObject {
             }
 
             // DECIDE
-            let context = ScreenContextBuilder.build()
+            var context = ScreenContextBuilder.build()
+            if snapshot.dialogOpen {
+                context += "\nIMPORTANT: a modal dialog/sheet is OPEN — its elements are flagged \"dialog\":true and listed first. Interact with THOSE; menus and background buttons will not respond until it is dealt with."
+            }
             let action: WayloAPIClient.AgentAction
             do {
                 action = try await WayloAPIClient.shared.agentAct(
@@ -162,8 +166,9 @@ final class AgentEngine: ObservableObject {
             //   1st repeat  → convert to a 3s wait (the app is mid-process)
             //   2nd repeat  → hand the step to the user and resume after
             let desc = describe(action)
-            let executedBefore = history.filter { $0.hasPrefix(desc) }.count
-            let dampedBefore = history.contains { $0.contains("repeat of '\(desc)'") }
+            let key = Self.guardKey(desc)
+            let executedBefore = history.filter { Self.guardKey($0).hasPrefix(key) }.count
+            let dampedBefore = history.contains { Self.guardKey($0).contains("repeat of '\(key)'") }
             if action.act != "wait", executedBefore >= 1, !dampedBefore {
                 DebugLogger.log("AGENT", "repeat damper: '\(desc)' again — waiting 3s instead")
                 history.append("(blocked repeat of '\(desc)' — waited 3s; do something DIFFERENT next)")
@@ -175,8 +180,15 @@ final class AgentEngine: ObservableObject {
             // LOOP BREAKER — damped once already and the model STILL wants the
             // same action (or has genuinely run it twice). A third go never
             // helps (AXPress "succeeds" on disabled items), so hand this step
-            // to the user and resume.
+            // to the user and resume — ONCE. If the model comes back with the
+            // very same action even after the user stepped in, more handoffs
+            // just repeat the monologue; stop honestly instead.
             if (action.act != "wait" && dampedBefore && executedBefore >= 1) || executedBefore >= 2 {
+                if lastBrokenKey == key {
+                    finish(spoken: "This one isn't working in Do-it-for-me mode — switch to Do it with me and I'll walk you through it.", token: token)
+                    return
+                }
+                lastBrokenKey = key
                 DebugLogger.log("AGENT", "loop breaker: '\(desc)' already tried twice — handing to user")
                 userHandoffs += 1
                 guard userHandoffs <= Self.maxHandoffs else {
@@ -305,6 +317,17 @@ final class AgentEngine: ObservableObject {
         OverlayWindowController.shared.showBanner(spoken, autoDismissAfter: 8)
         Speaker.shared.speak(spoken)
         DebugLogger.log("AGENT", "finish: \(spoken)")
+    }
+
+    /// Normalizes an action descriptor / history entry for repeat detection:
+    /// "menu File > Export…" and "menu File > Export..." must count as the
+    /// SAME action or the guards can be sidestepped by spelling variants.
+    private static func guardKey(_ s: String) -> String {
+        s.lowercased()
+            .replacingOccurrences(of: "…", with: "")
+            .replacingOccurrences(of: "...", with: "")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespaces)
     }
 
     private func describe(_ a: WayloAPIClient.AgentAction) -> String {
