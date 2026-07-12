@@ -352,13 +352,27 @@ final class AgentEngine: ObservableObject {
             return CGPoint(x: screen.frame.minX + CGFloat(gx) / 1000.0 * screen.frame.width,
                            y: axTop + CGFloat(gy) / 1000.0 * screen.frame.height)
         }
+        // Flash the dot where the agent is about to click — the user should
+        // SEE each action land (trust + debuggability), briefly, no lingering.
+        func flash(_ p: CGPoint) {
+            OverlayWindowController.shared.showDot(at: p, caption: "")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                if !GuidanceEngine.shared.isRunning { OverlayWindowController.shared.hideDot() }
+            }
+        }
         switch a.act {
         case "press_at":
             guard let x = a.x, let y = a.y else { return false }
-            return AgentExecutor.syntheticClick(at: axPoint(x, y))
+            let p = axPoint(x, y)
+            flash(p)
+            usleep(250_000)   // let the flash appear before the click
+            return AgentExecutor.syntheticClick(at: p)
         case "type_at":
             guard let x = a.x, let y = a.y else { return false }
-            _ = AgentExecutor.syntheticClick(at: axPoint(x, y))
+            let p = axPoint(x, y)
+            flash(p)
+            usleep(250_000)
+            _ = AgentExecutor.syntheticClick(at: p)
             usleep(200_000)
             return AgentExecutor.type(a.text ?? "", into: nil, submit: a.submit ?? false)
         case "type":
