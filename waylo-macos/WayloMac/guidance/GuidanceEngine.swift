@@ -666,6 +666,24 @@ final class GuidanceEngine: ObservableObject {
         }
 
         DebugLogger.log("ENGINE", "computer step DID it (\(action.act)) — advancing")
+        // HARVEST: hit-test the AX element at the clicked point and cache its
+        // label for this step — the NEXT run resolves via free AX (layer 1)
+        // and never reaches this expensive layer again.
+        if action.act == "press_at", let gx = action.x, let gy = action.y {
+            let axTop = ScreenCoordinates.primaryHeight - cap.screen.frame.maxY
+            let p = CGPoint(x: cap.screen.frame.minX + CGFloat(gx) / 1000.0 * cap.screen.frame.width,
+                            y: axTop + CGFloat(gy) / 1000.0 * cap.screen.frame.height)
+            if let el = AccessibilityReader.shared.elementAt(axPoint: p) {
+                let label = el.title.isEmpty ? el.description : el.title
+                let appName = TargetAppTracker.shared.targetName
+                if !label.isEmpty, !appName.isEmpty, !step.labelCacheKey.isEmpty {
+                    WayloAPIClient.shared.storeLabel(appName: appName,
+                                                     stepDescription: step.labelCacheKey,
+                                                     axLabel: label)
+                    DebugLogger.log("ENGINE", "computer step harvested label '\(label)' → next run is free")
+                }
+            }
+        }
         OverlayWindowController.shared.showBanner("Done — that one's handled. Next step…", autoDismissAfter: 4)
         snapshotWindows()
         let idx = currentStepIndex
