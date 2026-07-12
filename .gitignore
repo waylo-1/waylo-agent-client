@@ -44,3 +44,12 @@ backend_initial/
 Thumbs.db
 *.swp
 .vscode/
+
+# ---- macOS app (Xcode) ----
+# Self-signed code-signing private keys — never commit.
+waylo-macos/.signing/
+# Xcode per-user state and build output.
+**/xcuserdata/
+*.xcuserstate
+waylo-macos/**/build/
+DerivedData/
