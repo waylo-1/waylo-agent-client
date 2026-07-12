@@ -344,50 +344,9 @@ final class AgentEngine: ObservableObject {
         }
     }
 
-    /// Computer-use execution: the model returns 0-999 grid coordinates on the
-    /// captured screen; convert via the screen's frame and click/type there.
+    /// Computer-use execution — shared with GuidanceEngine's last-resort layer.
     private func executeComputer(_ a: WayloAPIClient.AgentAction, screen: NSScreen) -> Bool {
-        func axPoint(_ gx: Int, _ gy: Int) -> CGPoint {
-            let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
-            return CGPoint(x: screen.frame.minX + CGFloat(gx) / 1000.0 * screen.frame.width,
-                           y: axTop + CGFloat(gy) / 1000.0 * screen.frame.height)
-        }
-        // Flash the dot where the agent is about to click — the user should
-        // SEE each action land (trust + debuggability), briefly, no lingering.
-        func flash(_ p: CGPoint) {
-            OverlayWindowController.shared.showDot(at: p, caption: "")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                if !GuidanceEngine.shared.isRunning { OverlayWindowController.shared.hideDot() }
-            }
-        }
-        switch a.act {
-        case "press_at":
-            guard let x = a.x, let y = a.y else { return false }
-            let p = axPoint(x, y)
-            flash(p)
-            usleep(250_000)   // let the flash appear before the click
-            return AgentExecutor.syntheticClick(at: p)
-        case "type_at":
-            guard let x = a.x, let y = a.y else { return false }
-            let p = axPoint(x, y)
-            flash(p)
-            usleep(250_000)
-            _ = AgentExecutor.syntheticClick(at: p)
-            usleep(200_000)
-            return AgentExecutor.type(a.text ?? "", into: nil, submit: a.submit ?? false)
-        case "type":
-            return AgentExecutor.type(a.text ?? "", into: nil, submit: a.submit ?? false)
-        case "key":
-            return AgentExecutor.key(combo: a.combo ?? "")
-        case "menu":
-            return AgentExecutor.menu(path: a.path ?? [])
-        case "scroll":
-            return AgentExecutor.scroll(direction: a.direction ?? "down")
-        case "wait":
-            return true
-        default:
-            return false
-        }
+        AgentExecutor.computerAction(a, on: screen)
     }
 
     /// Vision-turn execution: presses click the CENTRE of the chosen badge's

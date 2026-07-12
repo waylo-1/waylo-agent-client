@@ -213,6 +213,55 @@ enum AgentExecutor {
          .lowercased()
     }
 
+    // MARK: - Computer-use actions (0-999 grid → real events)
+
+    /// Executes a computer-use action: the model returns 0-999 grid coordinates
+    /// on the captured screen; convert via the screen's frame and click/type
+    /// there. The dot flashes at each click point so the user SEES the action.
+    /// Shared by agent mode and teach mode's last-resort layer.
+    @MainActor
+    static func computerAction(_ a: WayloAPIClient.AgentAction, on screen: NSScreen) -> Bool {
+        func axPoint(_ gx: Int, _ gy: Int) -> CGPoint {
+            let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
+            return CGPoint(x: screen.frame.minX + CGFloat(gx) / 1000.0 * screen.frame.width,
+                           y: axTop + CGFloat(gy) / 1000.0 * screen.frame.height)
+        }
+        func flash(_ p: CGPoint) {
+            OverlayWindowController.shared.showDot(at: p, caption: "")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                if !GuidanceEngine.shared.isRunning { OverlayWindowController.shared.hideDot() }
+            }
+        }
+        switch a.act {
+        case "press_at":
+            guard let x = a.x, let y = a.y else { return false }
+            let p = axPoint(x, y)
+            flash(p)
+            usleep(250_000)   // let the flash appear before the click
+            return syntheticClick(at: p)
+        case "type_at":
+            guard let x = a.x, let y = a.y else { return false }
+            let p = axPoint(x, y)
+            flash(p)
+            usleep(250_000)
+            _ = syntheticClick(at: p)
+            usleep(200_000)
+            return type(a.text ?? "", into: nil, submit: a.submit ?? false)
+        case "type":
+            return type(a.text ?? "", into: nil, submit: a.submit ?? false)
+        case "key":
+            return key(combo: a.combo ?? "")
+        case "menu":
+            return menu(path: a.path ?? [])
+        case "scroll":
+            return scroll(direction: a.direction ?? "down")
+        case "wait":
+            return true
+        default:
+            return false
+        }
+    }
+
     // MARK: - Scroll
 
     @discardableResult

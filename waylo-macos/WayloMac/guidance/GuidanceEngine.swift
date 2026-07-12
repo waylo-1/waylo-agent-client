@@ -619,10 +619,62 @@ final class GuidanceEngine: ObservableObject {
         // step through the AX tree — one cheap text-only model call, no
         // screenshots. Teaching stays the core; the agent fills the gaps so the
         // guide keeps flowing. Destructive steps are never auto-performed.
-        if step.action == .click, !isDestructiveStep(step),
-           await attemptAgentStep(step: step, token: token) { return }
-        guard token == locateToken, isRunning else { return }
+        if step.action == .click, !isDestructiveStep(step) {
+            // C2: one cheap text-only agent call through the AX tree.
+            if await attemptAgentStep(step: step, token: token) { return }
+            guard token == locateToken, isRunning else { return }
+            // C3 — LAST LAYER: Gemini computer-use on the raw pixels. The most
+            // expensive call in the stack, which is exactly why it sits at the
+            // very bottom: it only ever runs when every free/cheap layer AND
+            // the AX agent have failed, and it means a guide never dead-ends.
+            if await attemptComputerStep(step: step, token: token) { return }
+            guard token == locateToken, isRunning else { return }
+        }
         describeTargetInstead(step: step)
+    }
+
+    /// C3: performs ONE unlocatable step via Gemini computer-use (screenshot →
+    /// grid-coordinate click). Verified by screen change before advancing.
+    private func attemptComputerStep(step: Step, token: Int) async -> Bool {
+        guard ScreenRecordingPermission.isGranted,
+              let cap = await ScreenCapturer.shared.captureActiveScreen(),
+              let (b64, _) = ScreenCapturer.compressedJPEGBase64(cap.image, maxWidth: 1280),
+              token == locateToken, isRunning else { return false }
+
+        statusMessage = "Using my eyes for this one…"
+        Speaker.shared.speak("Still tricky — let me use my eyes and do it for you.")
+
+        let before = AgentSnapshot.capture().fingerprint
+        guard let action = try? await WayloAPIClient.shared.agentActComputer(
+            task: "Do EXACTLY this one step of a guide, nothing else: \(step.instruction)",
+            appName: TargetAppTracker.shared.targetName,
+            imageBase64: b64, history: []),
+            token == locateToken, isRunning else { return false }
+
+        // A single step is only ever an immediate action — never done/ask_user.
+        guard ["press_at", "type_at", "key", "menu"].contains(action.act) else {
+            DebugLogger.log("ENGINE", "computer step returned '\(action.act)' — not actionable, describing instead")
+            return false
+        }
+        guard AgentExecutor.computerAction(action, on: cap.screen) else { return false }
+
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        guard token == locateToken, isRunning else { return false }
+        guard AgentSnapshot.capture().fingerprint != before else {
+            DebugLogger.log("ENGINE", "computer step: no visible effect — describing instead")
+            return false
+        }
+
+        DebugLogger.log("ENGINE", "computer step DID it (\(action.act)) — advancing")
+        OverlayWindowController.shared.showBanner("Done — that one's handled. Next step…", autoDismissAfter: 4)
+        snapshotWindows()
+        let idx = currentStepIndex
+        Task { @MainActor in
+            await ScreenCapturer.shared.settleAfterAction()
+            guard self.isRunning, self.currentStepIndex == idx else { return }
+            await self.executeStep(index: idx + 1)
+        }
+        return true
     }
 
     /// Performs ONE unlocatable step via the agent decider (AX element list →
