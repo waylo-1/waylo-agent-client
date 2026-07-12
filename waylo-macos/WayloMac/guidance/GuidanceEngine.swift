@@ -614,7 +614,82 @@ final class GuidanceEngine: ObservableObject {
         // not a catch-all).
         if await attemptRecovery(step: step, capture: capture, token: token) { return }
         guard token == locateToken, isRunning else { return }
+        // TEACH/ASSIST HYBRID: this step can't be outlined (every layer missed).
+        // Before asking the user to hunt for it, let the AGENT do just this one
+        // step through the AX tree — one cheap text-only model call, no
+        // screenshots. Teaching stays the core; the agent fills the gaps so the
+        // guide keeps flowing. Destructive steps are never auto-performed.
+        if step.action == .click, !isDestructiveStep(step),
+           await attemptAgentStep(step: step, token: token) { return }
+        guard token == locateToken, isRunning else { return }
         describeTargetInstead(step: step)
+    }
+
+    /// Performs ONE unlocatable step via the agent decider (AX element list →
+    /// single action). Returns true when the step visibly worked and the guide
+    /// advanced. Cheap: text-only call, no vision.
+    private func attemptAgentStep(step: Step, token: Int) async -> Bool {
+        let snap = AgentSnapshot.capture()
+        guard !snap.entries.isEmpty else { return false }
+
+        statusMessage = "This one's hard to point at — doing it for you…"
+        Speaker.shared.speak("This one is hard to point at, so I'll do it for you.")
+
+        var context = ScreenContextBuilder.build()
+        if !snap.menuTitles.isEmpty {
+            context += "\nMenu bar (menu action + path): \(snap.menuTitles.joined(separator: ", "))"
+        }
+        let singleTask = "Do EXACTLY this one step of a guide, nothing else: \(step.instruction)"
+        guard let action = try? await WayloAPIClient.shared.agentAct(
+            task: singleTask, appName: snap.appName, context: context,
+            elements: snap.payload, history: []),
+            token == locateToken, isRunning else { return false }
+
+        // Only safe, immediate actions — a single step never opens apps,
+        // finishes tasks, or asks questions.
+        let before = snap.fingerprint
+        let executed: Bool
+        switch action.act {
+        case "press":
+            guard let id = action.id, let info = snap.element(for: id),
+                  !isDestructiveStep(step) else { return false }
+            executed = AgentExecutor.press(info)
+        case "menu":
+            executed = AgentExecutor.menu(path: action.path ?? [])
+        case "key":
+            executed = AgentExecutor.key(combo: action.combo ?? "")
+        default:
+            return false
+        }
+        guard executed else { return false }
+
+        try? await Task.sleep(nanoseconds: 900_000_000)
+        guard token == locateToken, isRunning else { return false }
+        let after = AgentSnapshot.capture().fingerprint
+        guard after != before else {
+            DebugLogger.log("ENGINE", "agent step fallback: no visible effect — describing instead")
+            return false
+        }
+
+        DebugLogger.log("ENGINE", "agent step fallback DID the step (\(describeAgentAction(action))) — advancing")
+        OverlayWindowController.shared.showBanner("Done — that one's handled. Next step…", autoDismissAfter: 4)
+        snapshotWindows()
+        let idx = currentStepIndex
+        Task { @MainActor in
+            await ScreenCapturer.shared.settleAfterAction()
+            guard self.isRunning, self.currentStepIndex == idx else { return }
+            await self.executeStep(index: idx + 1)
+        }
+        return true
+    }
+
+    private func describeAgentAction(_ a: WayloAPIClient.AgentAction) -> String {
+        switch a.act {
+        case "press": return "press #\(a.id ?? -1)"
+        case "menu":  return "menu \((a.path ?? []).joined(separator: " > "))"
+        case "key":   return "key \(a.combo ?? "?")"
+        default:      return a.act
+        }
     }
 
     /// Nothing could locate the target CONFIDENTLY. Rather than plant a dot on

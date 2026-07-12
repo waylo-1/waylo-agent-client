@@ -451,7 +451,7 @@ struct HomePanelView: View {
                 get: { AgentEngine.computerUseEnabled },
                 set: { UserDefaults.standard.set($0, forKey: AgentEngine.computerUseKey) }
             )) {
-                Text("Gemini computer-use (experimental)").font(.caption)
+                Text("Gemini computer-use (experimental — uses far more credits)").font(.caption)
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
