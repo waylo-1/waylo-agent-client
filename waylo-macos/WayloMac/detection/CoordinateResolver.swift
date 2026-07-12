@@ -300,6 +300,16 @@ final class CoordinateResolver {
                     DebugLogger.log("RESOLVE", "LABEL_CACHE_STORED: \(result.novaLabel)")
                     DebugState.shared.update(cache: "STORED \(result.novaLabel)")
                 }
+                // Tier 5: remember this icon's PIXELS (perceptual hash) so the
+                // next run recognises it for free — only for textless icons,
+                // where it pays off. Near-exact, so it can't drift to a
+                // different control.
+                if (targetType == .icon || targetLabel.isEmpty), let bb = result.rawBBox, bb.count == 4,
+                   let crop = image.cropNormalized(x: bb[0] / 1000, y: bb[1] / 1000,
+                                                   w: (bb[2] - bb[0]) / 1000, h: (bb[3] - bb[1]) / 1000) {
+                    let concept = targetLabel.isEmpty ? elementDescription : targetLabel
+                    IconMemory.shared.remember(crop: crop, app: TargetAppTracker.shared.targetName, concept: concept)
+                }
                 // STAGE a training example — nothing is written yet. Nova's box
                 // is only a hypothesis; it earns its place in the training set
                 // when the user clicks inside it and then marks the guide ✓.

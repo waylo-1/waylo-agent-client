@@ -132,6 +132,31 @@ final class YOLODetector {
             return nil
         }
 
+        // Tier 5 — ICON MEMORY: if we've located this exact icon before, match
+        // it by perceptual hash among the YOLO boxes. Free, ~1ms, pixel-exact,
+        // and skips the paid SigLIP/Nova path entirely. Tight Hamming gate, so
+        // an unfamiliar screen simply falls through to normal scoring.
+        let concept = targetLabel.isEmpty ? elementDescription : targetLabel
+        if !IconMemory.shared.isEmpty {
+            var cgCrops: [CGImage] = []
+            var boxIndex: [Int] = []
+            for (i, el) in response.elements.enumerated() {
+                if let c = image.cropNormalized(x: el.x, y: el.y, w: el.w, h: el.h) {
+                    cgCrops.append(c); boxIndex.append(i)
+                }
+            }
+            if let hit = IconMemory.shared.bestMatch(crops: cgCrops,
+                                                     app: TargetAppTracker.shared.targetName,
+                                                     concept: concept) {
+                let el = response.elements[boxIndex[hit]]
+                let point = normalizedToAXPoint(cx: el.cx, cy: el.cy, screen: screen)
+                let frame = normalizedToAXRect(x: el.x, y: el.y, w: el.w, h: el.h, screen: screen)
+                DebugLogger.log("L2.5", "ICON MEMORY hit — pixel-exact, skipping semantic match")
+                DebugState.shared.update(layer: "Icon memory", dot: point)
+                return Detection(point: point, frame: frame)
+            }
+        }
+
         // "… in the Dock" targets must land inside the Dock. Deterministic and
         // free: the Dock's real frame comes from AX, no model can override it.
         var dockOnly: CGRect?
