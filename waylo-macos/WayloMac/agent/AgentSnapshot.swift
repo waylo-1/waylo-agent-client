@@ -38,6 +38,11 @@ struct AgentSnapshot {
             if !e.info.description.isEmpty, e.info.description != e.info.title {
                 d["desc"] = String(e.info.description.prefix(60))
             }
+            // AXHelp (tooltip) is often the ONLY name a textless icon has —
+            // surface it so the decider can identify e.g. a paperclip.
+            if !e.info.helpText.isEmpty, e.info.helpText != e.info.title, e.info.helpText != e.info.description {
+                d["tooltip"] = String(e.info.helpText.prefix(50))
+            }
             if !e.info.value.isEmpty { d["value"] = String(e.info.value.prefix(40)) }
             d["pos"] = "\(Int(e.info.center.x)),\(Int(e.info.center.y))"
             if e.inDialog { d["dialog"] = true }

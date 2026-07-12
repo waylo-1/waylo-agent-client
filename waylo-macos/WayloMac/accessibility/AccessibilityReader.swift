@@ -13,10 +13,15 @@ final class AccessibilityReader {
     /// System Settings) expose sidebar/list items as static text inside rows
     /// rather than as buttons.
     private static let interactiveRoles: Set<String> = [
-        "AXButton", "AXMenuItem", "AXTextField", "AXCheckBox",
+        "AXButton", "AXMenuItem", "AXTextField", "AXTextArea", "AXCheckBox",
         "AXRadioButton", "AXPopUpButton", "AXComboBox",
         "AXTab", "AXCell", "AXLink", "AXMenuButton", "AXToolbarButton",
-        "AXMenuBarItem", "AXStaticText", "AXRow"
+        "AXMenuBarItem", "AXStaticText", "AXRow",
+        // Icon-only controls (paperclip, +, gear, share) very often render as
+        // AXImage carrying an AXDescription/AXHelp — "textless" to the eye but
+        // NAMED in the tree. Extraction still requires a label, so decorative
+        // images are dropped; only meaningful icons surface.
+        "AXImage"
     ]
 
     /// Subroles to ALWAYS skip — window chrome the user should never be pointed
