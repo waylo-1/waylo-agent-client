@@ -237,6 +237,38 @@ final class WayloAPIClient {
         }
     }
 
+    /// Pushes a learned icon hash to the fleet-wide store (fire-and-forget).
+    func storeIconHash(app: String, concept: String, hash: String) {
+        guard !app.isEmpty, !concept.isEmpty, !hash.isEmpty,
+              let url = URL(string: "\(baseURL)/icon/store"),
+              let body = try? JSONSerialization.data(withJSONObject: [
+                  "app": app, "concept": concept, "hashes": [hash],
+              ]) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
+    }
+
+    /// Pulls every user's learned icon hashes. Returns (app, concept, hashes)
+    /// tuples; empty on any failure (sync is best-effort).
+    func syncIconHashes() async -> [(app: String, concept: String, hashes: [String])] {
+        guard let url = URL(string: "\(baseURL)/icon/sync") else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let icons = obj["icons"] as? [[String: Any]] else { return [] }
+        return icons.compactMap { d in
+            guard let app = d["app"] as? String, let concept = d["concept"] as? String,
+                  let hashes = d["hashes"] as? [String] else { return nil }
+            return (app, concept, hashes)
+        }
+    }
+
     /// Teaches the icon captioner a user-verified concept (fire-and-forget).
     func addIconConcept(name: String) {
         guard !name.isEmpty, let url = URL(string: "\(baseURL)/vocab/add"),

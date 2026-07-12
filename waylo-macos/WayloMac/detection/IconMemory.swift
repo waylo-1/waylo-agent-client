@@ -50,6 +50,7 @@ final class IconMemory {
     func remember(crop: CGImage, app: String, concept: String) {
         guard !app.isEmpty, !concept.isEmpty, let hash = Self.aHash(crop) else { return }
         let k = key(app: app, concept: concept)
+        var inserted = false
         queue.sync {
             var set = store[k] ?? []
             // Skip near-duplicates to keep the set small.
@@ -57,8 +58,38 @@ final class IconMemory {
             set.insert(hash)
             store[k] = set
             persist()
+            inserted = true
         }
+        guard inserted else { return }
         DebugLogger.log("ICONMEM", "remembered '\(concept)' in \(app) (\(store[k]?.count ?? 0) known)")
+        // Fleet-wide: the same app renders the same pixels on every Mac, so
+        // one user's verified icon makes it instantly recognizable for all.
+        WayloAPIClient.shared.storeIconHash(app: app.lowercased(),
+                                            concept: Self.normalizeConcept(concept),
+                                            hash: String(hash))
+    }
+
+    /// Merges the fleet's learned icon hashes into the local store (called at
+    /// launch; best-effort, additive only).
+    func syncFromBackend() async {
+        let icons = await WayloAPIClient.shared.syncIconHashes()
+        guard !icons.isEmpty else { return }
+        var merged = 0
+        queue.sync {
+            for entry in icons {
+                let k = "\(entry.app)|\(entry.concept)"
+                var set = store[k] ?? []
+                for h in entry.hashes.compactMap(UInt64.init) where !set.contains(h) {
+                    set.insert(h)
+                    merged += 1
+                }
+                store[k] = set
+            }
+            if merged > 0 { persist() }
+        }
+        if merged > 0 {
+            DebugLogger.log("ICONMEM", "synced \(merged) fleet icon hash(es) across \(icons.count) concepts")
+        }
     }
 
     // MARK: - Recall (read) — pick the box that matches a known icon

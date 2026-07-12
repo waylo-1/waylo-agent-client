@@ -15,6 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Track which real app the user is working in (not Waylo itself).
         TargetAppTracker.shared.start()
 
+        // Pull the fleet's learned icon hashes so this Mac recognizes icons
+        // other users' verified guides already taught (best-effort).
+        Task.detached(priority: .utility) { await IconMemory.shared.syncFromBackend() }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(
             systemSymbolName: "cursorarrow.rays",
