@@ -212,7 +212,7 @@ struct HomePanelView: View {
                      ? "Waylo does the whole task itself; risky actions still ask you first"
                      : engine.mode == .assist
                      ? "Waylo clicks safe steps itself; risky ones you confirm"
-                     : "Waylo points and explains; you do the clicking")
+                     : "Waylo points and you click, so you learn it — but it opens apps for you")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

@@ -35,10 +35,12 @@ final class GuidanceEngine: ObservableObject {
 
     @Published var isRunning = false
     @Published var state: GuidanceState = .idle
-    /// Teach (point) vs assist (do it for me). Persisted across launches.
-    /// DEFAULT IS ASSIST: Waylo performs the safe clicks itself and the user
-    /// only confirms destructive ones — half the work done autonomously.
-    @Published var mode: GuideMode = GuideMode(rawValue: UserDefaults.standard.string(forKey: "waylo.guideMode") ?? "") ?? .assist {
+    /// Teach (point, the user clicks & learns) vs assist (Waylo clicks) vs agent
+    /// (Waylo does the whole task). Persisted across launches.
+    /// DEFAULT IS TEACH: Waylo's mission is teaching people to do things
+    /// themselves, so it points and guides while the USER clicks — but it still
+    /// auto-handles the plumbing (launching apps) where a dot would be pointless.
+    @Published var mode: GuideMode = GuideMode(rawValue: UserDefaults.standard.string(forKey: "waylo.guideMode") ?? "") ?? .teach {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: "waylo.guideMode") }
     }
     @Published var currentStepIndex = 0
@@ -286,67 +288,31 @@ final class GuidanceEngine: ObservableObject {
 
     // MARK: - Launcher steps (open an app / the Trash — no vision needed)
 
-    /// In ASSIST mode: just open it and move on.
-    /// In TEACH mode: point at the Dock icon when AX knows it (that's the whole
-    /// teaching value), but always offer a one-click "open it for me" escape —
-    /// and if AX can't find the icon, open it rather than sending the user to a
-    /// vision model that will guess at a textless glyph.
+    /// Opening an app or the Trash is the "plumbing" of a task, not a skill worth
+    /// teaching — and a Dock icon is textless, so pointing a dot at it is exactly
+    /// the awkward, error-prone case. So in EVERY mode (teach included) we just
+    /// open it via NSWorkspace and move straight to the first real in-app step,
+    /// which teach mode then teaches. Seamless, and never a wrong Dock dot.
     private func runLauncherStep(_ step: Step, launch: AppLauncher.Target) async {
         locateToken += 1
         let token = locateToken
         removeClickMonitor()
         currentTargetAX = nil
-        let name = launch.displayName
+        HelperButtonController.shared.hide()
+        OverlayWindowController.shared.hideDot()
+        state = .showing
 
-        func performOpen() {
-            HelperButtonController.shared.hide()
-            OverlayWindowController.shared.hideDot()
-            let spoken = AppLauncher.open(launch)
-            Speaker.shared.speak(spoken)
-            statusMessage = spoken
-            snapshotWindows()
-            let idx = currentStepIndex
-            Task { @MainActor in
-                await ScreenCapturer.shared.settleAfterAction()
-                guard self.isRunning, self.currentStepIndex == idx else { return }
-                await self.executeStep(index: idx + 1)
-            }
-        }
+        DebugLogger.log("LAUNCH", "auto-opening '\(launch.displayName)' (\(mode.rawValue) mode — no Dock dot)")
+        let spoken = AppLauncher.open(launch)
+        Speaker.shared.speak(spoken)
+        statusMessage = spoken
+        snapshotWindows()
 
-        if mode == .assist {
-            DebugLogger.log("LAUNCH", "assist mode → opening '\(name)' directly")
-            state = .showing
-            performOpen()
-            return
-        }
-
-        // Teach mode: show the icon if the accessibility tree knows where it is.
-        let dockIcon = AccessibilityReader.shared.getSystemUIElements().first {
-            $0.role == "AXDockItem" && $0.title.caseInsensitiveCompare(name) == .orderedSame
-        }
-        guard token == locateToken, isRunning else { return }
-
-        if let icon = dockIcon {
-            DebugLogger.log("LAUNCH", "teach mode → pointing at Dock icon '\(icon.title)'")
-            currentTargetAX = icon.center
-            OverlayWindowController.shared.showHighlight(axRect: icon.frame, caption: currentInstruction)
-            state = .showing
-            statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click \(name) in the Dock"
-            installClickMonitor(target: icon.center, targetRect: icon.frame,
-                                forStep: currentStepIndex, secondary: isSecondaryClickStep(step))
-        } else {
-            DebugLogger.log("LAUNCH", "teach mode → AX can't see '\(name)' in the Dock; offering to open it")
-            state = .showing
-            statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — find \(name) in the Dock, or let me open it"
-            Speaker.shared.speak("Look for \(name) in the Dock at the bottom. If you can't find it, press the button and I'll open it for you.")
-        }
-
-        // The escape hatch, always available on a launcher step.
-        HelperButtonController.shared.show(title: "Can't find it? Open \(name) for me") { [weak self] in
-            guard let self = self, self.isRunning, self.currentStepIndex == step.index - 1
-                    || self.currentStepIndex < self.steps.count else { return }
-            DebugLogger.log("LAUNCH", "user asked Waylo to open '\(name)'")
-            performOpen()
+        let idx = currentStepIndex
+        Task { @MainActor in
+            await ScreenCapturer.shared.settleAfterAction()
+            guard self.isRunning, self.currentStepIndex == idx, token == self.locateToken else { return }
+            await self.executeStep(index: idx + 1)
         }
     }
 
