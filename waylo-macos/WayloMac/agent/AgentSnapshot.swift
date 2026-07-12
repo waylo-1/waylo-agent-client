@@ -21,6 +21,9 @@ struct AgentSnapshot {
     let appName: String
     /// True when a modal sheet/dialog is open — the model must act inside it.
     let dialogOpen: Bool
+    /// Top-level menu names (File, Edit, …) — a compact hint, since the model
+    /// invokes menus by PATH, not by pressing an item's id.
+    let menuTitles: [String]
 
     /// id → element for the executor.
     func element(for id: Int) -> AXElementInfo? {
@@ -51,11 +54,22 @@ struct AgentSnapshot {
         let raw = AccessibilityReader.shared.getTargetAppElements()
         let dialogFrame = AccessibilityReader.shared.targetFocusedDialogFrame()
 
-        // Dedupe identical (role|title|desc|origin) rows — long lists repeat
-        // entries (table cells) and dilute the prompt. Keep first occurrence.
+        // The AX tree includes the WHOLE menu bar (every File/Edit/Apple item),
+        // which floods the list — 100+ menu rows crowd out real window content
+        // and even dialog buttons. The agent invokes menus by PATH, so menu
+        // items are useless as pressable ids: drop them, keep only the
+        // top-level menu NAMES as a hint.
+        var menuTitles: [String] = []
         var seen = Set<String>()
         var deduped: [(AXElementInfo, Bool)] = []
         for info in raw {
+            if info.role == "AXMenuBarItem" {
+                if !info.title.isEmpty, !menuTitles.contains(info.title) { menuTitles.append(info.title) }
+                continue
+            }
+            // Menu dropdown contents — not pressable by id in agent mode.
+            if info.role == "AXMenuItem" || info.role == "AXMenu" { continue }
+
             let key = "\(info.role)|\(info.title)|\(info.description)|\(Int(info.frame.minX)),\(Int(info.frame.minY))"
             guard seen.insert(key).inserted else { continue }
             // Skip fully unlabeled static text — nothing for the model to go on.
@@ -86,7 +100,8 @@ struct AgentSnapshot {
             + (preview.isEmpty ? "" : " — \(preview)"))
 
         return AgentSnapshot(entries: entries, fingerprint: hasher.finalize(),
-                             appName: appName, dialogOpen: dialogFrame != nil)
+                             appName: appName, dialogOpen: dialogFrame != nil,
+                             menuTitles: menuTitles)
     }
 
     private static func shortRole(_ role: String) -> String {

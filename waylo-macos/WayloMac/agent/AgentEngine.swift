@@ -99,6 +99,9 @@ final class AgentEngine: ObservableObject {
 
             // DECIDE
             var context = ScreenContextBuilder.build()
+            if !snapshot.menuTitles.isEmpty {
+                context += "\nMenu bar (invoke with the menu action + a path): \(snapshot.menuTitles.joined(separator: ", "))"
+            }
             if snapshot.dialogOpen {
                 context += "\nIMPORTANT: a modal dialog/sheet is OPEN — its elements are flagged \"dialog\":true and listed first. Interact with THOSE; menus and background buttons will not respond until it is dealt with."
             }
