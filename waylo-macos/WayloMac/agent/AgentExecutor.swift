@@ -35,9 +35,27 @@ enum AgentExecutor {
 
     // MARK: - Type
 
+    /// Roles that legitimately accept typed text.
+    private static let typableRoles: Set<String> = [
+        "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea"
+    ]
+
+    /// Role of the element that currently has keyboard focus (system-wide).
+    static func focusedElementRole() -> String {
+        let system = AXUIElementCreateSystemWide()
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &ref) == .success,
+              let el = ref else { return "" }
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(el as! AXUIElement, kAXRoleAttribute as CFString, &roleRef)
+        return roleRef as? String ?? ""
+    }
+
     /// Types text. With a target field: focus it, set AXValue directly (exact,
-    /// instant, no keystroke race). Without one, or when AXValue is refused:
-    /// synthesize real keystrokes into the focused control.
+    /// instant, no keystroke race). Without one: VERIFY a text control actually
+    /// has focus before synthesizing keystrokes — blind typing lands anywhere
+    /// (a document, a menu search…) and is worse than failing loudly so the
+    /// model presses the field first.
     @discardableResult
     static func type(_ text: String, into info: AXElementInfo?, submit: Bool) -> Bool {
         var ok = false
@@ -53,6 +71,13 @@ enum AgentExecutor {
             }
         }
         if !ok {
+            if info == nil {
+                let role = focusedElementRole()
+                guard typableRoles.contains(role) else {
+                    DebugLogger.log("AGENT", "type REFUSED — focused element is '\(role.isEmpty ? "unknown" : role)', not a text field")
+                    return false
+                }
+            }
             typeKeystrokes(text)
             ok = true
         }

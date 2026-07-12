@@ -444,6 +444,18 @@ struct HomePanelView: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.secondary)
 
+            // Experimental: Gemini computer-use decider for AX-hostile apps
+            // (plain screenshot → grounded action; falls back to Set-of-Mark
+            // on any error, so it can only improve things).
+            Toggle(isOn: Binding(
+                get: { AgentEngine.computerUseEnabled },
+                set: { UserDefaults.standard.set($0, forKey: AgentEngine.computerUseKey) }
+            )) {
+                Text("Gemini computer-use (experimental)").font(.caption)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+
             // Milestone 1 — AX tree logger.
             Button("Log frontmost AX tree to console") {
                 logFrontmostElements()

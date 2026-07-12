@@ -28,6 +28,11 @@ final class AgentEngine: ObservableObject {
     /// Below this many actionable AX elements, treat the app as AX-hostile and
     /// switch that turn to the Set-of-Mark vision observation.
     private static let minAXElements = 3
+    /// Experimental: use Gemini's computer-use tool on AX-hostile turns
+    /// (plain screenshot → grounded action). Toggled in Dev Tools; any error
+    /// falls back to Set-of-Mark, so enabling it can't reduce reliability.
+    static let computerUseKey = "waylo.computerUse"
+    static var computerUseEnabled: Bool { UserDefaults.standard.bool(forKey: computerUseKey) }
 
     /// Local safety net on top of the server's `confirm` flag.
     private static let dangerWords = ["empty", "delete", "erase", "remove", "discard",
@@ -100,21 +105,51 @@ final class AgentEngine: ObservableObject {
                 $0.info.role != "AXStaticText" && $0.info.role != "AXRow"
             }.count
             var visSnap: VisionSnapshot? = nil
+            var computerCap: ScreenCapturer.Capture? = nil
             if axActionable < Self.minAXElements {
-                DebugLogger.log("AGENT", "AX tree thin (\(axActionable) actionable) — falling back to vision")
-                visSnap = await VisionSnapshot.capture()
+                if Self.computerUseEnabled {
+                    // Experimental: Gemini's computer-use tool grounds actions
+                    // directly on a plain screenshot — no YOLO, no badges.
+                    computerCap = await ScreenCapturer.shared.captureActiveScreen()
+                }
+                if computerCap == nil {
+                    DebugLogger.log("AGENT", "AX tree thin (\(axActionable) actionable) — falling back to vision")
+                    visSnap = await VisionSnapshot.capture()
+                }
                 guard token == runToken else { return }
             }
 
             // Change signal from the AX fingerprint (meaningful for the last
-            // action even on a vision turn).
+            // action even on a vision turn). Keyboard shortcuts (⌘S, ⌘C…) often
+            // succeed with NO visible change — a blunt "no visible change" pushes
+            // the model to retry a shortcut that already worked, so soften it.
             if let last = lastFingerprint, !history.isEmpty {
                 let changed = axSnap.fingerprint != last
-                history[history.count - 1] += changed ? " → screen changed" : " → no visible change"
+                let lastWasKey = history[history.count - 1].hasPrefix("key ")
+                history[history.count - 1] += changed
+                    ? " → screen changed"
+                    : (lastWasKey
+                       ? " → screen unchanged (shortcuts often work silently — do NOT repeat it; verify another way or move on)"
+                       : " → no visible change")
             }
 
-            // DECIDE — vision decider when we have a vision snapshot, else AX.
-            let action: WayloAPIClient.AgentAction
+            // DECIDE — computer-use when enabled (falls back to Set-of-Mark on
+            // any error), else SoM vision, else the AX-tree decider.
+            var action: WayloAPIClient.AgentAction? = nil
+            if let cap = computerCap,
+               let (b64, _) = ScreenCapturer.compressedJPEGBase64(cap.image, maxWidth: 1280) {
+                do {
+                    action = try await WayloAPIClient.shared.agentActComputer(
+                        task: task, appName: axSnap.appName, imageBase64: b64, history: history)
+                    DebugLogger.log("AGENT", "computer-use decided: \(action!.act)")
+                } catch {
+                    DebugLogger.log("AGENT", "computer-use failed (\(error.localizedDescription)) — falling back to Set-of-Mark")
+                    computerCap = nil
+                    visSnap = await VisionSnapshot.capture()
+                    guard token == runToken else { return }
+                }
+            }
+            if action == nil {
             do {
                 if let vs = visSnap {
                     action = try await WayloAPIClient.shared.agentActVision(
@@ -139,7 +174,8 @@ final class AgentEngine: ObservableObject {
                 finish(spoken: detail, token: token)
                 return
             }
-            guard token == runToken else { return }
+            }
+            guard token == runToken, let action else { return }
 
             // Snapshot-agnostic accessors for the rest of the turn.
             let frameForID: (Int) -> CGRect? = { id in
@@ -258,9 +294,14 @@ final class AgentEngine: ObservableObject {
 
             // ACT
             lastFingerprint = axSnap.fingerprint
-            let executed = visSnap != nil
-                ? executeVision(action, visSnap!)
-                : execute(action, snapshot: &axSnap)
+            let executed: Bool
+            if let cap = computerCap {
+                executed = executeComputer(action, screen: cap.screen)
+            } else if let vs = visSnap {
+                executed = executeVision(action, vs)
+            } else {
+                executed = execute(action, snapshot: &axSnap)
+            }
             history.append(describe(action) + (executed ? "" : " (FAILED to execute)"))
 
             // wait/open_app get extra settle time before the next observation.
@@ -294,6 +335,38 @@ final class AgentEngine: ObservableObject {
             guard let name = a.name, let url = AppLauncher.resolveApp(named: name) else { return false }
             NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
             return true
+        case "scroll":
+            return AgentExecutor.scroll(direction: a.direction ?? "down")
+        case "wait":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Computer-use execution: the model returns 0-999 grid coordinates on the
+    /// captured screen; convert via the screen's frame and click/type there.
+    private func executeComputer(_ a: WayloAPIClient.AgentAction, screen: NSScreen) -> Bool {
+        func axPoint(_ gx: Int, _ gy: Int) -> CGPoint {
+            let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
+            return CGPoint(x: screen.frame.minX + CGFloat(gx) / 1000.0 * screen.frame.width,
+                           y: axTop + CGFloat(gy) / 1000.0 * screen.frame.height)
+        }
+        switch a.act {
+        case "press_at":
+            guard let x = a.x, let y = a.y else { return false }
+            return AgentExecutor.syntheticClick(at: axPoint(x, y))
+        case "type_at":
+            guard let x = a.x, let y = a.y else { return false }
+            _ = AgentExecutor.syntheticClick(at: axPoint(x, y))
+            usleep(200_000)
+            return AgentExecutor.type(a.text ?? "", into: nil, submit: a.submit ?? false)
+        case "type":
+            return AgentExecutor.type(a.text ?? "", into: nil, submit: a.submit ?? false)
+        case "key":
+            return AgentExecutor.key(combo: a.combo ?? "")
+        case "menu":
+            return AgentExecutor.menu(path: a.path ?? [])
         case "scroll":
             return AgentExecutor.scroll(direction: a.direction ?? "down")
         case "wait":
@@ -390,13 +463,17 @@ final class AgentEngine: ObservableObject {
     private func describe(_ a: WayloAPIClient.AgentAction) -> String {
         switch a.act {
         case "press":    return "press #\(a.id ?? -1)"
-        case "type":     return "type \"\((a.text ?? "").prefix(30))\"\(a.submit == true ? " + return" : "")"
+        // Field id included so typing the same text into TWO fields (name +
+        // confirm-name) isn't misread as a repeat by the guards.
+        case "type":     return "type \"\((a.text ?? "").prefix(30))\"\(a.id.map { " into #\($0)" } ?? "")\(a.submit == true ? " + return" : "")"
         case "key":      return "key \(a.combo ?? "?")"
         case "menu":     return "menu \((a.path ?? []).joined(separator: " > "))"
         case "open_app": return "open app '\(a.name ?? "?")'"
         case "scroll":   return "scroll \(a.direction ?? "down")"
         case "wait":     return "wait \(Int(a.seconds ?? 0))s"
         case "point":    return "point #\(a.id ?? -1)"
+        case "press_at": return "press at (\(a.x ?? -1),\(a.y ?? -1))"
+        case "type_at":  return "type \"\((a.text ?? "").prefix(30))\" at (\(a.x ?? -1),\(a.y ?? -1))"
         default:         return a.act
         }
     }

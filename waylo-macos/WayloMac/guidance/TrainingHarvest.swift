@@ -113,6 +113,14 @@ final class TrainingHarvest: ObservableObject {
                 screenWidth: example.pixelWidth,
                 screenHeight: example.pixelHeight
             )
+            // Teach the icon captioner this concept (idea 5): a USER-VERIFIED
+            // icon name grows the zero-shot vocabulary, so the next screen with
+            // this icon gets it captioned locally — per-app knowledge accrues
+            // with use, no manual labelling. Fire-and-forget.
+            let concept = IconMemory.normalizeConcept(example.targetLabel)
+            if !concept.isEmpty, concept.count >= 3 {
+                WayloAPIClient.shared.addIconConcept(name: concept)
+            }
         }
         DebugLogger.log("HARVEST", "COMMITTED \(good.count) verified example(s) → disk + backend")
         staged.removeAll()

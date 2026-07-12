@@ -138,6 +138,10 @@ final class WayloAPIClient {
         let question: String?
         let say: String?
         let confirm: Bool?
+        /// Computer-use grid coordinates (0-999, top-left origin) for
+        /// press_at / type_at actions.
+        let x: Int?
+        let y: Int?
     }
 
     /// Sends the current numbered element list + history; returns the single
@@ -163,6 +167,24 @@ final class WayloAPIClient {
             if let detail = Self.serverErrorDetail(from: data) { throw APIError.serverMessage(detail) }
             throw APIError.serverError
         }
+        return try JSONDecoder().decode(AgentAction.self, from: data)
+    }
+
+    /// Gemini COMPUTER-USE decider (experimental, flag-gated): plain screenshot
+    /// in, grounded grid-coordinate action out. Errors make the caller fall
+    /// back to the Set-of-Mark path for that turn.
+    func agentActComputer(task: String, appName: String, imageBase64: String,
+                          history: [String]) async throws -> AgentAction {
+        guard let url = URL(string: "\(baseURL)/act-computer") else { throw APIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 40
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "task": task, "appName": appName, "imageBase64": imageBase64, "history": history,
+        ])
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw APIError.serverError }
         return try JSONDecoder().decode(AgentAction.self, from: data)
     }
 
@@ -213,6 +235,18 @@ final class WayloAPIClient {
         } catch {
             return nil
         }
+    }
+
+    /// Teaches the icon captioner a user-verified concept (fire-and-forget).
+    func addIconConcept(name: String) {
+        guard !name.isEmpty, let url = URL(string: "\(baseURL)/vocab/add"),
+              let body = try? JSONSerialization.data(withJSONObject: ["name": name]) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
     }
 
     /// Caches a working AX label for a step (fire-and-forget).
