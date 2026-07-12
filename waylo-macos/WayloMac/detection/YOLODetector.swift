@@ -32,9 +32,12 @@ struct YOLOElement: Decodable {
     /// wrong winner — which is exactly how a desktop folder won a "Trash icon
     /// in the Dock" step.
     let matchConf: Double?
+    /// Tier 2: zero-shot concept label for a textless icon ("search",
+    /// "attach"), or nil when nothing matched distinctly.
+    let caption: String?
 
     enum CodingKeys: String, CodingKey {
-        case x, y, w, h, cx, cy, confidence, source
+        case x, y, w, h, cx, cy, confidence, source, caption
         case axClass = "ax_class"
         case matchScore = "match_score"
         case matchConf = "match_conf"

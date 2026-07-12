@@ -15,6 +15,7 @@ struct VisionSnapshot {
         let center: CGPoint   // AX-global — where a press clicks
         let frame: CGRect     // AX-global — for the point outline
         let axClass: String?  // Screen2AX hint (AXButton/AXLink/…) if known
+        let caption: String?  // Tier 2 zero-shot concept ("search", "attach")
     }
 
     let marks: [Mark]
@@ -29,6 +30,7 @@ struct VisionSnapshot {
         marks.map { m in
             var d: [String: Any] = ["id": m.id, "pos": "\(Int(m.center.x)),\(Int(m.center.y))"]
             if let c = m.axClass { d["kind"] = c }
+            if let cap = m.caption { d["label"] = cap }   // Tier 2 icon concept
             return d
         }
     }
@@ -77,7 +79,8 @@ struct VisionSnapshot {
                                y: axTop + CGFloat(el.y) * screen.frame.height,
                                width: CGFloat(el.w) * screen.frame.width,
                                height: CGFloat(el.h) * screen.frame.height)
-            marks.append(Mark(id: i + 1, center: center, frame: frame, axClass: el.axClass))
+            marks.append(Mark(id: i + 1, center: center, frame: frame,
+                              axClass: el.axClass, caption: el.caption))
         }
 
         guard let annotated = stamp(marks: kept, on: cap.image) else { return nil }
