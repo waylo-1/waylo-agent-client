@@ -20,7 +20,11 @@ final class AgentEngine: ObservableObject {
     @Published private(set) var statusMessage = ""
 
     private var runToken = 0
+    private var clickObserverId: UUID?
     private static let maxActions = 16
+    /// How many times per task the agent may hand a step to the user before
+    /// concluding the task is better done in guide mode.
+    private static let maxHandoffs = 3
 
     /// Local safety net on top of the server's `confirm` flag.
     private static let dangerWords = ["empty", "delete", "erase", "remove", "discard",
@@ -32,7 +36,34 @@ final class AgentEngine: ObservableObject {
         runToken += 1
         isRunning = false
         HelperButtonController.shared.hide()
+        HotkeyManager.shared.removeClickObserver(clickObserverId)
+        clickObserverId = nil
         statusMessage = ""
+    }
+
+    /// Waits for the user's next real click (the CGEventTap observer sees
+    /// clicks in any app). A short dwell ignores the click that may have
+    /// triggered this state. Returns false on timeout or cancellation.
+    private func waitForUserClick(token: Int, timeout: TimeInterval) async -> Bool {
+        let started = Date()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            var resumed = false
+            let finish: (Bool) -> Void = { [weak self] ok in
+                guard !resumed else { return }
+                resumed = true
+                HotkeyManager.shared.removeClickObserver(self?.clickObserverId)
+                self?.clickObserverId = nil
+                cont.resume(returning: ok)
+            }
+            clickObserverId = HotkeyManager.shared.addClickObserver { _, _ in
+                guard Date().timeIntervalSince(started) > 0.8 else { return }
+                DispatchQueue.main.async { finish(true) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                if self?.runToken != token { finish(false); return }
+                finish(false)
+            }
+        }
     }
 
     func run(task: String) async {
@@ -50,6 +81,7 @@ final class AgentEngine: ObservableObject {
 
         var history: [String] = []
         var lastFingerprint: Int? = nil
+        var userHandoffs = 0
 
         for actionIndex in 1...Self.maxActions {
             guard token == runToken else { return }
@@ -87,15 +119,83 @@ final class AgentEngine: ObservableObject {
             }
             DebugLogger.log("AGENT", "step \(actionIndex): \(describe(action))")
 
-            // TERMINALS
-            switch action.act {
-            case "done":
+            // TERMINAL
+            if action.act == "done" {
                 finish(spoken: action.summary ?? "Done.", token: token)
                 return
-            case "ask_user":
-                finish(spoken: action.question ?? "I need your help to continue.", token: token)
-                return
-            default: break
+            }
+
+            // HYBRID HANDOFFS — the agent hands one step to the user and the
+            // loop RESUMES after their click. This is the teach/agent blend:
+            // "point" outlines the element the USER should click (their
+            // choice); "ask_user" asks them to do something the agent can't.
+            if action.act == "point" || action.act == "ask_user" {
+                userHandoffs += 1
+                guard userHandoffs <= Self.maxHandoffs else {
+                    finish(spoken: "I need your help too often for this one — let's finish it together in guide mode.", token: token)
+                    return
+                }
+                let question = action.question ?? "Please do this part yourself."
+                if action.act == "point", let id = action.id, let info = snapshot.element(for: id) {
+                    OverlayWindowController.shared.showHighlight(axRect: info.frame, caption: question)
+                } else {
+                    OverlayWindowController.shared.showBanner("\(question) — click it and I'll carry on.")
+                }
+                Speaker.shared.speak("\(question) I'll carry on after you click.")
+                statusMessage = "Waiting for you…"
+                let acted = await waitForUserClick(token: token, timeout: 60)
+                OverlayWindowController.shared.hideDot()
+                guard token == runToken else { return }
+                guard acted else {
+                    finish(spoken: "No problem — I've stopped. Ask me again when you're ready.", token: token)
+                    return
+                }
+                history.append("\(action.act == "point" ? "pointed" : "asked user"): \"\(question.prefix(60))\" → user did it")
+                lastFingerprint = nil   // the user changed the screen; don't judge it
+                continue
+            }
+
+            // REPEAT GUARDS. The model (esp. smaller ones) re-issues an action
+            // when a countdown/loading state is invisible to the AX tree.
+            // Re-pressing cancels countdowns and re-fires menus, so this is
+            // enforced deterministically, never left to the prompt:
+            //   1st repeat  → convert to a 3s wait (the app is mid-process)
+            //   2nd repeat  → hand the step to the user and resume after
+            let desc = describe(action)
+            let executedBefore = history.filter { $0.hasPrefix(desc) }.count
+            let dampedBefore = history.contains { $0.contains("repeat of '\(desc)'") }
+            if action.act != "wait", executedBefore >= 1, !dampedBefore {
+                DebugLogger.log("AGENT", "repeat damper: '\(desc)' again — waiting 3s instead")
+                history.append("(blocked repeat of '\(desc)' — waited 3s; do something DIFFERENT next)")
+                lastFingerprint = nil
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                continue
+            }
+
+            // LOOP BREAKER — damped once already and the model STILL wants the
+            // same action (or has genuinely run it twice). A third go never
+            // helps (AXPress "succeeds" on disabled items), so hand this step
+            // to the user and resume.
+            if (action.act != "wait" && dampedBefore && executedBefore >= 1) || executedBefore >= 2 {
+                DebugLogger.log("AGENT", "loop breaker: '\(desc)' already tried twice — handing to user")
+                userHandoffs += 1
+                guard userHandoffs <= Self.maxHandoffs else {
+                    finish(spoken: "I keep going in circles on this one — I've stopped. Try guide mode for this task.", token: token)
+                    return
+                }
+                let ask = "I'm stuck on this part. Please do the next step yourself"
+                OverlayWindowController.shared.showBanner("\(ask) — click when done and I'll carry on.")
+                Speaker.shared.speak("\(ask). Click anywhere when you've done it and I'll carry on.")
+                statusMessage = "Waiting for you…"
+                let acted = await waitForUserClick(token: token, timeout: 60)
+                guard token == runToken else { return }
+                guard acted else {
+                    finish(spoken: "Okay, I've stopped. Ask me again when you're ready.", token: token)
+                    return
+                }
+                history.append("STUCK (repeated '\(desc)') → user did the step manually")
+                lastFingerprint = nil
+                continue
             }
 
             // CONFIRM GATE — server flag OR local danger match on the target.
@@ -216,6 +316,7 @@ final class AgentEngine: ObservableObject {
         case "open_app": return "open app '\(a.name ?? "?")'"
         case "scroll":   return "scroll \(a.direction ?? "down")"
         case "wait":     return "wait \(Int(a.seconds ?? 0))s"
+        case "point":    return "point #\(a.id ?? -1)"
         default:         return a.act
         }
     }
