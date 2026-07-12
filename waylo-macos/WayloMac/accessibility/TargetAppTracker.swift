@@ -27,7 +27,7 @@ final class TargetAppTracker {
             targetPID = front.processIdentifier
             targetName = front.localizedName ?? ""
             enableElectronAccessibility(pid: front.processIdentifier)
-            DebugLogger.log("TRACKER", "seed target='\(targetName)' pid=\(targetPID ?? -1)")
+            DebugLogger.logDuringTask("TRACKER", "seed target='\(targetName)' pid=\(targetPID ?? -1)")
         }
 
         observer = workspace.notificationCenter.addObserver(
@@ -44,7 +44,7 @@ final class TargetAppTracker {
                 || bid.contains("waylo") || bid.contains("sahayak")
 
             if isSelf {
-                DebugLogger.log("TRACKER", "WARNING ignoring activation of self/app '\(app.localizedName ?? "?")' (\(bid)) — keeping target='\(self.targetName)'")
+                DebugLogger.logDuringTask("TRACKER", "WARNING ignoring activation of self/app '\(app.localizedName ?? "?")' (\(bid)) — keeping target='\(self.targetName)'")
                 return
             }
 
@@ -53,7 +53,7 @@ final class TargetAppTracker {
             // otherwise HIJACK the target mid-guide — the AX reader would then
             // search the notification instead of the user's app.
             if Self.isTransientSystemUI(app) {
-                DebugLogger.log("TRACKER", "ignoring transient system UI '\(app.localizedName ?? "?")' (\(bid)) — keeping target='\(self.targetName)'")
+                DebugLogger.logDuringTask("TRACKER", "ignoring transient system UI '\(app.localizedName ?? "?")' (\(bid)) — keeping target='\(self.targetName)'")
                 return
             }
 
@@ -61,7 +61,7 @@ final class TargetAppTracker {
             self.targetPID = app.processIdentifier
             self.targetName = app.localizedName ?? ""
             self.enableElectronAccessibility(pid: app.processIdentifier)
-            DebugLogger.log("TRACKER", "target changed: '\(old)' -> '\(self.targetName)' pid=\(self.targetPID ?? -1)")
+            DebugLogger.logDuringTask("TRACKER", "target changed: '\(old)' -> '\(self.targetName)' pid=\(self.targetPID ?? -1)")
         }
     }
 
@@ -106,23 +106,23 @@ final class TargetAppTracker {
         let result = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         if result == .success {
             electronUnlocked.insert(pid)
-            DebugLogger.log("TRACKER", "AXManualAccessibility enabled for pid \(pid) (Electron-style app)")
+            DebugLogger.logDuringTask("TRACKER", "AXManualAccessibility enabled for pid \(pid) (Electron-style app)")
             return
         }
         // Electron/Chromium apps often reject the attribute until their window
         // exists, so a set at activation time silently fails and their whole AX
         // tree stays invisible (Spotify's every step fell through to Nova).
         // Retry once shortly after; log the failure either way so it can't hide.
-        DebugLogger.log("TRACKER", "AXManualAccessibility set failed for pid \(pid) (AXError \(result.rawValue)) — retrying in 1.5s")
+        DebugLogger.logDuringTask("TRACKER", "AXManualAccessibility set failed for pid \(pid) (AXError \(result.rawValue)) — retrying in 1.5s")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self = self, !self.electronUnlocked.contains(pid) else { return }
             let retry = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
             if retry == .success {
                 self.electronUnlocked.insert(pid)
-                DebugLogger.log("TRACKER", "AXManualAccessibility enabled on retry for pid \(pid)")
+                DebugLogger.logDuringTask("TRACKER", "AXManualAccessibility enabled on retry for pid \(pid)")
             } else {
                 self.electronUnavailable.insert(pid)   // native app — stop retrying/logging
-                DebugLogger.log("TRACKER", "AXManualAccessibility unavailable for pid \(pid) — native app (won't retry)")
+                DebugLogger.logDuringTask("TRACKER", "AXManualAccessibility unavailable for pid \(pid) — native app (won't retry)")
             }
         }
     }

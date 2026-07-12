@@ -45,6 +45,18 @@ final class DebugLogger {
         #endif
     }
 
+    /// Logs ONLY while a guide or agent task is running. For continuous
+    /// observers (frontmost-app tracking) that would otherwise write an
+    /// idle-time activity trail into the buffer — Waylo should record nothing
+    /// about what the user does between tasks.
+    static func logDuringTask(_ tag: String, _ message: String) {
+        let active = Thread.isMainThread
+            ? MainActor.assumeIsolated { GuidanceEngine.shared.isRunning || AgentEngine.shared.isRunning }
+            : false
+        guard active else { return }
+        log(tag, message)
+    }
+
     /// The most recent log lines (newest last).
     static func recentLines(_ count: Int = 200) -> [String] {
         bufferLock.lock()
