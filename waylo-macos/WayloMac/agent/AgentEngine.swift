@@ -25,6 +25,9 @@ final class AgentEngine: ObservableObject {
     /// How many times per task the agent may hand a step to the user before
     /// concluding the task is better done in guide mode.
     private static let maxHandoffs = 3
+    /// Below this many actionable AX elements, treat the app as AX-hostile and
+    /// switch that turn to the Set-of-Mark vision observation.
+    private static let minAXElements = 3
 
     /// Local safety net on top of the server's `confirm` flag.
     private static let dangerWords = ["empty", "delete", "erase", "remove", "discard",
@@ -87,29 +90,47 @@ final class AgentEngine: ObservableObject {
         for actionIndex in 1...Self.maxActions {
             guard token == runToken else { return }
 
-            // OBSERVE — settle, then snapshot the real tree.
+            // OBSERVE — snapshot the AX tree. If it's too thin (an AX-hostile
+            // app: Spotify, WhatsApp, some Electron apps) also grab a
+            // Set-of-Mark VISION observation so this turn can act on pixels.
             try? await Task.sleep(nanoseconds: actionIndex == 1 ? 200_000_000 : 900_000_000)
-            var snapshot = AgentSnapshot.capture()
+            var axSnap = AgentSnapshot.capture()
+            let axActionable = axSnap.entries.filter {
+                $0.info.role != "AXStaticText" && $0.info.role != "AXRow"
+            }.count
+            var visSnap: VisionSnapshot? = nil
+            if axActionable < Self.minAXElements {
+                DebugLogger.log("AGENT", "AX tree thin (\(axActionable) actionable) — falling back to vision")
+                visSnap = await VisionSnapshot.capture()
+                guard token == runToken else { return }
+            }
 
-            // Tell the model whether its LAST action visibly changed anything.
+            // Change signal from the AX fingerprint (meaningful for the last
+            // action even on a vision turn).
             if let last = lastFingerprint, !history.isEmpty {
-                let changed = snapshot.fingerprint != last
+                let changed = axSnap.fingerprint != last
                 history[history.count - 1] += changed ? " → screen changed" : " → no visible change"
             }
 
-            // DECIDE
-            var context = ScreenContextBuilder.build()
-            if !snapshot.menuTitles.isEmpty {
-                context += "\nMenu bar (invoke with the menu action + a path): \(snapshot.menuTitles.joined(separator: ", "))"
-            }
-            if snapshot.dialogOpen {
-                context += "\nIMPORTANT: a modal dialog/sheet is OPEN — its elements are flagged \"dialog\":true and listed first. Interact with THOSE; menus and background buttons will not respond until it is dealt with."
-            }
+            // DECIDE — vision decider when we have a vision snapshot, else AX.
             let action: WayloAPIClient.AgentAction
             do {
-                action = try await WayloAPIClient.shared.agentAct(
-                    task: task, appName: snapshot.appName, context: context,
-                    elements: snapshot.payload, history: history)
+                if let vs = visSnap {
+                    action = try await WayloAPIClient.shared.agentActVision(
+                        task: task, appName: vs.appName, imageBase64: vs.annotatedBase64,
+                        marks: vs.payload, history: history)
+                } else {
+                    var context = ScreenContextBuilder.build()
+                    if !axSnap.menuTitles.isEmpty {
+                        context += "\nMenu bar (invoke with the menu action + a path): \(axSnap.menuTitles.joined(separator: ", "))"
+                    }
+                    if axSnap.dialogOpen {
+                        context += "\nIMPORTANT: a modal dialog/sheet is OPEN — its elements are flagged \"dialog\":true and listed first. Interact with THOSE; menus and background buttons will not respond until it is dealt with."
+                    }
+                    action = try await WayloAPIClient.shared.agentAct(
+                        task: task, appName: axSnap.appName, context: context,
+                        elements: axSnap.payload, history: history)
+                }
             } catch {
                 guard token == runToken else { return }
                 let detail = (error as? APIError).flatMap { if case let .serverMessage(d) = $0 { return d } else { return nil } }
@@ -118,6 +139,12 @@ final class AgentEngine: ObservableObject {
                 return
             }
             guard token == runToken else { return }
+
+            // Snapshot-agnostic accessors for the rest of the turn.
+            let frameForID: (Int) -> CGRect? = { id in
+                if let vs = visSnap { return vs.mark(for: id)?.frame }
+                return axSnap.element(for: id)?.frame
+            }
 
             if let say = action.say, !say.isEmpty {
                 statusMessage = say
@@ -143,8 +170,8 @@ final class AgentEngine: ObservableObject {
                     return
                 }
                 let question = action.question ?? "Please do this part yourself."
-                if action.act == "point", let id = action.id, let info = snapshot.element(for: id) {
-                    OverlayWindowController.shared.showHighlight(axRect: info.frame, caption: question)
+                if action.act == "point", let id = action.id, let frame = frameForID(id) {
+                    OverlayWindowController.shared.showHighlight(axRect: frame, caption: question)
                 } else {
                     OverlayWindowController.shared.showBanner("\(question) — click it and I'll carry on.")
                 }
@@ -214,9 +241,13 @@ final class AgentEngine: ObservableObject {
             }
 
             // CONFIRM GATE — server flag OR local danger match on the target.
-            if needsConfirmation(action, snapshot: snapshot) {
-                let target = targetLabel(of: action, in: snapshot)
-                let approved = await requestConfirmation(for: target, token: token)
+            // (Vision turns have no element labels, so they rely on the
+            // server's confirm flag alone.)
+            let dangerLabel = visSnap == nil ? targetLabel(of: action, in: axSnap) : ""
+            let mustConfirm = action.confirm == true
+                || Self.dangerWords.contains { dangerLabel.lowercased().contains($0) }
+            if mustConfirm {
+                let approved = await requestConfirmation(for: dangerLabel, token: token)
                 guard token == runToken else { return }
                 guard approved else {
                     finish(spoken: "Okay, I stopped before doing that.", token: token)
@@ -225,8 +256,10 @@ final class AgentEngine: ObservableObject {
             }
 
             // ACT
-            lastFingerprint = snapshot.fingerprint
-            let executed = execute(action, snapshot: &snapshot)
+            lastFingerprint = axSnap.fingerprint
+            let executed = visSnap != nil
+                ? executeVision(action, visSnap!)
+                : execute(action, snapshot: &axSnap)
             history.append(describe(action) + (executed ? "" : " (FAILED to execute)"))
 
             // wait/open_app get extra settle time before the next observation.
@@ -269,13 +302,33 @@ final class AgentEngine: ObservableObject {
         }
     }
 
-    // MARK: - Confirmation
-
-    private func needsConfirmation(_ a: WayloAPIClient.AgentAction, snapshot: AgentSnapshot) -> Bool {
-        if a.confirm == true { return true }
-        let label = targetLabel(of: a, in: snapshot).lowercased()
-        return Self.dangerWords.contains { label.contains($0) }
+    /// Vision-turn execution: presses click the CENTRE of the chosen badge's
+    /// box (no AX handle exists in an AX-hostile app). Typing/keys/menu/scroll
+    /// go through the same executor.
+    private func executeVision(_ a: WayloAPIClient.AgentAction, _ vs: VisionSnapshot) -> Bool {
+        switch a.act {
+        case "press":
+            guard let id = a.id, let m = vs.mark(for: id) else {
+                DebugLogger.log("AGENT", "vision press: badge \(a.id.map(String.init) ?? "nil") unknown")
+                return false
+            }
+            return AgentExecutor.syntheticClick(at: m.center)
+        case "type":
+            return AgentExecutor.type(a.text ?? "", into: nil, submit: a.submit ?? false)
+        case "key":
+            return AgentExecutor.key(combo: a.combo ?? "")
+        case "menu":
+            return AgentExecutor.menu(path: a.path ?? [])
+        case "scroll":
+            return AgentExecutor.scroll(direction: a.direction ?? "down")
+        case "wait":
+            return true
+        default:
+            return false
+        }
     }
+
+    // MARK: - Confirmation
 
     private func targetLabel(of a: WayloAPIClient.AgentAction, in snapshot: AgentSnapshot) -> String {
         switch a.act {

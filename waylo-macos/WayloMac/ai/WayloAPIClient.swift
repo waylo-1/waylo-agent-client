@@ -166,6 +166,30 @@ final class WayloAPIClient {
         return try JSONDecoder().decode(AgentAction.self, from: data)
     }
 
+    /// Set-of-Mark vision decider for AX-hostile apps: annotated screenshot +
+    /// numbered marks → one action referencing badge ids.
+    func agentActVision(task: String, appName: String, imageBase64: String,
+                        marks: [[String: Any]], history: [String]) async throws -> AgentAction {
+        guard let url = URL(string: "\(baseURL)/act-vision") else { throw APIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 35
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "task": task, "appName": appName, "imageBase64": imageBase64,
+            "marks": marks, "history": history,
+        ])
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            if (response as? HTTPURLResponse)?.statusCode == 404 {
+                throw APIError.serverMessage("The server needs an update before I can work on apps like this one.")
+            }
+            if let detail = Self.serverErrorDetail(from: data) { throw APIError.serverMessage(detail) }
+            throw APIError.serverError
+        }
+        return try JSONDecoder().decode(AgentAction.self, from: data)
+    }
+
     // MARK: - POST /resolve/spotify (name → Spotify URI, for autonomous play)
 
     /// Resolves a free-text query ("drake", "one dance drake") to a playable
