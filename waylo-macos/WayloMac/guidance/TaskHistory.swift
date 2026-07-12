@@ -38,7 +38,10 @@ final class TaskHistory: ObservableObject {
         entries[i].feedback = .correct
         WayloAPIClient.shared.learnPlan(task: entry.task, steps: entry.steps)
         TrainingHarvest.shared.commitVerified()
-        DebugLogger.log("HISTORY", "marked CORRECT → learning plan + committing verified training data")
+        // Element-level knowledge: every step label the user's clicks verified
+        // during this run goes to the step-label cache (cross-task reuse).
+        GuidanceEngine.shared.commitStagedLabels()
+        DebugLogger.log("HISTORY", "marked CORRECT → learning plan + step labels + training data")
     }
 
     /// 👎 — forget this plan, and throw away every staged training example:

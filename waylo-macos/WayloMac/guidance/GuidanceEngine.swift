@@ -115,6 +115,7 @@ final class GuidanceEngine: ObservableObject {
         removeClickMonitor()
         removeKeyAdvanceMonitor()
         removeDebugHotkey()
+        stagedStepLabels.removeAll()   // stale labels must never leak into a new run's ✓
         OverlayWindowController.shared.hideDot()
         HelperButtonController.shared.hide()
         Speaker.shared.stop()
@@ -1433,6 +1434,23 @@ final class GuidanceEngine: ObservableObject {
             // The user clicked where we pointed → any staged training example
             // for this step was a correct prediction.
             TrainingHarvest.shared.markVerified(stepIndex: stepIndex)
+            // STAGE the clicked element's label for this step — the user's
+            // click is ground truth ("clicked the + icon for playlists").
+            // Persisted only when the whole guide is marked ✓, so a botched
+            // run never poisons the cache. Element-level, so ANY future task
+            // whose step means the same thing ("start a jam" → same + icon)
+            // resolves via free AX.
+            if stepIndex < steps.count {
+                let step = steps[stepIndex]
+                if !step.labelCacheKey.isEmpty,
+                   let el = AccessibilityReader.shared.elementAt(axPoint: clickAX) {
+                    let label = el.title.isEmpty ? el.description : el.title
+                    if !label.isEmpty {
+                        stagedStepLabels[step.labelCacheKey] = label
+                        DebugLogger.log("CACHE", "staged '\(label)' for step \(stepIndex + 1) (commits on ✓)")
+                    }
+                }
+            }
             advanceAfterClick(stepIndex: stepIndex)
             return
         }
@@ -1485,6 +1503,25 @@ final class GuidanceEngine: ObservableObject {
         if name.contains("L2.5") { return 3 }
         if name.contains("L3") || name.contains("Nova") { return 4 }
         return -1
+    }
+
+    // MARK: - Step-label staging (user clicks = ground truth; ✓ commits)
+
+    /// labelCacheKey → verified element label, staged during the run. Written
+    /// to the backend step-label cache only when the user marks the guide ✓ —
+    /// element-level knowledge ("the + icon for playlists" → "New Playlist")
+    /// that ANY future task with a similar step reuses, not just this task.
+    private var stagedStepLabels: [String: String] = [:]
+
+    /// Called by TaskHistory when the user presses ✓ on a completed guide.
+    func commitStagedLabels() {
+        guard !stagedStepLabels.isEmpty else { return }
+        let appName = TargetAppTracker.shared.targetName
+        for (key, label) in stagedStepLabels {
+            WayloAPIClient.shared.storeLabel(appName: appName, stepDescription: key, axLabel: label)
+        }
+        DebugLogger.log("CACHE", "✓ committed \(stagedStepLabels.count) step label(s) to the cache")
+        stagedStepLabels.removeAll()
     }
 
     // MARK: - Learning from the user's clicks (self-supervised correction)
