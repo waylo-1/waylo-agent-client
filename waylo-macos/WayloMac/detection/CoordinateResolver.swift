@@ -136,6 +136,20 @@ final class CoordinateResolver {
                 DebugLogger.log("RESOLVE", "L0 match '\(element.title.isEmpty ? element.role : element.title)' doesn't contain '\(w)' — rejecting")
                 continue
             }
+            // A TEXT-INPUT element (address bar, search box) is never a menu
+            // item / button / link / tab. It kept winning by substring — "Bar"
+            // grabbed Chrome's "Address and search BAR", "Compose" grabbed a
+            // field. Reject a field match unless the step actually types here.
+            // NB: field HINTS come from the DESCRIPTION intent, never the word
+            // "bar"/"box" (the chart type IS literally "Bar").
+            let fieldRoles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+            let intent = "\(targetLabel) \(elementDescription)".lowercased()
+            let wantsField = controlKind.lowercased() == "field"
+                || ["field", "type ", "input", "search", "address", "url", "enter"].contains(where: { intent.contains($0) })
+            if fieldRoles.contains(element.role), !wantsField {
+                DebugLogger.log("RESOLVE", "L0 match is a text FIELD (\(element.role)) but step wants a \(controlKind.isEmpty ? "control" : controlKind) — rejecting")
+                continue
+            }
 
             // TOGGLE REDIRECT: "turn on X" steps match the SETTING'S NAME (an
             // AXStaticText), but the thing to click is the switch beside it.

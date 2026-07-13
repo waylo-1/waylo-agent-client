@@ -199,30 +199,55 @@ struct HomePanelView: View {
     // MARK: - Completion banner (shown after a guide finishes)
 
     private var completionBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundColor(.green)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(L10n.t("task_complete"))
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                Text("Rate it under Recent so it's right next time.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.t("task_complete"))
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text("Rate it under Recent so it's right next time.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button {
+                    engine.stopGuidance() // resets state to .idle, dismissing this
+                } label: {
+                    Image(systemName: "xmark").font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Dismiss")
             }
-            Spacer()
-            Button {
-                engine.stopGuidance() // resets state to .idle, dismissing this
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption)
+            // In a curriculum session, offer the next lesson right here so the
+            // user isn't left wondering how to continue.
+            if let next = nextLesson {
+                Button {
+                    engine.stopGuidance()
+                    skill.setLessonIndex(next.index)
+                    taskText = next.lesson.task
+                    startTask()
+                } label: {
+                    Label("Next lesson: \(next.lesson.title)", systemImage: "arrow.right.circle.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
             }
-            .buttonStyle(.borderless)
-            .help("Dismiss")
         }
         .padding(10)
         .background(Color.green.opacity(0.12))
         .cornerRadius(10)
+    }
+
+    /// The first not-yet-done lesson of the active curriculum, if any.
+    private var nextLesson: (index: Int, lesson: WayloAPIClient.Curriculum.Lesson)? {
+        guard let session = skill.active, let cur = curriculum else { return nil }
+        for (i, l) in cur.lessons.enumerated() where !session.completed.contains(l.task) {
+            return (i, l)
+        }
+        return nil
     }
 
     // MARK: - Recent history (rate each guide: ✓ correct / ✗ wrong)
