@@ -71,9 +71,14 @@ final class VoiceCommandEngine: ObservableObject {
     }
 
     private func startNewTask(_ task: String) async {
+        // In a LEARNING session every request routes through the planner so it
+        // is TAUGHT (with session memory), not silently done — the instant
+        // shortcuts would hijack follow-ups like "search for it on Google".
+        let learning = SkillSession.shared.active != nil
+
         // Direct intents (open a site, web search, launch an app) execute
         // instantly — no plan, no dot, no cost.
-        if let intent = IntentShortcuts.match(task) {
+        if !learning, let intent = IntentShortcuts.match(task) {
             let spoken = IntentShortcuts.perform(intent)
             OverlayWindowController.shared.showBanner(spoken, autoDismissAfter: 5)
             Speaker.shared.speak(spoken)
@@ -84,7 +89,7 @@ final class VoiceCommandEngine: ObservableObject {
         // Autonomous app control ("play drake on spotify", "pause the music",
         // "directions to the airport") — driven via AppleScript / URI schemes,
         // not the vision pipeline. Also instant, no plan, no cost.
-        if let action = AppActions.match(task) {
+        if !learning, let action = AppActions.match(task) {
             let spoken = await AppActions.perform(action)
             OverlayWindowController.shared.showBanner(spoken, autoDismissAfter: 5)
             Speaker.shared.speak(spoken)
