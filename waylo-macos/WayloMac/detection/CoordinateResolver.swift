@@ -7,6 +7,8 @@ import AppKit
 ///   - plain text target      → OCR first (visual ground truth), then AX
 ///   - real control (button…) → AX first (role/anchor beat header text), OCR fallback
 ///   - icon target             → AX-by-description → label cache → YOLO (L2.5) → Nova (L3)
+///   - WEB-CONTENT step (browser page, not chrome) → OCR first even for
+///     controls, and every AX search hard-restricted to the web-content frame
 /// `localOnly` (scroll-assist polling) stops after AX + OCR — no network.
 /// Every Nova hit is harvested: label cached for next-run AX resolution and a
 /// YOLO training example logged.
@@ -69,13 +71,39 @@ final class CoordinateResolver {
         // its frame focuses BOTH AX (candidate filter) and OCR (crop) on the
         // modal, so we never point at an identical label behind it. An explicit
         // caller preferRect (a freshly-opened window) still takes precedence.
-        let effectivePreferRect = preferRect ?? AccessibilityReader.shared.targetFocusedDialogFrame()
+        let dialogFrame = AccessibilityReader.shared.targetFocusedDialogFrame()
+        let effectivePreferRect = preferRect ?? dialogFrame
+
+        // WEB-AWARE ROUTING: inside a browser, the PAGE is rendered by the web
+        // engine — its content is either absent from the AX tree or nested in
+        // an AXWebArea, while the tree is dominated by browser chrome (tabs,
+        // bookmarks, the address bar) whose titles collide with page words
+        // ("Docs", "Compose", "Bar"…). For a step that targets page content
+        // (not the browser's own UI, not the macOS menu bar):
+        //   - OCR runs FIRST even for control targets — pixels are the ground
+        //     truth for web "buttons", which are drawn text;
+        //   - AX candidates are HARD-restricted to the web-content frame, so a
+        //     chrome element can never win by word collision (in-page AX
+        //     elements, when Chrome exposes them, still win pixel-exact);
+        //   - misses fall through to vision/recovery exactly as before.
+        // A native modal (print/save dialog) suspends this — that surface is
+        // real AppKit and the normal rules apply.
+        var webContentFrame: CGRect?
+        if TargetAppTracker.shared.isBrowser,
+           dialogFrame == nil,
+           screenRegion != .menuBar,
+           !Self.targetsBrowserChrome(label: targetLabel, description: elementDescription, controlKind: controlKind) {
+            webContentFrame = AccessibilityReader.shared.targetWebContentFrame()
+            if let wf = webContentFrame {
+                DebugLogger.log("RESOLVE", "WEB-CONTENT step in \(TargetAppTracker.shared.targetName) — OCR-first, AX restricted to \(Int(wf.width))x\(Int(wf.height)) web area")
+            }
+        }
 
         // Resolve an anchor location (nearby text the planner gave) once, so AX
         // can prefer the target in the right direction from it.
         var anchorInfo: (point: CGPoint, position: String)?
         if !anchorText.isEmpty {
-            if let el = axSearch(anchorText, region: screenRegion, screen: screen) {
+            if let el = axSearch(anchorText, region: screenRegion, screen: screen, restrictRect: webContentFrame) {
                 anchorInfo = (el.center, anchorPosition)
             } else if let m = await visionDetector.findLabelScored(anchorText, in: image, on: screen, region: .fullScreen), m.score >= 0.8 {
                 anchorInfo = (m.point, anchorPosition)
@@ -88,10 +116,11 @@ final class CoordinateResolver {
         // Plain TEXT/label targets: OCR first (visual ground truth). For real
         // CONTROLS (buttons etc.) we run AX first so role/anchor can pick the
         // actual control over plain header text — OCR is the control's fallback.
-        if targetType == .text && !isControl {
+        // WEB-CONTENT steps are OCR-first even for controls (see above).
+        if targetType == .text && (!isControl || webContentFrame != nil) {
             if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
-                                           region: screenRegion, preferRect: effectivePreferRect) {
+                                           region: screenRegion, preferRect: effectivePreferRect ?? webContentFrame) {
                 return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
             }
         }
@@ -102,7 +131,8 @@ final class CoordinateResolver {
         // AX match on the planner's word legitimately fails.
         for candidate in Self.labelVariants(targetLabel) where !candidate.isEmpty {
             guard let found = axSearchDetailed(candidate, region: screenRegion, screen: screen, allowSystemUI: true,
-                                               preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect)
+                                               preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect,
+                                               restrictRect: webContentFrame)
             else { continue }
             if candidate != targetLabel {
                 DebugLogger.log("RESOLVE", "matched locale variant '\(candidate)' for planner label '\(targetLabel)'")
@@ -178,7 +208,8 @@ final class CoordinateResolver {
         // incidental value — pointing at it is a guess, and a wrong dot is
         // worse than an honest "look here, it's the small colour wheel".
         let descMatch = axSearch(axQuery, region: screenRegion, screen: screen, allowSystemUI: false,
-                                 preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect)
+                                 preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect,
+                                 restrictRect: webContentFrame)
             .flatMap { el -> AXElementInfo? in
                 let named = !el.title.trimmingCharacters(in: .whitespaces).isEmpty
                     || !el.description.trimmingCharacters(in: .whitespaces).isEmpty
@@ -212,8 +243,9 @@ final class CoordinateResolver {
         DebugLogger.logResolution("L0-AX", found: false, point: nil, label: axQuery)
 
         // CONTROL targets: OCR fallback after AX (a button's text sits on it, so
-        // OCR of the label still lands on the control).
-        if targetType == .text && isControl {
+        // OCR of the label still lands on the control). Web-content control
+        // steps already ran OCR first — don't run it twice.
+        if targetType == .text && isControl && webContentFrame == nil {
             if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
                                            region: screenRegion, preferRect: effectivePreferRect) {
@@ -234,7 +266,8 @@ final class CoordinateResolver {
             // The cached label may itself be in the wrong dialect (an older run
             // cached the planner's "Trash" on a Mac whose Dock says "Bin").
             for candidate in Self.labelVariants(cachedLabel) {
-                guard let element = axSearch(candidate, region: screenRegion, screen: screen, allowSystemUI: true),
+                guard let element = axSearch(candidate, region: screenRegion, screen: screen, allowSystemUI: true,
+                                             restrictRect: webContentFrame),
                       passesRegion(element.center, screenRegion, screen: screen) else { continue }
                 DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT, skipped L3 — '\(candidate)' \(element.center)")
                 DebugLogger.logResolution("label-cache-AX", found: true, point: element.center, label: candidate)
@@ -382,7 +415,7 @@ final class CoordinateResolver {
             }
             let refined = result.updatedFindDescription
             if !refined.isEmpty {
-                if let element = axSearch(refined, region: screenRegion, screen: screen) {
+                if let element = axSearch(refined, region: screenRegion, screen: screen, restrictRect: webContentFrame) {
                     DebugLogger.logResolution("L3-Nova-refine-AX", found: true, point: element.center, label: refined)
                     DebugState.shared.update(layer: "L3 Nova→AX", dot: element.center)
                     return Resolution(axPoint: element.center, updatedInstruction: result.updatedInstruction,
@@ -468,16 +501,20 @@ final class CoordinateResolver {
     /// must NOT, or they hijack the dot onto the Dock icon.
     private func axSearch(_ query: String, region: ScreenRegion, screen: NSScreen, allowSystemUI: Bool = false,
                           preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil,
-                          preferRect: CGRect? = nil) -> AXElementInfo? {
+                          preferRect: CGRect? = nil, restrictRect: CGRect? = nil) -> AXElementInfo? {
         axSearchDetailed(query, region: region, screen: screen, allowSystemUI: allowSystemUI,
-                         preferredRole: preferredRole, anchor: anchor, preferRect: preferRect)?.best
+                         preferredRole: preferredRole, anchor: anchor, preferRect: preferRect,
+                         restrictRect: restrictRect)?.best
     }
 
     /// Full variant that also surfaces near-tied confident alternates (used by
     /// the primary targetLabel search so ambiguity can be shown to the user).
+    /// `restrictRect` is a HARD filter (web-content steps): elements outside it
+    /// are browser chrome — a word collision, never the target — so unlike
+    /// preferRect there is no fallback to the full candidate list.
     private func axSearchDetailed(_ query: String, region: ScreenRegion, screen: NSScreen, allowSystemUI: Bool = false,
                                   preferredRole: String? = nil, anchor: (point: CGPoint, position: String)? = nil,
-                                  preferRect: CGRect? = nil)
+                                  preferRect: CGRect? = nil, restrictRect: CGRect? = nil)
         -> (best: AXElementInfo, alternates: [AXElementInfo])? {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         let all = AccessibilityReader.shared.getTargetAppElements()
@@ -490,6 +527,14 @@ final class CoordinateResolver {
                 candidates = filtered.isEmpty ? all : filtered // fall back to all if region empties
             } else {
                 candidates = all
+            }
+            if let restrict = restrictRect {
+                let before = candidates.count
+                candidates = candidates.filter { restrict.insetBy(dx: -4, dy: -4).intersects($0.frame) }
+                if candidates.count != before {
+                    DebugLogger.log("AX", "web-content filter: \(before) → \(candidates.count) candidates")
+                }
+                if candidates.isEmpty { return nil }
             }
             // The macOS MENU BAR (File/Edit/Format…) must only satisfy a
             // menuBar-region step. Otherwise "the Format button in the toolbar"
@@ -531,8 +576,9 @@ final class CoordinateResolver {
         }
 
         // Fallback: system UI (Dock icons, menu-bar extras). Only for a precise
-        // targetLabel, and only accepted when the element's title strongly matches.
-        guard allowSystemUI else { return nil }
+        // targetLabel, and only accepted when the element's title strongly
+        // matches. Never for a web-content step — its target is on the page.
+        guard allowSystemUI, restrictRect == nil else { return nil }
         let systemElements = AccessibilityReader.shared.getSystemUIElements()
         guard !systemElements.isEmpty,
               let hit = ElementFinder.shared.findElement(description: query, in: systemElements),
@@ -601,6 +647,25 @@ final class CoordinateResolver {
         return toggles.min(by: {
             abs($0.center.y - element.center.y) < abs($1.center.y - element.center.y)
         })
+    }
+
+    /// True when the step explicitly targets the BROWSER'S OWN UI (address bar,
+    /// tabs, bookmarks…) rather than page content — those live in the chrome
+    /// strip and must stay findable via AX with no web-area restriction.
+    /// Deliberately NARROW: page-side words ("search", "back", a site's own
+    /// "tab") must not trip it, so single ambiguous words are excluded.
+    static func targetsBrowserChrome(label: String, description: String, controlKind: String) -> Bool {
+        let intent = "\(label) \(description)".lowercased()
+        let chromeMarkers = [
+            "address bar", "address and search", "url bar", "omnibox", "search bar of",
+            "new tab", "tab bar", "browser tab", "tab strip",
+            "bookmark", "reading list",
+            "browser toolbar", "browser window", "browser's", "of the browser",
+            "of chrome", "of safari", "in chrome's", "in safari's",
+            "reload button", "refresh button", "back button", "forward button",
+            "extension", "incognito", "private window", "downloads button",
+        ]
+        return chromeMarkers.contains { intent.contains($0) }
     }
 
     /// The label plus its dialect variants, original first (so an exact match

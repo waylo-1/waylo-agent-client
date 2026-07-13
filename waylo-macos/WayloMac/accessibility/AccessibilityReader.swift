@@ -132,6 +132,13 @@ final class AccessibilityReader {
     /// main window. Used to validate that a "dialog"-region hit lands inside the
     /// active window rather than somewhere else on screen.
     func targetFocusedWindowFrame() -> CGRect? {
+        guard let window = focusedTargetWindow() else { return nil }
+        let frame = copyFrame(window)
+        return frame.width > 1 && frame.height > 1 ? frame : nil
+    }
+
+    /// The target app's focused window (else its main window), or nil.
+    private func focusedTargetWindow() -> AXUIElement? {
         let pid = TargetAppTracker.shared.targetPID
             ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
         guard let pid = pid else { return nil }
@@ -142,8 +149,49 @@ final class AccessibilityReader {
             AXUIElementCopyAttributeValue(app, kAXMainWindowAttribute as CFString, &winRef)
         }
         guard let winRef = winRef else { return nil }
-        let frame = copyFrame(winRef as! AXUIElement)
-        return frame.width > 1 && frame.height > 1 ? frame : nil
+        return (winRef as! AXUIElement)
+    }
+
+    /// Frame (AX coords) of the web-page CONTENT area of the target browser's
+    /// focused window. Exact when the engine exposes an AXWebArea; otherwise
+    /// the window frame minus the top chrome strip (tab bar + toolbar). In the
+    /// fallback case the page isn't in the AX tree AT ALL, so everything the
+    /// tree can see above the strip is chrome and nothing real gets excluded.
+    /// Used by CoordinateResolver to keep web-content steps from matching
+    /// browser chrome (tab titles, bookmarks, the address bar).
+    func targetWebContentFrame() -> CGRect? {
+        guard let window = focusedTargetWindow() else { return nil }
+        if let web = largestWebArea(in: window, depth: 0), web.width > 200, web.height > 150 {
+            DebugLogger.log("AX", "AXWebArea found \(Int(web.width))x\(Int(web.height))")
+            return web
+        }
+        let frame = copyFrame(window)
+        guard frame.width > 1, frame.height > 1 else { return nil }
+        let chromeStrip: CGFloat = 80
+        DebugLogger.log("AX", "no AXWebArea — approximating web content as window minus \(Int(chromeStrip))pt chrome strip")
+        return CGRect(x: frame.minX, y: frame.minY + chromeStrip,
+                      width: frame.width, height: max(0, frame.height - chromeStrip))
+    }
+
+    /// The largest AXWebArea frame under `element` (browsers can host several —
+    /// the page, DevTools, extension popups). Does not descend INTO a web area.
+    private func largestWebArea(in element: AXUIElement, depth: Int) -> CGRect? {
+        guard depth < 12 else { return nil }
+        if copyStringAttribute(element, kAXRoleAttribute) == "AXWebArea" {
+            let f = copyFrame(element)
+            return (f.width > 1 && f.height > 1) ? f : nil
+        }
+        var childrenRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef)
+        guard let children = childrenRef as? [AXUIElement] else { return nil }
+        var best: CGRect?
+        for child in children {
+            if let f = largestWebArea(in: child, depth: depth + 1),
+               best == nil || f.width * f.height > best!.width * best!.height {
+                best = f
+            }
+        }
+        return best
     }
 
     /// Frame (AX coords) of a modal surface in the target app — a sheet,

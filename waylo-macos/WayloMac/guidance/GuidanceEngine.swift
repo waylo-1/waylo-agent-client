@@ -1110,10 +1110,19 @@ final class GuidanceEngine: ObservableObject {
             relabel = userMessage
             DebugLogger.log("ENGINE", "locked plan: using spoken correction as target hint → '\(relabel)'")
         }
+        // GARBAGE GUARD: /recover reads OCR context and occasionally echoes a
+        // garbled fragment back as visibleLabel. OCR will then happily
+        // "confirm" it — the garbage came FROM the screen — repointing the dot
+        // at noise. An implausible label is demoted to a description-only hint
+        // (vision can still use it semantically); it is never OCR-exact-matched.
+        let relabelIsClean = Self.isPlausibleVisibleLabel(relabel)
+        if !relabel.isEmpty, !relabelIsClean {
+            DebugLogger.log("ENGINE", "recover label '\(relabel)' looks like OCR garbage — demoting to description-only hint")
+        }
         if !relabel.isEmpty {
             let retry = await CoordinateResolver.shared.resolve(
                 capture: capture,
-                targetLabel: relabel,
+                targetLabel: relabelIsClean ? relabel : "",
                 elementDescription: relabel,
                 stepInstruction: step.instruction,
                 findDescription: relabel,
@@ -1126,9 +1135,12 @@ final class GuidanceEngine: ObservableObject {
             )
             guard token == locateToken, isRunning else { return true }
             if let retry = retry {
-                // Cache only a clean model label (not a fallback sentence) so
-                // future runs skip recovery/Nova.
-                if !result.visibleLabel.isEmpty {
+                // Cache only a clean model label that the AX tree itself just
+                // confirmed (retry resolved to a real element). The cache is an
+                // AX-ONLY lookup next run, so an OCR-only label is dead weight
+                // there — and this fleet-wide store is exactly how one bad
+                // voice correction used to poison a step for every user.
+                if !result.visibleLabel.isEmpty, relabelIsClean, retry.axElement != nil {
                     WayloAPIClient.shared.storeLabel(
                         appName: TargetAppTracker.shared.targetName,
                         stepDescription: step.labelCacheKey,
@@ -1152,6 +1164,18 @@ final class GuidanceEngine: ObservableObject {
         }
 
         return false
+    }
+
+    /// Whether a /recover visibleLabel looks like real on-screen label text
+    /// rather than a garbled OCR fragment or a whole spoken sentence: short
+    /// (2–40 chars, ≤5 words) and mostly letters. Implausible labels are used
+    /// as description hints only, never OCR-exact-matched or cached.
+    static func isPlausibleVisibleLabel(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.count >= 2, t.count <= 40 else { return false }
+        guard t.split(whereSeparator: { $0.isWhitespace }).count <= 5 else { return false }
+        let letters = t.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+        return Double(letters) / Double(t.count) >= 0.5
     }
 
     /// The element isn't on screen — it's probably off the visible area. Show a

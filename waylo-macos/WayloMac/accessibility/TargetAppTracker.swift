@@ -13,6 +13,31 @@ final class TargetAppTracker {
     /// PID of the app to guide the user through.
     private(set) var targetPID: pid_t?
     private(set) var targetName: String = ""
+    private(set) var targetBundleID: String = ""
+
+    /// Bundle-ID prefixes of web browsers. Page content in these apps is
+    /// rendered by the web engine, not AppKit — the AX tree either lacks it
+    /// entirely or nests it inside an AXWebArea, while browser chrome (tabs,
+    /// bookmarks, the address bar) dominates the tree and collides with page
+    /// words. `CoordinateResolver` routes web-content steps on this.
+    /// Electron apps are NOT browsers here: AXManualAccessibility gives them a
+    /// full, reliable tree.
+    private static let browserBundlePrefixes = [
+        "com.google.chrome",          // Chrome + Beta/Dev/Canary
+        "com.apple.safari",           // Safari + Technology Preview
+        "org.mozilla.firefox",
+        "com.microsoft.edgemac",
+        "com.brave.browser",
+        "company.thebrowser.browser", // Arc
+        "com.vivaldi.vivaldi",
+        "com.operasoftware.opera",
+    ]
+
+    /// True when the app the user is working in is a web browser.
+    var isBrowser: Bool {
+        let bid = targetBundleID.lowercased()
+        return Self.browserBundlePrefixes.contains { bid.hasPrefix($0) }
+    }
 
     private var observer: Any?
     private let selfPID = ProcessInfo.processInfo.processIdentifier
@@ -26,6 +51,7 @@ final class TargetAppTracker {
         if let front = workspace.frontmostApplication, front.processIdentifier != selfPID {
             targetPID = front.processIdentifier
             targetName = front.localizedName ?? ""
+            targetBundleID = front.bundleIdentifier ?? ""
             enableElectronAccessibility(pid: front.processIdentifier)
             DebugLogger.logDuringTask("TRACKER", "seed target='\(targetName)' pid=\(targetPID ?? -1)")
         }
@@ -60,6 +86,7 @@ final class TargetAppTracker {
             let old = self.targetName
             self.targetPID = app.processIdentifier
             self.targetName = app.localizedName ?? ""
+            self.targetBundleID = app.bundleIdentifier ?? ""
             self.enableElectronAccessibility(pid: app.processIdentifier)
             DebugLogger.logDuringTask("TRACKER", "target changed: '\(old)' -> '\(self.targetName)' pid=\(self.targetPID ?? -1)")
         }
