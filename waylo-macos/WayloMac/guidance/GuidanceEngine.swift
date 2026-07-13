@@ -105,6 +105,25 @@ final class GuidanceEngine: ObservableObject {
         // Collapse the panel to the notch pill — the guide lives in the notch now.
         NotchPanelController.expansion.expanded = false
 
+        // GUARANTEE the plan's app is frontmost before step 1. The planner
+        // sometimes omits the "open the app" step (it assumed WhatsApp was up
+        // while the user sat in another app) — detection then runs against the
+        // WRONG app's screen and points at whatever matched there. Deterministic
+        // client-side guard: resolve the app, open/focus it, settle, then start.
+        let planApp = plan.app.trimmingCharacters(in: .whitespaces)
+        if !planApp.isEmpty,
+           TargetAppTracker.shared.targetName.caseInsensitiveCompare(planApp) != .orderedSame,
+           let url = AppLauncher.resolveApp(named: planApp) {
+            DebugLogger.log("ENGINE", "plan app '\(planApp)' not frontmost (\(TargetAppTracker.shared.targetName)) — opening it first")
+            NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
+            Task {
+                await ScreenCapturer.shared.settleAfterAction()
+                guard self.isRunning else { return }
+                await self.executeStep(index: 0)
+            }
+            return
+        }
+
         Task { await executeStep(index: 0) }
     }
 

@@ -107,7 +107,34 @@ final class CoordinateResolver {
             if candidate != targetLabel {
                 DebugLogger.log("RESOLVE", "matched locale variant '\(candidate)' for planner label '\(targetLabel)'")
             }
-            let element = found.best
+            var element = found.best
+
+            // A TEXT target must resolve to an element that actually carries
+            // matching text. Two confident-wrong-dot bugs live here:
+            //  - a completely UNNAMED element won via anchor/role proximity
+            //    (Gmail's "+" tab accepted for "Compose"), and
+            //  - a PARTIAL word match beat the real item ("Show Fonts" accepted
+            //    for "Show Colors" because they share "Show").
+            let hay = element.allText
+            let words = Self.labelKeywords(candidate)
+            if hay.trimmingCharacters(in: .whitespaces).isEmpty {
+                DebugLogger.log("RESOLVE", "L0 match for '\(candidate)' is UNNAMED (role=\(element.role)) — refusing to guess")
+                continue
+            }
+            if words.count >= 2, words.contains(where: { !hay.contains($0) }) {
+                DebugLogger.log("RESOLVE", "L0 match '\(element.title)' covers only PART of '\(candidate)' — rejecting (partial word match)")
+                continue
+            }
+
+            // TOGGLE REDIRECT: "turn on X" steps match the SETTING'S NAME (an
+            // AXStaticText), but the thing to click is the switch beside it.
+            // If the step wants a toggle and we matched plain text, point at
+            // the checkbox/switch in the same row instead.
+            if let toggle = Self.rowToggleRedirect(for: element, step: (controlKind: controlKind, instruction: stepInstruction), screen: screen) {
+                DebugLogger.log("RESOLVE", "toggle redirect: '\(element.title)' text → \(toggle.role) at (\(Int(toggle.center.x)),\(Int(toggle.center.y)))")
+                element = toggle
+            }
+
             print("[Resolver] L0 AX hit '\(element.title)' \(element.center)")
             DebugLogger.logResolution("L0-AX", found: true, point: element.center, label: "\(element.title) [\(element.role)]")
             DebugState.shared.update(layer: "L0 AX", dot: element.center)
@@ -511,6 +538,45 @@ final class CoordinateResolver {
         ("dialog", "dialogue"),
         ("fullscreen", "full screen"),
     ]
+
+    /// Meaningful lowercase keywords of a target label ("Show Colors…" →
+    /// ["show","colors"]). Used to require FULL coverage on multi-word labels
+    /// so "Show Fonts" can never win for "Show Colors".
+    static func labelKeywords(_ label: String) -> [String] {
+        let stop: Set<String> = ["the", "a", "an", "of", "to", "in", "on", "and", "or"]
+        return label.lowercased()
+            .replacingOccurrences(of: "…", with: " ")
+            .replacingOccurrences(of: "...", with: " ")
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 && !stop.contains($0) }
+    }
+
+    /// When a step wants a TOGGLE ("turn on X", controlKind checkbox/toggle)
+    /// but AX matched the setting's NAME (static text), find the actual
+    /// checkbox/switch in the same row (same vertical band, to the right —
+    /// macOS Settings layout) and return it. nil = no redirect needed/found.
+    static func rowToggleRedirect(for element: AXElementInfo,
+                                  step: (controlKind: String, instruction: String),
+                                  screen: NSScreen) -> AXElementInfo? {
+        guard element.role == "AXStaticText" || element.role == "AXCell" else { return nil }
+        let kind = step.controlKind.lowercased()
+        let instr = step.instruction.lowercased()
+        let wantsToggle = ["checkbox", "toggle", "switch"].contains(kind)
+            || instr.contains("turn on") || instr.contains("turn off")
+            || instr.contains("enable") || instr.contains("disable")
+            || instr.contains("toggle") || instr.contains("switch on") || instr.contains("switch off")
+        guard wantsToggle else { return nil }
+
+        let toggles = AccessibilityReader.shared.getTargetAppElements().filter {
+            ($0.role == "AXCheckBox" || $0.role == "AXSwitch")
+                && abs($0.center.y - element.center.y) < 22          // same row
+                && $0.center.x > element.frame.minX                   // at/right of the label
+                && $0.center.x - element.center.x < 700               // same pane, not across the screen
+        }
+        return toggles.min(by: {
+            abs($0.center.y - element.center.y) < abs($1.center.y - element.center.y)
+        })
+    }
 
     /// The label plus its dialect variants, original first (so an exact match
     /// on what the planner said always wins when both exist on screen).

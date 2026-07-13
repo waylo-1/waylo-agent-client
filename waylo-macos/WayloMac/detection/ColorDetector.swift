@@ -103,10 +103,17 @@ final class ColorDetector {
         }
         guard anyMatch else { return nil }
 
-        // Largest 4-connected blob via iterative flood fill (tracking bounds).
+        // All 4-connected blobs via iterative flood fill (tracking bounds).
+        // Selection is SHAPE-AWARE, not just biggest: a button/swatch is
+        // compact, while a coloured slider/scrollbar is an extreme strip —
+        // the Colors-window red slider once beat the actual red swatch purely
+        // on pixel count. Squareness multiplies size so compact wins.
         var visited = [Bool](repeating: false, count: scaleW * scaleH)
-        var best: (count: Int, sx: Int, sy: Int, minX: Int, maxX: Int, minY: Int, maxY: Int) = (0,0,0,0,0,0,0)
+        typealias Blob = (count: Int, sx: Int, sy: Int, minX: Int, maxX: Int, minY: Int, maxY: Int)
+        var best: Blob = (0,0,0,0,0,0,0)
+        var bestScore = 0.0
         var stack: [Int] = []
+        let total = (xMax - xMin) * (yMax - yMin)
         for start in 0..<(scaleW * scaleH) where mask[start] && !visited[start] {
             stack.removeAll(keepingCapacity: true)
             stack.append(start)
@@ -126,14 +133,20 @@ final class ColorDetector {
                     if mask[np] && !visited[np] { visited[np] = true; stack.append(np) }
                 }
             }
-            if count > best.count { best = (count, sumX, sumY, minX, maxX, minY, maxY) }
+            // Per-blob gates: noise floor and full-region fills.
+            guard count >= 12, Double(count) < Double(total) * 0.4 else { continue }
+            let w = Double(maxX - minX + 1), h = Double(maxY - minY + 1)
+            let aspect = max(w, h) / max(1, min(w, h))
+            let shape: Double = aspect <= 2 ? 1.0 : (aspect <= 3 ? 0.5 : (aspect <= 5 ? 0.2 : 0.06))
+            let score = Double(count) * shape
+            if score > bestScore {
+                bestScore = score
+                best = (count, sumX, sumY, minX, maxX, minY, maxY)
+            }
         }
 
-        // Reject noise (too small) and full-window fills (too big — a coloured
-        // background, not a control).
-        let total = (xMax - xMin) * (yMax - yMin)
-        guard best.count >= 12, Double(best.count) < Double(total) * 0.4 else {
-            DebugLogger.log("COLOR", "\(colorName): largest blob \(best.count)px rejected (noise or too big)")
+        guard best.count > 0 else {
+            DebugLogger.log("COLOR", "\(colorName): no usable blob (all noise/strips/backgrounds)")
             return nil
         }
 
