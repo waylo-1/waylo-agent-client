@@ -16,7 +16,7 @@ final class WayloAPIClient {
     /// Generates a step plan from a natural-language task description.
     /// `screenContext`: compact live AX-tree snapshot (ScreenContextBuilder)
     /// so the planner grounds steps in what's actually on screen.
-    func generatePlan(task: String, screenContext: String = "") async throws -> GuidePlan {
+    func generatePlan(task: String, screenContext: String = "", sessionContext: String = "") async throws -> GuidePlan {
         guard let url = URL(string: "\(baseURL)/plan") else { throw APIError.invalidURL }
 
         var request = URLRequest(url: url)
@@ -28,6 +28,7 @@ final class WayloAPIClient {
 
         var body: [String: Any] = ["task": task, "platform": "macos"]
         if !screenContext.isEmpty { body["screenContext"] = screenContext }
+        if !sessionContext.isEmpty { body["sessionContext"] = sessionContext }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
@@ -120,6 +121,28 @@ final class WayloAPIClient {
         } catch {
             return nil
         }
+    }
+
+    // MARK: - GET /curriculum/:query (hand-authored lesson lists)
+
+    struct Curriculum: Decodable {
+        struct Lesson: Decodable { let title: String; let task: String }
+        let id: String
+        let displayName: String
+        let description: String
+        let lessons: [Lesson]
+    }
+
+    /// Fetches the authored curriculum for a skill name, or nil (none exists /
+    /// offline). Free-form sessions work fine without one.
+    func fetchCurriculum(for skill: String) async -> Curriculum? {
+        let enc = skill.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? skill
+        guard !skill.isEmpty, let url = URL(string: "\(baseURL)/curriculum/\(enc)") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONDecoder().decode(Curriculum.self, from: data)
     }
 
     // MARK: - POST /act (agent mode: observe → ONE next action)

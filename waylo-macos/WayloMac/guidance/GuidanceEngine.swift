@@ -1272,6 +1272,10 @@ final class GuidanceEngine: ObservableObject {
         removeKeyAdvanceMonitor()
         isRunning = false
 
+        // A completed guide during a learning session becomes part of the
+        // session's memory — the next follow-up plan knows what was just done.
+        SkillSession.shared.recordCompleted(task: taskName)
+
         // Record the finished guide so the user can rate it (✓ caches it as
         // correct, ✗ forgets it) from the panel's history list.
         if !taskName.isEmpty, !steps.isEmpty {

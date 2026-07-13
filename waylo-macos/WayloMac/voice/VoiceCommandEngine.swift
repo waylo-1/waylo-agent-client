@@ -104,7 +104,9 @@ final class VoiceCommandEngine: ObservableObject {
         do {
             let context = ScreenContextBuilder.build()
             DebugLogger.log("PLAN", "screenContext \(context.count) chars")
-            let plan = try await WayloAPIClient.shared.generatePlan(task: task, screenContext: context)
+            let plan = try await WayloAPIClient.shared.generatePlan(
+                task: task, screenContext: context,
+                sessionContext: SkillSession.shared.contextForPlan())
             OverlayWindowController.shared.hideDot()
             GuidanceEngine.shared.startGuidance(plan: plan)
             DebugLogger.log("VOICE", "started guide for '\(task)' (\(plan.steps.count) steps)")

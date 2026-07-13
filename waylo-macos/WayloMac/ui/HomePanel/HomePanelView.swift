@@ -4,7 +4,11 @@ import SwiftUI
 struct HomePanelView: View {
     @StateObject private var engine = GuidanceEngine.shared
     @StateObject private var agent = AgentEngine.shared
+    @StateObject private var skill = SkillSession.shared
     @ObservedObject private var history = TaskHistory.shared
+    /// "Learn an app" input + the fetched curriculum for the active session.
+    @State private var skillInput = ""
+    @State private var curriculum: WayloAPIClient.Curriculum?
     @State private var taskText = ""
     @State private var isLoading = false
     @State private var isListening = false
@@ -41,6 +45,7 @@ struct HomePanelView: View {
                 // inside activeGuidance is never reached.
                 if engine.state == .complete { completionBanner }
                 taskInput
+                learnSection
                 if showDevTools { devTools }
                 recentHistory
             } else {
@@ -49,6 +54,87 @@ struct HomePanelView: View {
         }
         .padding(20)
         .frame(width: 340)
+    }
+
+    // MARK: - Learn an app (continuous skill sessions + curricula)
+
+    private var learnSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            if let session = skill.active {
+                // Active session: progress + lessons + end.
+                HStack {
+                    Image(systemName: "graduationcap.fill").foregroundColor(.red)
+                    Text("Learning \(session.skill)").font(.caption).fontWeight(.semibold)
+                    Spacer()
+                    Text("\(session.completed.count) done").font(.caption2).foregroundColor(.secondary)
+                    Button("End") { skill.end(); curriculum = nil }
+                        .buttonStyle(.borderless).font(.caption)
+                }
+                if let cur = curriculum {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(cur.lessons.enumerated()), id: \.offset) { i, lesson in
+                            let done = session.completed.contains(lesson.task)
+                            Button {
+                                skill.setLessonIndex(i)
+                                taskText = lesson.task
+                                startTask()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: done ? "checkmark.circle.fill" : "\(i + 1).circle")
+                                        .foregroundColor(done ? .green : .secondary)
+                                    Text(lesson.title).font(.caption)
+                                        .strikethrough(done, color: .secondary)
+                                        .foregroundColor(done ? .secondary : .primary)
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                } else {
+                    Text("Free session — every task you finish is remembered, so follow-ups like “now make it bold” just work.")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+            } else {
+                // No session: start one, or resume a stored one.
+                HStack(spacing: 6) {
+                    Image(systemName: "graduationcap").foregroundColor(.secondary)
+                    TextField("Learn an app (e.g. Google Sheets)", text: $skillInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .onSubmit { startLearning(skillInput) }
+                    Button("Start") { startLearning(skillInput) }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(skillInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if !skill.stored.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(skill.stored.prefix(4)) { s in
+                                Button("\(s.skill) · \(s.completed.count)✓") { startLearning(s.skill) }
+                                    .buttonStyle(.bordered).controlSize(.mini).font(.caption2)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func startLearning(_ name: String) {
+        let clean = name.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return }
+        skill.start(skill: clean)
+        skillInput = ""
+        curriculum = nil
+        Task { @MainActor in
+            // Authored curriculum if one exists; free-form session otherwise.
+            curriculum = await WayloAPIClient.shared.fetchCurriculum(for: clean)
+            if let c = curriculum {
+                DebugLogger.log("SESSION", "curriculum '\(c.displayName)' (\(c.lessons.count) lessons)")
+            }
+        }
     }
 
     // MARK: - Agent activity ("Do it for me" running)
@@ -582,7 +668,9 @@ struct HomePanelView: View {
                 // Ground the plan in the live screen (local AX read, ~free).
                 let context = ScreenContextBuilder.build()
                 DebugLogger.log("PLAN", "screenContext \(context.count) chars")
-                let plan = try await WayloAPIClient.shared.generatePlan(task: task, screenContext: context)
+                let plan = try await WayloAPIClient.shared.generatePlan(
+                    task: task, screenContext: context,
+                    sessionContext: SkillSession.shared.contextForPlan())
                 NSLog("[Waylo] generatePlan OK: %d steps", plan.steps.count)
                 isLoading = false
                 taskText = ""
