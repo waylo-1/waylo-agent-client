@@ -1553,12 +1553,20 @@ final class GuidanceEngine: ObservableObject {
     private func watchOffTargetClick(at clickAX: CGPoint, stepIndex: Int) {
         let token = locateToken
         let before = AccessibilityReader.shared.targetScreenSignature()
+        let appBefore = TargetAppTracker.shared.targetName
         DebugLogger.log("CORRECT", "off-target click at (\(Int(clickAX.x)),\(Int(clickAX.y))) — watching for effect")
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_300_000_000)
             guard self.isRunning, self.state == .showing,
                   self.currentStepIndex == stepIndex, token == self.locateToken,
                   stepIndex < self.steps.count else { return }
+            // The user clicked into a DIFFERENT app (checked mail, clicked the
+            // desktop). The screen changed, but that's not the step being done —
+            // learning from it once cached 'desktop' as WhatsApp's search field.
+            guard TargetAppTracker.shared.targetName == appBefore else {
+                DebugLogger.log("CORRECT", "click switched apps (\(appBefore) → \(TargetAppTracker.shared.targetName)) — not a correction, ignoring")
+                return
+            }
             let after = AccessibilityReader.shared.targetScreenSignature()
             guard after != before else { return } // click did nothing visible — ignore
 

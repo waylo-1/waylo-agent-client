@@ -115,7 +115,12 @@ final class CoordinateResolver {
             //    (Gmail's "+" tab accepted for "Compose"), and
             //  - a PARTIAL word match beat the real item ("Show Fonts" accepted
             //    for "Show Colors" because they share "Show").
-            let hay = element.allText
+            // NOTE: label text ONLY — allText includes the ROLE string, which
+            // let an unnamed AXCheckBox pass as "named" (accepted for 'Red' in
+            // the Colors window) because "axcheckbox" is non-empty text.
+            let hay = [element.title, element.description, element.helpText,
+                       element.value, AXElementInfo.humanizeIdentifier(element.identifier)]
+                .joined(separator: " ").lowercased()
             let words = Self.labelKeywords(candidate)
             if hay.trimmingCharacters(in: .whitespaces).isEmpty {
                 DebugLogger.log("RESOLVE", "L0 match for '\(candidate)' is UNNAMED (role=\(element.role)) — refusing to guess")
@@ -123,6 +128,12 @@ final class CoordinateResolver {
             }
             if words.count >= 2, words.contains(where: { !hay.contains($0) }) {
                 DebugLogger.log("RESOLVE", "L0 match '\(element.title)' covers only PART of '\(candidate)' — rejecting (partial word match)")
+                continue
+            }
+            // Single-word targets ('Red', 'Save') must ALSO appear in the label —
+            // an element named something else entirely is a different control.
+            if words.count == 1, let w = words.first, !hay.contains(w) {
+                DebugLogger.log("RESOLVE", "L0 match '\(element.title.isEmpty ? element.role : element.title)' doesn't contain '\(w)' — rejecting")
                 continue
             }
 
