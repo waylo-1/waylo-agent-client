@@ -627,13 +627,9 @@ struct HomePanelView: View {
         let task = taskText.trimmingCharacters(in: .whitespaces)
         guard !task.isEmpty else { return }
 
-        // In a LEARNING session everything routes through the planner so it is
-        // TAUGHT (with session memory), not silently done by a shortcut.
-        let learning = skill.active != nil
-
         // Direct intents (open a site, web search, launch an app) execute
         // instantly — no plan, no dot, no cost.
-        if !learning, let intent = IntentShortcuts.match(task) {
+        if let intent = IntentShortcuts.match(task) {
             let spoken = IntentShortcuts.perform(intent)
             Speaker.shared.speak(spoken)
             taskText = ""
@@ -643,7 +639,7 @@ struct HomePanelView: View {
 
         // Autonomous app control ("play drake on spotify", "pause the music",
         // "directions to X") — AppleScript / URI schemes, no plan, no vision.
-        if !learning, let action = AppActions.match(task) {
+        if let action = AppActions.match(task) {
             taskText = ""
             errorMessage = nil
             Task { @MainActor in
