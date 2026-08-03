@@ -307,8 +307,11 @@ final class CoordinateResolver {
             // description names the target itself.
             let colorText = "\(elementDescription) \(findDescription)"
             // Confine the colour search to the app's window (or the just-opened
-            // window) so a red Dock icon / menu-bar glyph can't win.
-            let colorWindow = effectivePreferRect ?? AccessibilityReader.shared.targetFocusedWindowFrame()
+            // window) so a red Dock icon / menu-bar glyph can't win. For a web
+            // step, tighten to the page area — a coloured browser-chrome glyph
+            // (a red notification dot, a coloured extension icon) is NOT the
+            // target and must not win.
+            let colorWindow = webContentFrame ?? effectivePreferRect ?? AccessibilityReader.shared.targetFocusedWindowFrame()
             if let colorName = ColorDetector.colorMentioned(in: colorText),
                let hit = colorDetector.find(colorName: colorName, in: image, on: screen,
                                             region: screenRegion, within: colorWindow),
@@ -329,7 +332,8 @@ final class CoordinateResolver {
                 targetLabel: visionQuery,
                 elementDescription: elementDescription,
                 screenRegion: screenRegion,
-                stepInstruction: stepInstruction
+                stepInstruction: stepInstruction,
+                restrictAXRect: webContentFrame
             ) {
                 DebugLogger.log("PIPELINE", "L2.5 HIT at (\(Int(detection.point.x)),\(Int(detection.point.y)))")
                 return Resolution(axPoint: detection.point, updatedInstruction: "", targetFrame: detection.frame)
@@ -367,6 +371,17 @@ final class CoordinateResolver {
             screen: screen,
             ocrContext: ocrContext
         ) {
+            // WEB-CONTENT guard: a browser page target must resolve INSIDE the
+            // page. If Nova aimed at browser chrome (the reload glyph, an
+            // extension button, the bookmark star that collides with an in-page
+            // star), that's wrong — describe instead of pointing there.
+            if let wf = webContentFrame, let point = result.axPoint,
+               !wf.insetBy(dx: -8, dy: -8).contains(point) {
+                DebugLogger.log("RESOLVE", "L3 Nova point (\(Int(point.x)),\(Int(point.y))) is OUTSIDE the web area — browser chrome, not the target → describing")
+                DebugLogger.logResolution("L3-Nova", found: false, point: point, label: "off-page \(targetLabel)")
+                DebugState.shared.update(layer: "L3 Nova (off-page → describe)")
+                return nil
+            }
             // Nova low-confidence guard: if Nova admits it's guessing at the
             // element (common for tiny unlabelled icons in AX-hostile apps like
             // WhatsApp/Electron), do NOT plant a dot on a likely-wrong icon —

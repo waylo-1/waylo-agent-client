@@ -94,7 +94,8 @@ final class YOLODetector {
         targetLabel: String,
         elementDescription: String,
         screenRegion: ScreenRegion,
-        stepInstruction: String
+        stepInstruction: String,
+        restrictAXRect: CGRect? = nil
     ) async -> Detection? {
         let image = capture.image
         let screen = capture.screen
@@ -141,6 +142,13 @@ final class YOLODetector {
             var cgCrops: [CGImage] = []
             var boxIndex: [Int] = []
             for (i, el) in response.elements.enumerated() {
+                // WEB-CONTENT restriction: only remember/recall icons that sit
+                // inside the page area, so a chrome glyph can't pixel-match a
+                // page icon's memory.
+                if let rect = restrictAXRect {
+                    let boxCenter = normalizedToAXPoint(cx: el.cx, cy: el.cy, screen: screen)
+                    if !rect.insetBy(dx: -8, dy: -8).contains(boxCenter) { continue }
+                }
                 if let c = image.cropNormalized(x: el.x, y: el.y, w: el.w, h: el.h) {
                     cgCrops.append(c); boxIndex.append(i)
                 }
@@ -168,13 +176,15 @@ final class YOLODetector {
             }
         }
 
+        // A web-content step restricts the field to the page area (dock target
+        // constraint, when present, is even tighter and wins).
         guard let best = selectBestMatch(
             elements: response.elements,
             targetLabel: targetLabel,
             elementDescription: elementDescription,
             screenRegion: screenRegion,
             screen: screen,
-            restrictTo: dockOnly
+            restrictTo: dockOnly ?? restrictAXRect
         ) else {
             DebugLogger.log("L2.5", "no element matched semantic criteria, falling through to L3")
             DebugState.shared.yoloResult = "MISS (no match)"
