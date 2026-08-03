@@ -105,7 +105,10 @@ final class CoordinateResolver {
         if !anchorText.isEmpty {
             if let el = axSearch(anchorText, region: screenRegion, screen: screen, restrictRect: webContentFrame) {
                 anchorInfo = (el.center, anchorPosition)
-            } else if let m = await visionDetector.findLabelScored(anchorText, in: image, on: screen, region: .fullScreen), m.score >= 0.8 {
+            } else if let m = webContentFrame != nil
+                        ? await visionDetector.findLabelScored(anchorText, in: image, on: screen, cropAXRect: webContentFrame!)
+                        : await visionDetector.findLabelScored(anchorText, in: image, on: screen, region: .fullScreen),
+                      m.score >= 0.8 {
                 anchorInfo = (m.point, anchorPosition)
             }
             if let a = anchorInfo { DebugLogger.log("RESOLVE", "anchor '\(anchorText)' at (\(Int(a.point.x)),\(Int(a.point.y))) pos=\(anchorPosition)") }
@@ -120,7 +123,8 @@ final class CoordinateResolver {
         if targetType == .text && (!isControl || webContentFrame != nil) {
             if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
-                                           region: screenRegion, preferRect: effectivePreferRect ?? webContentFrame) {
+                                           region: screenRegion, preferRect: effectivePreferRect,
+                                           restrictRect: webContentFrame) {
                 return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
             }
         }
@@ -741,22 +745,32 @@ final class CoordinateResolver {
     /// confident match's AX point (≥0.8), preferring the most complete label.
     private func locateByOCR(targetLabel: String, elementDescription: String, instruction: String,
                              image: CGImage, screen: NSScreen, region: ScreenRegion,
-                             preferRect: CGRect? = nil) async -> (point: CGPoint, frame: CGRect)? {
+                             preferRect: CGRect? = nil, restrictRect: CGRect? = nil) async -> (point: CGPoint, frame: CGRect)? {
         let candidates = ocrCandidates(targetLabel: targetLabel, elementDescription: elementDescription, instruction: instruction)
         var bestOCR: (point: CGPoint, frame: CGRect, score: Double, label: String)?
         for label in candidates {
             var matches: [LocalVisionDetector.OCRMatch] = []
-            // A newly-opened window takes priority over the coarse region crop.
-            if let prefer = preferRect,
-               let m = await visionDetector.findLabelScored(label, in: image, on: screen, cropAXRect: prefer) {
-                matches.append(m)
-            }
-            if let m = await visionDetector.findLabelScored(label, in: image, on: screen, region: region) {
-                matches.append(m)
-            }
-            if region != .fullScreen,
-               let m = await visionDetector.findLabelScored(label, in: image, on: screen, region: .fullScreen) {
-                matches.append(m)
+            if let restrict = restrictRect {
+                // WEB-CONTENT step: the web frame is the ONLY valid area. Do NOT
+                // also scan the region / full screen — that's how a browser's
+                // native menu-bar "View" (y=16) outscored the in-page Sheets
+                // "View" and hijacked the dot. Chrome is off-limits here.
+                if let m = await visionDetector.findLabelScored(label, in: image, on: screen, cropAXRect: restrict) {
+                    matches.append(m)
+                }
+            } else {
+                // A newly-opened window takes priority over the coarse region crop.
+                if let prefer = preferRect,
+                   let m = await visionDetector.findLabelScored(label, in: image, on: screen, cropAXRect: prefer) {
+                    matches.append(m)
+                }
+                if let m = await visionDetector.findLabelScored(label, in: image, on: screen, region: region) {
+                    matches.append(m)
+                }
+                if region != .fullScreen,
+                   let m = await visionDetector.findLabelScored(label, in: image, on: screen, region: .fullScreen) {
+                    matches.append(m)
+                }
             }
             for m in matches {
                 let better = bestOCR == nil
