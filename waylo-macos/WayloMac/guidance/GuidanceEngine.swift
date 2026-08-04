@@ -62,6 +62,11 @@ final class GuidanceEngine: ObservableObject {
     private var keyObserverId: UUID?
     /// Current target in AX global coords (for click-to-advance).
     private var currentTargetAX: CGPoint?
+    /// The screenshot used to locate the CURRENT step, kept so that when the
+    /// user clicks the real icon (correcting us) we can crop its pixels from the
+    /// BEFORE image — the icon is often gone from the after-screen (a deleted
+    /// email's trash icon) — and remember them (IconMemory) for free next time.
+    private var lastStepCapture: ScreenCapturer.Capture?
     /// How close (in points) a click must be to the dot to count as a hit.
     private let clickToleranceAX: CGFloat = 60
     /// Bumped every time we (re)enter a step so a stale async locate can bail out.
@@ -499,6 +504,7 @@ final class GuidanceEngine: ObservableObject {
             return
         }
         var capture = firstCapture
+        lastStepCapture = capture   // BEFORE image, for learning icon pixels from a correcting click
         NSLog("[Waylo] locate: captured screen %dx%d, resolving step %d", capture.image.width, capture.image.height, currentStepIndex + 1)
         guard token == locateToken, isRunning else { return }
 
@@ -550,6 +556,7 @@ final class GuidanceEngine: ObservableObject {
             if let fresh = await ScreenCapturer.shared.captureActiveScreen() {
                 guard token == locateToken, isRunning else { return }
                 capture = fresh
+                lastStepCapture = capture
                 resolution = await CoordinateResolver.shared.resolve(
                     capture: capture,
                     targetLabel: step.targetLabel,
@@ -1693,6 +1700,14 @@ final class GuidanceEngine: ObservableObject {
                                                  stepDescription: step.labelCacheKey,
                                                  axLabel: label)
             }
+            // 1b. ICON PIXELS: SigLIP can't name tiny icons, so a text label is
+            //     useless for an icon target. Instead remember the clicked
+            //     icon's PIXELS (from the BEFORE image — it may be gone now) so
+            //     next run recognises it for free via perceptual hash. This is
+            //     how Waylo learns an icon it could never name.
+            if step.targetType == .icon || step.targetLabel.isEmpty {
+                self.learnIconPixels(at: clickAX, step: step, element: element)
+            }
             // 2. Analytics: a user_correction event carrying the true target.
             var corrected: [String: Any] = ["x": Int(clickAX.x), "y": Int(clickAX.y)]
             if let el = element {
@@ -1714,6 +1729,38 @@ final class GuidanceEngine: ObservableObject {
             self.currentTargetAX = clickAX
             self.advanceAfterClick(stepIndex: stepIndex)
         }
+    }
+
+    /// Crop the icon the user just clicked out of the step's BEFORE screenshot
+    /// and remember its pixels (IconMemory). Keyed by the step's icon concept so
+    /// the next run's YOLO boxes are pixel-matched for free — no SigLIP, no
+    /// Gemini. The before-image matters: the icon is often gone after the click
+    /// (a deleted email's trash icon), so the live screen can't be used.
+    private func learnIconPixels(at clickAX: CGPoint, step: Step, element: AXElementInfo?) {
+        guard let capture = lastStepCapture else { return }
+        let screen = capture.screen
+        guard screen.frame.width > 1, screen.frame.height > 1 else { return }
+
+        // AX-global point → normalized (0–1) in the captured image (top-left).
+        let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
+        let nx = (clickAX.x - screen.frame.minX) / screen.frame.width
+        let ny = (clickAX.y - axTop) / screen.frame.height
+        guard (0...1).contains(nx), (0...1).contains(ny) else { return }
+
+        // Crop the clicked element's box when it's icon-sized, else a ~46pt box
+        // centred on the click (icons are small; a big AX container would hash
+        // the whole toolbar, not the glyph).
+        var halfW = 23.0 / Double(screen.frame.width)
+        var halfH = 23.0 / Double(screen.frame.height)
+        if let f = element?.frame, f.width <= 64, f.height <= 64, f.width > 6, f.height > 6 {
+            halfW = Double(f.width) / 2 / Double(screen.frame.width)
+            halfH = Double(f.height) / 2 / Double(screen.frame.height)
+        }
+        guard let crop = capture.image.cropNormalized(x: Double(nx) - halfW, y: Double(ny) - halfH,
+                                                      w: halfW * 2, h: halfH * 2) else { return }
+        let concept = step.targetLabel.isEmpty ? step.elementDescription : step.targetLabel
+        IconMemory.shared.remember(crop: crop, app: TargetAppTracker.shared.targetName, concept: concept)
+        DebugLogger.log("CORRECT", "learned ICON PIXELS for '\(concept)' from the click (free next time)")
     }
 
     /// Shared "click landed → move on" handler. Shows an immediate spinner at
