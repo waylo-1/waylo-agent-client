@@ -357,8 +357,22 @@ final class YOLODetector {
             boxes.append(f)
         }
         guard boxes.count >= 2 else { return nil }   // a real row, not one stray box
-        var region = boxes[0]
-        for b in boxes.dropFirst() { region = region.union(b) }
+        // Keep only the CONTIGUOUS run of icons out from the anchor — stop at the
+        // first big horizontal gap so we box the actual toolbar, not far-flung
+        // page elements that happen to share the row (that's why the paperclip
+        // square spanned 588px to the screen edge).
+        let maxGap: CGFloat = 64
+        let ordered = side == "left" ? boxes.sorted { $0.maxX > $1.maxX }   // right→left from anchor
+                                     : boxes.sorted { $0.minX < $1.minX }   // left→right from anchor
+        var kept = [ordered[0]]
+        for b in ordered.dropFirst() {
+            let gap = side == "left" ? (kept.last!.minX - b.maxX) : (b.minX - kept.last!.maxX)
+            if gap > maxGap { break }
+            kept.append(b)
+        }
+        guard kept.count >= 2 else { return nil }
+        var region = kept[0]
+        for b in kept.dropFirst() { region = region.union(b) }
         // A toolbar is a short horizontal strip; if the union is tall it's not a
         // single row (bad cluster) — bail to Gemini rather than box a big area.
         guard region.height <= 70 else { return nil }

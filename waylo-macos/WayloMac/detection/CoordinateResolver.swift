@@ -170,6 +170,19 @@ final class CoordinateResolver {
                 DebugLogger.log("RESOLVE", "L0 match '\(element.title)' covers only PART of '\(candidate)' — rejecting (partial word match)")
                 continue
             }
+            // A target that is ONLY stop words ("To", "A", "Of") yields no
+            // keywords, so the guards above can't fire and it would match ANY
+            // named element — Gmail's "To" field matched unnamed left-nav
+            // buttons and showed 4 badges on the far side of the screen. Require
+            // the element's own VISIBLE label to actually contain the word.
+            if words.isEmpty {
+                let label = [element.title, element.description, element.helpText]
+                    .joined(separator: " ").lowercased()
+                if !label.contains(candidate.lowercased()) {
+                    DebugLogger.log("RESOLVE", "stop-word target '\(candidate)' not in label '\(element.title.isEmpty ? element.role : element.title)' — rejecting (would guess wrong)")
+                    continue
+                }
+            }
             // Single-word targets ('Red', 'Save') must ALSO appear in the label —
             // an element named something else entirely is a different control.
             if words.count == 1, let w = words.first, !hay.contains(w) {
@@ -393,7 +406,16 @@ final class CoordinateResolver {
         // point is to TEACH, and we can't be wrong. Returns nil if there's no
         // usable container (then the caller does the plain spoken describe).
         func approximateFrom(_ r: NovaVisionFallback.Result) -> Resolution? {
-            guard var frame = r.containerFrame, frame.width > 8, frame.height > 8 else { return nil }
+            guard var frame = r.containerFrame else { return nil }
+            // A real GROUP (toolbar/panel) is sizeable. A tiny container is a
+            // single control Gemini named in passing — e.g. when the page hadn't
+            // loaded it returned the 39x38 Gmail bookmark and a "open Gmail
+            // first" hint; drawing on that pointed the user back at the bookmark.
+            // Require a genuine region, else fall through (recovery will retry).
+            guard max(frame.width, frame.height) >= 120, frame.width * frame.height >= 10_000 else {
+                DebugLogger.log("RESOLVE", "container \(Int(frame.width))x\(Int(frame.height)) too small to be a real group — skipping region+describe")
+                return nil
+            }
             if let wf = webContentFrame {
                 guard wf.insetBy(dx: -20, dy: -20).intersects(frame) else { return nil }
                 let clipped = frame.intersection(wf)
