@@ -329,30 +329,31 @@ final class CoordinateResolver {
         }
 
         // --- Layer 2.5: Dual-model YOLO (OmniParser + Screen2AX) -----------
-        // For ICON / logo targets (the planner marks these). YOLO locates icons
-        // that have no readable text; text targets skip it and go to Nova.
-        // WEB icons SKIP YOLO: its SigLIP match on ~30px browser-toolbar glyphs
-        // is unreliable (it confidently returned Gmail's formatting 'A' for the
-        // paperclip, ~10s, and short-circuited the far better Gemini layer). For
-        // web icons we go straight to Gemini, which also yields a container+hint.
-        if (targetType == .icon || targetLabel.isEmpty) && webContentFrame == nil {
-            DebugLogger.log("PIPELINE", "icon target → trying L2.5 YOLO (query='\(visionQuery)')")
+        // For ICON / logo targets (the planner marks these). YOLO runs on our own
+        // box — FREE — so it's always the first icon attempt, web included. But
+        // on a web TOOLBAR every glyph is an AXImage, so SigLIP's naming is shaky
+        // (it returned Gmail's formatting 'A' for the paperclip). `strictWebIcon`
+        // raises the bar to ACCEPT a web match — a real semantic winner only, no
+        // class-match/single-candidate freebies — so a shaky web match defers to
+        // Gemini (paid) instead of pointing wrong. Easy web icons still resolve
+        // free; only the genuinely-ambiguous ones cost a Gemini call.
+        if targetType == .icon || targetLabel.isEmpty {
+            DebugLogger.log("PIPELINE", "icon target → trying L2.5 YOLO (query='\(visionQuery)'\(webContentFrame != nil ? ", strict web" : ""))")
             if let detection = await YOLODetector.shared.detect(
                 capture: capture,
                 targetLabel: visionQuery,
                 elementDescription: elementDescription,
                 screenRegion: screenRegion,
                 stepInstruction: stepInstruction,
-                restrictAXRect: webContentFrame
+                restrictAXRect: webContentFrame,
+                strictWebIcon: webContentFrame != nil
             ) {
                 DebugLogger.log("PIPELINE", "L2.5 HIT at (\(Int(detection.point.x)),\(Int(detection.point.y)))")
                 return Resolution(axPoint: detection.point, updatedInstruction: "", targetFrame: detection.frame)
             }
-            DebugLogger.log("PIPELINE", "L2.5 miss → falling through to L3 Nova")
-        } else if (targetType == .icon || targetLabel.isEmpty) && webContentFrame != nil {
-            DebugLogger.log("PIPELINE", "L2.5 skipped (WEB icon — SigLIP unreliable on tiny glyphs) → L3 Gemini")
+            DebugLogger.log("PIPELINE", "L2.5 miss → falling through to L3 Gemini")
         } else {
-            DebugLogger.log("PIPELINE", "L2.5 skipped (text target '\(targetLabel)') → L3 Nova")
+            DebugLogger.log("PIPELINE", "L2.5 skipped (text target '\(targetLabel)') → L3 Gemini")
         }
 
         // --- Layer 3: Nova 2 Lite fallback ---------------------------------

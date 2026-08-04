@@ -89,13 +89,21 @@ final class YOLODetector {
     /// one Nova call, a false accept points the user at the wrong thing.
     private static let minMatchConf = 0.10
 
+    /// Stricter absolute SigLIP confidence required to accept a match on a WEB
+    /// toolbar icon (strictWebIcon). Higher than minMatchConf because tiny
+    /// packed browser glyphs produce confident-looking but wrong matches; below
+    /// this we defer to Gemini rather than point wrong. Tuned conservatively —
+    /// a miss costs one Gemini call, a false accept teaches the wrong thing.
+    private static let strictWebMinConf = 0.22
+
     func detect(
         capture: ScreenCapturer.Capture,
         targetLabel: String,
         elementDescription: String,
         screenRegion: ScreenRegion,
         stepInstruction: String,
-        restrictAXRect: CGRect? = nil
+        restrictAXRect: CGRect? = nil,
+        strictWebIcon: Bool = false
     ) async -> Detection? {
         let image = capture.image
         let screen = capture.screen
@@ -184,7 +192,8 @@ final class YOLODetector {
             elementDescription: elementDescription,
             screenRegion: screenRegion,
             screen: screen,
-            restrictTo: dockOnly ?? restrictAXRect
+            restrictTo: dockOnly ?? restrictAXRect,
+            strictWebIcon: strictWebIcon
         ) else {
             DebugLogger.log("L2.5", "no element matched semantic criteria, falling through to L3")
             DebugState.shared.yoloResult = "MISS (no match)"
@@ -210,7 +219,8 @@ final class YOLODetector {
         elementDescription: String,
         screenRegion: ScreenRegion,
         screen: NSScreen,
-        restrictTo: CGRect? = nil
+        restrictTo: CGRect? = nil,
+        strictWebIcon: Bool = false
     ) -> YOLOCandidate? {
         let expectedAXClass = inferExpectedAXClass(
             targetLabel: targetLabel.lowercased(),
@@ -275,9 +285,23 @@ final class YOLODetector {
         let classMatched = expectedAXClass != nil
             && winner.element.axClass == expectedAXClass
         let unambiguous = candidates.count == 1 && winner.element.confidence >= 0.5
-        guard semanticWinner || classMatched || unambiguous else {
-            DebugLogger.log("L2.5", "best candidate rejected (matchScore=\(String(format: "%.2f", ms)), no class match, \(candidates.count) candidates) — deferring to L3 Nova")
-            return nil
+
+        // WEB TOOLBAR: every glyph is an AXImage packed side by side, so
+        // class-match and single-candidate mean nothing, and SigLIP naming of a
+        // 30px glyph is shaky. Demand a REAL semantic winner with genuine
+        // absolute confidence; anything less defers to Gemini (paid, accurate,
+        // and it also returns the container+hint for the region fallback). This
+        // keeps YOLO free-first on the web without letting it point wrong.
+        if strictWebIcon {
+            guard semanticWinner, conf >= Self.strictWebMinConf else {
+                DebugLogger.log("L2.5", "web icon NOT a confident semantic winner (ms=\(String(format: "%.2f", ms)) conf=\(String(format: "%.3f", conf))) → defer to Gemini")
+                return nil
+            }
+        } else {
+            guard semanticWinner || classMatched || unambiguous else {
+                DebugLogger.log("L2.5", "best candidate rejected (matchScore=\(String(format: "%.2f", ms)), no class match, \(candidates.count) candidates) — deferring to L3 Nova")
+                return nil
+            }
         }
         if semanticWinner {
             DebugLogger.log("L2.5", "semantic winner: score=\(String(format: "%.2f", ms)) (runner-up \(String(format: "%.2f", runnerUpMS))) conf=\(String(format: "%.3f", conf))")
