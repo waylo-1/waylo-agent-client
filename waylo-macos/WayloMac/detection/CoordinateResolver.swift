@@ -346,8 +346,21 @@ final class CoordinateResolver {
                 screenRegion: screenRegion,
                 stepInstruction: stepInstruction,
                 restrictAXRect: webContentFrame,
-                strictWebIcon: webContentFrame != nil
+                strictWebIcon: webContentFrame != nil,
+                anchorPoint: anchorInfo?.point,
+                anchorPosition: anchorInfo?.position ?? ""
             ) {
+                if detection.approximate {
+                    // YOLO couldn't NAME the glyph but localized its toolbar row
+                    // (free). Square over it + describe using the planner's own
+                    // words — no Gemini call needed.
+                    let hint = Self.regionLocatorHint(elementDescription: elementDescription,
+                                                      findDescription: findDescription,
+                                                      anchorText: anchorText, anchorPosition: anchorPosition)
+                    DebugLogger.log("PIPELINE", "L2.5 REGION (toolbar cluster, free) → square + describe: '\(hint)'")
+                    return Resolution(axPoint: detection.point, updatedInstruction: "",
+                                      targetFrame: detection.frame, approximate: true, regionHint: hint)
+                }
                 DebugLogger.log("PIPELINE", "L2.5 HIT at (\(Int(detection.point.x)),\(Int(detection.point.y)))")
                 return Resolution(axPoint: detection.point, updatedInstruction: "", targetFrame: detection.frame)
             }
@@ -777,6 +790,20 @@ final class CoordinateResolver {
         // Drop a leading article.
         s = s.replacingOccurrences(of: #"(?i)^\s*(the|a|an)\s+"#, with: "", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A short spoken locator for the region+describe fallback, built from the
+    /// planner's OWN description + anchor — no model call. "paperclip attach
+    /// icon" + anchor "Send"/"right" → "the paperclip attach icon, to the right
+    /// of Send". The engine frames it ("… — it's in the highlighted area").
+    static func regionLocatorHint(elementDescription: String, findDescription: String,
+                                  anchorText: String, anchorPosition: String) -> String {
+        let obj = conciseObjectPhrase(elementDescription.isEmpty ? findDescription : elementDescription)
+        let thing = obj.isEmpty ? "the button you need" : obj
+        if !anchorText.isEmpty, !anchorPosition.isEmpty {
+            return "\(thing), to the \(anchorPosition) of \(anchorText)"
+        }
+        return thing
     }
 
     /// True when the matched element's label shares at least one real

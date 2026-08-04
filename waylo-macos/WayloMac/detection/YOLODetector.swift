@@ -79,6 +79,11 @@ final class YOLODetector {
     struct Detection {
         let point: CGPoint
         let frame: CGRect
+        /// True when `frame` is the TOOLBAR CLUSTER (not the exact icon): YOLO
+        /// couldn't confidently NAME the glyph but localized the icon row near
+        /// the anchor. The caller highlights the whole area and describes the
+        /// icon — free, and never a wrong dot.
+        var approximate: Bool = false
     }
 
     /// Entry point. Returns the best matching element, or nil so
@@ -103,7 +108,9 @@ final class YOLODetector {
         screenRegion: ScreenRegion,
         stepInstruction: String,
         restrictAXRect: CGRect? = nil,
-        strictWebIcon: Bool = false
+        strictWebIcon: Bool = false,
+        anchorPoint: CGPoint? = nil,
+        anchorPosition: String = ""
     ) async -> Detection? {
         let image = capture.image
         let screen = capture.screen
@@ -195,6 +202,19 @@ final class YOLODetector {
             restrictTo: dockOnly ?? restrictAXRect,
             strictWebIcon: strictWebIcon
         ) else {
+            // Strict web naming failed — but YOLO still DETECTED the toolbar's
+            // icon boxes. Localize that cluster near the anchor (free) so the
+            // caller can square-over-toolbar + describe, no Gemini call. This is
+            // the whole point: YOLO already knows WHERE the row is, it just
+            // can't reliably NAME the 30px glyph.
+            if strictWebIcon, let anchor = anchorPoint,
+               let region = toolbarRegionNearAnchor(response.elements, anchor: anchor,
+                                                    anchorPosition: anchorPosition, screen: screen,
+                                                    restrict: restrictAXRect) {
+                DebugLogger.log("L2.5", "named match failed → localized toolbar cluster near anchor: region \(Int(region.width))x\(Int(region.height)) (free, no Gemini)")
+                DebugState.shared.yoloResult = "REGION (cluster)"
+                return Detection(point: CGPoint(x: region.midX, y: region.midY), frame: region, approximate: true)
+            }
             DebugLogger.log("L2.5", "no element matched semantic criteria, falling through to L3")
             DebugState.shared.yoloResult = "MISS (no match)"
             return nil
@@ -307,6 +327,42 @@ final class YOLODetector {
             DebugLogger.log("L2.5", "semantic winner: score=\(String(format: "%.2f", ms)) (runner-up \(String(format: "%.2f", runnerUpMS))) conf=\(String(format: "%.3f", conf))")
         }
         return winner
+    }
+
+    /// The bounding rect of the ICON ROW (toolbar) that contains the target,
+    /// derived from YOLO's own detected boxes near the anchor — no Gemini. We
+    /// take the small, icon-sized boxes that sit in the same horizontal band as
+    /// the anchor and on the requested side of it, then union them. The anchor
+    /// landmark itself is EXCLUDED (it may be a destructive control like Send —
+    /// the highlighted, click-to-advance area must not contain it). nil when
+    /// there's no clear cluster (→ caller falls through to Gemini).
+    private func toolbarRegionNearAnchor(_ elements: [YOLOElement], anchor: CGPoint,
+                                         anchorPosition: String, screen: NSScreen,
+                                         restrict: CGRect?) -> CGRect? {
+        let bandTol: CGFloat = 26          // "same row" as the anchor
+        let side = anchorPosition.lowercased()
+        var boxes: [CGRect] = []
+        for el in elements {
+            let f = normalizedToAXRect(x: el.x, y: el.y, w: el.w, h: el.h, screen: screen)
+            // Icon-sized only — skip big content/text boxes.
+            guard f.width >= 8, f.height >= 8, f.width <= 90, f.height <= 90 else { continue }
+            if let r = restrict, !r.insetBy(dx: -8, dy: -8).intersects(f) { continue }
+            guard abs(f.midY - anchor.y) <= bandTol else { continue }          // same row
+            if f.insetBy(dx: -4, dy: -4).contains(anchor) { continue }          // not the landmark
+            switch side {                                                       // correct side
+            case "right": if f.midX < anchor.x { continue }
+            case "left":  if f.midX > anchor.x { continue }
+            default: break
+            }
+            boxes.append(f)
+        }
+        guard boxes.count >= 2 else { return nil }   // a real row, not one stray box
+        var region = boxes[0]
+        for b in boxes.dropFirst() { region = region.union(b) }
+        // A toolbar is a short horizontal strip; if the union is tall it's not a
+        // single row (bad cluster) — bail to Gemini rather than box a big area.
+        guard region.height <= 70 else { return nil }
+        return region.insetBy(dx: -10, dy: -8)
     }
 
     // MARK: - Coordinate conversion (YOLO normalized → AX global)
