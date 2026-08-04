@@ -405,6 +405,18 @@ final class CoordinateResolver {
             screen: screen,
             ocrContext: ocrContext
         ) {
+            // WEB TOOLBAR ICON — coarse-but-safe FIRST fallback. Once the free
+            // layers (AX, strict YOLO) miss a small in-page icon like Gmail's
+            // paperclip, do NOT try to snipe the ~30px target with a precise dot.
+            // Highlight the whole toolbar Gemini identified and describe where
+            // the icon is ("the paperclip, right of the underlined A"). The user
+            // finds it; the box is never wrong; and it teaches. Only when Gemini
+            // gives no container do we fall through to precise pointing below.
+            if webContentFrame != nil, (targetType == .icon || targetLabel.isEmpty),
+               let approx = approximateFrom(result) {
+                DebugLogger.log("RESOLVE", "web icon → region-highlight + describe (first fallback, not a precise dot)")
+                return approx
+            }
             // WEB-CONTENT guard: a browser page target must resolve INSIDE the
             // page. If Nova aimed at browser chrome (the reload glyph, an
             // extension button, the bookmark star that collides with an in-page
