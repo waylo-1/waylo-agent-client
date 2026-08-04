@@ -45,10 +45,16 @@ enum AppLauncher {
         // The Trash / Bin, when the step OPENS it. "Empty Bin"/"Empty Trash" is
         // a button inside the window — check the targetLabel, not the whole
         // sentence, or the task "empty the trash" disables its own first step.
+        //
+        // NEVER the macOS Finder Bin when the user is in a BROWSER / web app:
+        // there "trash"/"bin"/"delete" means the in-PAGE icon (Gmail's toolbar
+        // trash), not the desktop Trash. Without this, "delete an email in
+        // Gmail" launched Finder's Bin instead of pointing at Gmail's trash icon.
         let label = step.targetLabel.lowercased()
         let targetIsEmptyButton = label.hasPrefix("empty")
         let mentionsTrash = text.contains("trash") || text.contains("bin")
         if mentionsTrash, !wantsContextMenu, !targetIsEmptyButton,
+           !TargetAppTracker.shared.isBrowser,
            text.contains("dock") || text.contains("open") || text.contains("click") {
             return .trash
         }
