@@ -399,7 +399,10 @@ final class WayloAPIClient {
         let label = obj["label"] as? String
         let confidence = (obj["confidence"] as? Double)
             ?? (obj["confidence"] as? NSNumber)?.doubleValue
-        return NovaVisionResponse(found: found, bbox: bbox, label: label, confidence: confidence)
+        let container = (obj["container"] as? [Double])
+        let hint = (obj["hint"] as? String) ?? ""
+        return NovaVisionResponse(found: found, bbox: bbox, label: label,
+                                  confidence: confidence, container: container, hint: hint)
     }
 
     // MARK: - POST /plan/learn (remember a corrected plan)
@@ -622,6 +625,12 @@ struct NovaVisionResponse {
     let bbox: [Double]?   // [xMin, yMin, xMax, yMax] on a 0–1000 scale
     let label: String?
     var confidence: Double? = nil  // Nova's self-reported 0–1 confidence
+    /// Bounding box (0–1000) of the CONTAINING group (toolbar/panel) — present
+    /// even when the exact box is missing. Powers the region-highlight fallback.
+    var container: [Double]? = nil
+    /// One spoken sentence locating the target within its group ("the paperclip,
+    /// right of the underlined A, just left of Send").
+    var hint: String = ""
 }
 
 struct VisionFallbackResponse: Codable {

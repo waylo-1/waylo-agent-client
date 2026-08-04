@@ -25,6 +25,13 @@ final class NovaVisionFallback {
         /// element — low means "I'm guessing", so the caller should describe
         /// rather than plant a dot on a wrong icon.
         var confidence: Double? = nil
+        /// AX-global rect of the CONTAINING group (toolbar/panel) the target
+        /// sits in — present even when the exact box is missing/low-confidence.
+        /// The resolver highlights THIS (a big box it's sure about) and speaks
+        /// `hint` when it can't pin the icon precisely.
+        var containerFrame: CGRect? = nil
+        /// A spoken sentence locating the target within its group.
+        var hint: String = ""
     }
 
     /// `image`/`screen`: the captured display image and its screen.
@@ -58,9 +65,19 @@ final class NovaVisionFallback {
                 stepInstruction: stepInstruction,
                 ocrContext: ocrContext
             )
+            // Container box + hint arrive independently of the tight box (Gemini
+            // returns them even when it can't pin the icon) — compute the AX rect
+            // once so both the found and not-found paths can surface them.
+            let containerFrame = (response.container?.count == 4)
+                ? bboxToAXRect(response.container!, screen: screen) : nil
+            let hint = response.hint
+            if containerFrame != nil {
+                DebugLogger.log("NOVA", "container present\(hint.isEmpty ? "" : " + hint: '\(hint)'")")
+            }
             guard response.found, let bbox = response.bbox, bbox.count == 4 else {
                 DebugLogger.log("NOVA", "not found (found=\(response.found))")
-                return Result(axPoint: nil, axFrame: nil, updatedInstruction: "", updatedFindDescription: "", novaLabel: "", rawBBox: nil)
+                return Result(axPoint: nil, axFrame: nil, updatedInstruction: "", updatedFindDescription: "",
+                              novaLabel: "", rawBBox: nil, containerFrame: containerFrame, hint: hint)
             }
             DebugLogger.log("NOVA", "raw bbox=[\(bbox.map { Int($0) }.map(String.init).joined(separator: ","))] (0-1000)")
             let axPoint = bboxToAX(bbox, screen: screen)
@@ -71,7 +88,7 @@ final class NovaVisionFallback {
             if let c = response.confidence {
                 DebugLogger.log("NOVA", "confidence=\(String(format: "%.2f", c))")
             }
-            return Result(axPoint: axPoint, axFrame: axFrame, updatedInstruction: "", updatedFindDescription: "", novaLabel: resolvedLabel, rawBBox: bbox, confidence: response.confidence)
+            return Result(axPoint: axPoint, axFrame: axFrame, updatedInstruction: "", updatedFindDescription: "", novaLabel: resolvedLabel, rawBBox: bbox, confidence: response.confidence, containerFrame: containerFrame, hint: hint)
         } catch {
             print("[NovaVisionFallback] request failed: \(error)")
             DebugLogger.log("NOVA", "request failed: \(error.localizedDescription)")

@@ -41,6 +41,12 @@ final class CoordinateResolver {
         /// places). Non-empty means the resolver refuses to guess — the engine
         /// shows numbered badges and lets the user pick.
         var alternates: [CGPoint] = []
+        /// APPROXIMATE (region) result: we couldn't pin the exact icon, but we
+        /// know the CONTAINING group. `targetFrame` is that group's box (large)
+        /// and `regionHint` is a spoken locator. The engine highlights the whole
+        /// area and talks the user onto the target instead of guessing a point.
+        var approximate: Bool = false
+        var regionHint: String = ""
     }
 
     func resolve(
@@ -325,7 +331,11 @@ final class CoordinateResolver {
         // --- Layer 2.5: Dual-model YOLO (OmniParser + Screen2AX) -----------
         // For ICON / logo targets (the planner marks these). YOLO locates icons
         // that have no readable text; text targets skip it and go to Nova.
-        if targetType == .icon || targetLabel.isEmpty {
+        // WEB icons SKIP YOLO: its SigLIP match on ~30px browser-toolbar glyphs
+        // is unreliable (it confidently returned Gmail's formatting 'A' for the
+        // paperclip, ~10s, and short-circuited the far better Gemini layer). For
+        // web icons we go straight to Gemini, which also yields a container+hint.
+        if (targetType == .icon || targetLabel.isEmpty) && webContentFrame == nil {
             DebugLogger.log("PIPELINE", "icon target → trying L2.5 YOLO (query='\(visionQuery)')")
             if let detection = await YOLODetector.shared.detect(
                 capture: capture,
@@ -339,6 +349,8 @@ final class CoordinateResolver {
                 return Resolution(axPoint: detection.point, updatedInstruction: "", targetFrame: detection.frame)
             }
             DebugLogger.log("PIPELINE", "L2.5 miss → falling through to L3 Nova")
+        } else if (targetType == .icon || targetLabel.isEmpty) && webContentFrame != nil {
+            DebugLogger.log("PIPELINE", "L2.5 skipped (WEB icon — SigLIP unreliable on tiny glyphs) → L3 Gemini")
         } else {
             DebugLogger.log("PIPELINE", "L2.5 skipped (text target '\(targetLabel)') → L3 Nova")
         }
@@ -360,6 +372,27 @@ final class CoordinateResolver {
         }
         // Local OCR words as grounding context (~80ms, only on this paid path).
         let ocrContext = await visionDetector.visibleTextSummary(in: image)
+
+        // When we CAN'T pin the exact icon, fall back to the group Gemini IS
+        // sure about: highlight the whole toolbar/panel and speak the locator
+        // hint. Coarsely-right + descriptive beats a confident wrong dot — the
+        // point is to TEACH, and we can't be wrong. Returns nil if there's no
+        // usable container (then the caller does the plain spoken describe).
+        func approximateFrom(_ r: NovaVisionFallback.Result) -> Resolution? {
+            guard var frame = r.containerFrame, frame.width > 8, frame.height > 8 else { return nil }
+            if let wf = webContentFrame {
+                guard wf.insetBy(dx: -20, dy: -20).intersects(frame) else { return nil }
+                let clipped = frame.intersection(wf)
+                if !clipped.isNull, clipped.width > 8, clipped.height > 8 { frame = clipped }
+            }
+            DebugLogger.log("RESOLVE", "APPROXIMATE region \(Int(frame.width))x\(Int(frame.height)) hint='\(r.hint)' — highlight area + describe")
+            DebugLogger.logResolution("region+describe", found: true, point: CGPoint(x: frame.midX, y: frame.midY), label: r.hint)
+            DebugState.shared.update(layer: "region+describe")
+            return Resolution(axPoint: CGPoint(x: frame.midX, y: frame.midY),
+                              updatedInstruction: "", targetFrame: frame,
+                              approximate: true, regionHint: r.hint)
+        }
+
         if let result = await novaFallback.findElement(
             targetLabel: targetLabel,
             elementDescription: novaDescription,
@@ -377,10 +410,10 @@ final class CoordinateResolver {
             // star), that's wrong — describe instead of pointing there.
             if let wf = webContentFrame, let point = result.axPoint,
                !wf.insetBy(dx: -8, dy: -8).contains(point) {
-                DebugLogger.log("RESOLVE", "L3 Nova point (\(Int(point.x)),\(Int(point.y))) is OUTSIDE the web area — browser chrome, not the target → describing")
+                DebugLogger.log("RESOLVE", "L3 Nova point (\(Int(point.x)),\(Int(point.y))) is OUTSIDE the web area — browser chrome, not the target → region/describe")
                 DebugLogger.logResolution("L3-Nova", found: false, point: point, label: "off-page \(targetLabel)")
-                DebugState.shared.update(layer: "L3 Nova (off-page → describe)")
-                return nil
+                DebugState.shared.update(layer: "L3 Nova (off-page)")
+                return approximateFrom(result)
             }
             // Nova low-confidence guard: if Nova admits it's guessing at the
             // element (common for tiny unlabelled icons in AX-hostile apps like
@@ -388,10 +421,11 @@ final class CoordinateResolver {
             // return nil so the engine describes the target and lets the user
             // click. "Don't point when unsure" > a confident wrong dot.
             if let point = result.axPoint, let conf = result.confidence, conf < Self.novaMinConfidence {
-                DebugLogger.log("RESOLVE", "L3 Nova REJECTED: confidence \(String(format: "%.2f", conf)) < \(Self.novaMinConfidence) — describing instead of pointing at a guess")
+                DebugLogger.log("RESOLVE", "L3 Nova REJECTED: confidence \(String(format: "%.2f", conf)) < \(Self.novaMinConfidence) — region/describe instead of pointing at a guess")
                 DebugLogger.logResolution("L3-Nova", found: false, point: point, label: "low-conf \(targetLabel)")
-                DebugState.shared.update(layer: "L3 Nova (low-conf → describe)")
-                return nil
+                DebugState.shared.update(layer: "L3 Nova (low-conf)")
+                // Prefer the region highlight + hint over a bare spoken describe.
+                return approximateFrom(result)
             }
             if let point = result.axPoint {
                 print("[Resolver] L3 hit \(point)")
@@ -446,6 +480,10 @@ final class CoordinateResolver {
                     return Resolution(axPoint: point, updatedInstruction: result.updatedInstruction)
                 }
             }
+            // Couldn't pin the icon at all — but if Gemini gave the containing
+            // group + a locator, highlight that area and talk the user onto it
+            // rather than dead-ending.
+            if let approx = approximateFrom(result) { return approx }
         }
 
         print("[Resolver] all layers failed for '\(targetLabel)'")

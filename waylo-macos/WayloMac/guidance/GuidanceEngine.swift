@@ -573,6 +573,14 @@ final class GuidanceEngine: ObservableObject {
         }
 
         if let resolution = resolution {
+            // APPROXIMATE (region) result: we couldn't pin the exact icon but we
+            // know the toolbar/panel it's in. Highlight that whole area and speak
+            // the locator hint — coarsely-right + descriptive, never a wrong dot.
+            if resolution.approximate {
+                presentApproximateRegion(resolution, step: step)
+                return
+            }
+
             // ALREADY DONE? If this step opens/shows/selects a toggle that is
             // already ON (e.g. Pages' Format panel is already open), clicking
             // it would turn it back OFF. Skip straight to the next step.
@@ -810,6 +818,42 @@ final class GuidanceEngine: ObservableObject {
         // Advance when the user clicks the thing themselves…
         installAnyClickAdvance(forStep: currentStepIndex, bufferSeconds: 2.0)
         // …or when they press ⌃⌥⌘N to say "found it, continue".
+        installManualAdvanceHotkey(forStep: currentStepIndex)
+    }
+
+    /// APPROXIMATE result: we know the toolbar/panel but not the exact icon.
+    /// Highlight the whole containing area (a big box we're confident about) and
+    /// speak Gemini's locator hint, so the user's eye finds the icon and their
+    /// click inside the area advances. Coarsely-right + descriptive beats a
+    /// confident wrong dot — the goal is to TEACH, and we can't be wrong.
+    private func presentApproximateRegion(_ resolution: CoordinateResolver.Resolution, step: Step) {
+        currentTargetAX = resolution.axPoint
+        state = .showing
+
+        let what = [step.elementDescription, step.findDescription, step.instruction]
+            .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? step.instruction
+        let locator = resolution.regionHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let spoken = locator.isEmpty
+            ? "Look in the highlighted area for \(what), and click it — I'll continue."
+            : "\(locator). It's in the highlighted area — click it and I'll continue."
+
+        currentInstruction = spoken
+        statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — click it in the highlighted area"
+
+        // Highlight the CONTAINING box directly — bypasses highlightableFrame's
+        // small-control size cap, because a toolbar/panel is legitimately large.
+        if let frame = resolution.targetFrame {
+            OverlayWindowController.shared.showHighlight(axRect: frame, caption: spoken)
+        } else {
+            OverlayWindowController.shared.showDot(at: resolution.axPoint, caption: spoken)
+        }
+        Speaker.shared.speak(spoken)
+        DebugLogger.log("DESCRIBE", "approximate region — highlighting group + hint: '\(locator.isEmpty ? what : locator)'")
+
+        // A click anywhere INSIDE the highlighted area advances (that's the whole
+        // point of the region), or ⌃⌥⌘N to say "found it".
+        installClickMonitor(target: resolution.axPoint, targetRect: resolution.targetFrame,
+                            forStep: currentStepIndex, secondary: false)
         installManualAdvanceHotkey(forStep: currentStepIndex)
     }
 
@@ -1150,6 +1194,10 @@ final class GuidanceEngine: ObservableObject {
                     DebugState.shared.update(cache: "STORED \(result.visibleLabel)")
                 }
                 applyUpdatedInstruction(result.updatedInstruction)
+                if retry.approximate {
+                    presentApproximateRegion(retry, step: step)
+                    return true
+                }
                 if !retry.alternates.isEmpty {
                     presentAmbiguity(step: step, primary: retry.axPoint, alternates: retry.alternates)
                     return true
