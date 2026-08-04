@@ -319,6 +319,45 @@ final class WayloAPIClient {
         Task { _ = try? await session.data(for: request) }
     }
 
+    // MARK: - POST /pick/store, /pick/lookup (fleet-wide ambiguity pick memory)
+
+    /// Fire-and-forget: remember the user's disambiguation choice as a relative
+    /// window position, so every user's next run of this step auto-resolves.
+    func storePick(app: String, stepKey: String, relX: Double, relY: Double) {
+        guard !app.isEmpty, !stepKey.isEmpty,
+              let url = URL(string: "\(baseURL)/pick/store"),
+              let body = try? JSONSerialization.data(withJSONObject: [
+                  "app": app, "stepKey": stepKey, "relX": relX, "relY": relY
+              ]) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
+    }
+
+    /// The fleet's remembered relative pick (0–1 fractions) for a step, or nil.
+    func lookupPick(app: String, stepKey: String) async -> (relX: Double, relY: Double)? {
+        guard !app.isEmpty, !stepKey.isEmpty,
+              let url = URL(string: "\(baseURL)/pick/lookup"),
+              let body = try? JSONSerialization.data(withJSONObject: ["app": app, "stepKey": stepKey])
+        else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 4
+        request.httpBody = body
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (obj["found"] as? Bool) == true,
+              let rx = (obj["relX"] as? Double) ?? (obj["relX"] as? NSNumber)?.doubleValue,
+              let ry = (obj["relY"] as? Double) ?? (obj["relY"] as? NSNumber)?.doubleValue
+        else { return nil }
+        return (rx, ry)
+    }
+
     // MARK: - POST /ask-screen (vision Q&A about the current screen)
 
     /// Answers a free-form question using a screenshot of the current screen.

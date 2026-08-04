@@ -84,6 +84,10 @@ final class YOLODetector {
         /// the anchor. The caller highlights the whole area and describes the
         /// icon — free, and never a wrong dot.
         var approximate: Bool = false
+        /// Other locations SigLIP was ALSO confident match the target (same icon
+        /// in several places) → the engine shows numbered badges and lets the
+        /// user pick. Empty in the normal single-location case.
+        var alternates: [CGPoint] = []
     }
 
     /// Entry point. Returns the best matching element, or nil so
@@ -193,7 +197,7 @@ final class YOLODetector {
 
         // A web-content step restricts the field to the page area (dock target
         // constraint, when present, is even tighter and wins).
-        guard let best = selectBestMatch(
+        guard let (best, bestAlternates) = selectBestMatch(
             elements: response.elements,
             targetLabel: targetLabel,
             elementDescription: elementDescription,
@@ -228,7 +232,7 @@ final class YOLODetector {
         DebugLogger.logResolution("L2.5", found: true, point: best.axPoint, label: targetLabel)
         DebugState.shared.yoloResult = "HIT \(best.element.source) \(cls) \(String(format: "%.2f", best.element.confidence))"
         DebugState.shared.update(layer: "L2.5 \(best.element.source)", dot: best.axPoint)
-        return Detection(point: best.axPoint, frame: best.axFrame)
+        return Detection(point: best.axPoint, frame: best.axFrame, alternates: bestAlternates)
     }
 
     // MARK: - Semantic matching
@@ -241,7 +245,7 @@ final class YOLODetector {
         screen: NSScreen,
         restrictTo: CGRect? = nil,
         strictWebIcon: Bool = false
-    ) -> YOLOCandidate? {
+    ) -> (winner: YOLOCandidate, alternates: [CGPoint])? {
         let expectedAXClass = inferExpectedAXClass(
             targetLabel: targetLabel.lowercased(),
             elementDescription: elementDescription.lowercased()
@@ -326,7 +330,21 @@ final class YOLODetector {
         if semanticWinner {
             DebugLogger.log("L2.5", "semantic winner: score=\(String(format: "%.2f", ms)) (runner-up \(String(format: "%.2f", runnerUpMS))) conf=\(String(format: "%.3f", conf))")
         }
-        return winner
+        // SAME ICON in several places? Only when SigLIP is INDEPENDENTLY
+        // confident (absolute matchConf) about other boxes too — icon naming is
+        // noisy, so we ask the user only for genuine multi-location matches, not
+        // random near-scored boxes.
+        let alternates = candidates
+            .filter { $0.axPoint != winner.axPoint
+                      && ($0.element.matchConf ?? 0) >= 0.35
+                      && hypot($0.axPoint.x - winner.axPoint.x, $0.axPoint.y - winner.axPoint.y) >= 40 }
+            .sorted { ($0.element.matchConf ?? 0) > ($1.element.matchConf ?? 0) }
+            .prefix(3)
+            .map(\.axPoint)
+        if !alternates.isEmpty {
+            DebugLogger.log("L2.5", "icon appears at \(alternates.count + 1) confident spots — asking user")
+        }
+        return (winner, Array(alternates))
     }
 
     /// The bounding rect of the ICON ROW (toolbar) that contains the target,

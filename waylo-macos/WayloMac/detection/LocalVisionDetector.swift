@@ -97,31 +97,77 @@ final class LocalVisionDetector {
             box = rectObs.boundingBox
         }
 
-        // box is normalized within the OCR (cropped) image, bottom-left origin.
+        let (result, axFrame) = axConvert(box: box, cropOriginLocal: cropOriginLocal,
+                                          cropSizeLocal: cropSizeLocal, screen: screen)
+        DebugLogger.log("OCR", String(format: "best '%@' score=%.2f cropOrigin=(%.0f,%.0f) → ax=(%.0f,%.0f)",
+            trimmed, bestScore, cropOriginLocal.x, cropOriginLocal.y, result.x, result.y))
+        return OCRMatch(point: result, score: bestScore, frame: axFrame)
+    }
+
+    /// ALL distinct on-screen locations where `targetLabel` appears at a strong
+    /// score — the input to the "same text in several places, ask the user"
+    /// ambiguity fallback. Deduped by proximity (a single label can span two
+    /// observations). Returns [] when fewer than 2 strong, distinct hits (the
+    /// normal single-location case), so callers keep their fast path.
+    func findAllLabelMatches(_ targetLabel: String, in image: CGImage, on screen: NSScreen,
+                             region: ScreenRegion = .fullScreen, minScore: Double = 0.8) async -> [OCRMatch] {
+        let trimmed = targetLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let lowerTarget = trimmed.lowercased()
+
+        let scale = screen.frame.width > 0 ? CGFloat(image.width) / screen.frame.width : 1
+        var ocrImage = image
+        var cropOriginLocal = CGPoint.zero
+        var cropSizeLocal = screen.frame.size
+        if region != .fullScreen, let local = ScreenRegionHelper.localRect(for: region, on: screen) {
+            let pixelRect = CGRect(x: local.minX * scale, y: local.minY * scale,
+                                   width: local.width * scale, height: local.height * scale)
+            let clamped = pixelRect.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            if !clamped.isEmpty, let cropped = image.cropping(to: clamped) {
+                ocrImage = cropped
+                cropOriginLocal = CGPoint(x: clamped.minX / scale, y: clamped.minY / scale)
+                cropSizeLocal = CGSize(width: clamped.width / scale, height: clamped.height / scale)
+            }
+        }
+
+        let results = await runOCRRaw(on: ocrImage)
+        var matches: [OCRMatch] = []
+        for obs in results {
+            guard let cand = obs.topCandidates(1).first else { continue }
+            let text = cand.string.lowercased().trimmingCharacters(in: .whitespaces)
+            let score = similarityScore(lowerTarget, text)
+            guard score >= minScore else { continue }
+            var box = obs.boundingBox
+            if let range = cand.string.range(of: trimmed, options: .caseInsensitive),
+               let rectObs = try? cand.boundingBox(for: range) {
+                box = rectObs.boundingBox
+            }
+            let (point, frame) = axConvert(box: box, cropOriginLocal: cropOriginLocal,
+                                           cropSizeLocal: cropSizeLocal, screen: screen)
+            // Dedup: skip a hit within 40pt of one we already have.
+            if matches.contains(where: { hypot($0.point.x - point.x, $0.point.y - point.y) < 40 }) { continue }
+            matches.append(OCRMatch(point: point, score: score, frame: frame))
+        }
+        return matches.count >= 2 ? matches : []
+    }
+
+    /// OCR bounding box (normalized, bottom-left origin, within the cropped OCR
+    /// image) → AX-global point + rect. Adds the crop origin back (the classic
+    /// crop-relative bug guard) and flips to AX's top-left origin.
+    private func axConvert(box: CGRect, cropOriginLocal: CGPoint, cropSizeLocal: CGSize,
+                           screen: NSScreen) -> (point: CGPoint, frame: CGRect) {
         let localX = box.midX * cropSizeLocal.width
         let localYFromTop = (1.0 - box.midY) * cropSizeLocal.height
-        // Add the crop origin back so coords are relative to the full screen,
-        // not the crop. This is the classic "found inside the crop but reported
-        // crop-relative" bug — guarded here by always summing cropOriginLocal.
-        let screenLocalX = cropOriginLocal.x + localX
-        let screenLocalY = cropOriginLocal.y + localYFromTop
-
-        // Screen-local (top-left) → AX global (top-left).
         let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
-        let result = CGPoint(x: screen.frame.minX + screenLocalX, y: axTop + screenLocalY)
-
-        // The matched text's full bounding rect in AX-global coords (top of the
-        // text = 1 - box.maxY in the bottom-left-origin normalized space).
-        let axFrame = CGRect(
+        let point = CGPoint(x: screen.frame.minX + cropOriginLocal.x + localX,
+                            y: axTop + cropOriginLocal.y + localYFromTop)
+        let frame = CGRect(
             x: screen.frame.minX + cropOriginLocal.x + box.minX * cropSizeLocal.width,
             y: axTop + cropOriginLocal.y + (1.0 - box.maxY) * cropSizeLocal.height,
             width: box.width * cropSizeLocal.width,
             height: box.height * cropSizeLocal.height
         )
-
-        DebugLogger.log("OCR", String(format: "best '%@' score=%.2f cropOrigin=(%.0f,%.0f) → ax=(%.0f,%.0f)",
-            trimmed, bestScore, cropOriginLocal.x, cropOriginLocal.y, result.x, result.y))
-        return OCRMatch(point: result, score: bestScore, frame: axFrame)
+        return (point, frame)
     }
 
     /// A compact comma-separated list of the text currently visible on screen

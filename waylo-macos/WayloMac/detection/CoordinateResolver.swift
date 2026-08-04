@@ -131,7 +131,8 @@ final class CoordinateResolver {
                                            instruction: stepInstruction, image: image, screen: screen,
                                            region: screenRegion, preferRect: effectivePreferRect,
                                            restrictRect: webContentFrame) {
-                return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
+                return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame,
+                                  alternates: hit.alternates)
             }
         }
 
@@ -272,7 +273,8 @@ final class CoordinateResolver {
             if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
                                            region: screenRegion, preferRect: effectivePreferRect) {
-                return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame)
+                return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame,
+                                  alternates: hit.alternates)
             }
         }
 
@@ -375,7 +377,8 @@ final class CoordinateResolver {
                                       targetFrame: detection.frame, approximate: true, regionHint: hint)
                 }
                 DebugLogger.log("PIPELINE", "L2.5 HIT at (\(Int(detection.point.x)),\(Int(detection.point.y)))")
-                return Resolution(axPoint: detection.point, updatedInstruction: "", targetFrame: detection.frame)
+                return Resolution(axPoint: detection.point, updatedInstruction: "", targetFrame: detection.frame,
+                                  alternates: detection.alternates)
             }
             DebugLogger.log("PIPELINE", "L2.5 miss → falling through to L3 Gemini")
         } else {
@@ -860,7 +863,7 @@ final class CoordinateResolver {
     /// confident match's AX point (≥0.8), preferring the most complete label.
     private func locateByOCR(targetLabel: String, elementDescription: String, instruction: String,
                              image: CGImage, screen: NSScreen, region: ScreenRegion,
-                             preferRect: CGRect? = nil, restrictRect: CGRect? = nil) async -> (point: CGPoint, frame: CGRect)? {
+                             preferRect: CGRect? = nil, restrictRect: CGRect? = nil) async -> (point: CGPoint, frame: CGRect, alternates: [CGPoint])? {
         let candidates = ocrCandidates(targetLabel: targetLabel, elementDescription: elementDescription, instruction: instruction)
         var bestOCR: (point: CGPoint, frame: CGRect, score: Double, label: String)?
         for label in candidates {
@@ -898,7 +901,24 @@ final class CoordinateResolver {
             print("[Resolver] OCR hit '\(best.label)' score=\(best.score) \(best.point)")
             DebugLogger.logResolution("L1-OCR", found: true, point: best.point, label: "\(best.label) (\(String(format: "%.2f", best.score)))")
             DebugState.shared.update(layer: "OCR", dot: best.point)
-            return (best.point, best.frame)
+            // SAME TEXT elsewhere? If the winning label reads clearly at 2+
+            // distinct spots ("Delete" in three rows), we can't know which — hand
+            // the choice to the user (numbered badges) rather than guess. Strict
+            // gate: only strong (≥0.8), well-separated hits count.
+            var alternates: [CGPoint] = []
+            let searchRegion = restrictRect != nil ? ScreenRegion.fullScreen : region
+            let all = await visionDetector.findAllLabelMatches(best.label, in: image, on: screen, region: searchRegion)
+            if all.count >= 2 {
+                let others = all.map(\.point).filter { p in
+                    hypot(p.x - best.point.x, p.y - best.point.y) >= 40
+                        && (restrictRect.map { $0.insetBy(dx: -8, dy: -8).contains(p) } ?? true)
+                }
+                if !others.isEmpty {
+                    alternates = others
+                    DebugLogger.log("RESOLVE", "OCR ambiguous: '\(best.label)' at \(alternates.count + 1) spots — asking user")
+                }
+            }
+            return (best.point, best.frame, alternates)
         }
         if let best = bestOCR {
             DebugLogger.log("RESOLVE", "OCR best '\(best.label)' score=\(String(format: "%.2f", best.score)) < 0.8")

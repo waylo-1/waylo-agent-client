@@ -49,6 +49,25 @@ final class PickMemory {
             persist()
         }
         DebugLogger.log("PICKMEM", "remembered pick for '\(stepKey)' in \(app) at rel (\(String(format: "%.2f", rel.x)),\(String(format: "%.2f", rel.y)))")
+        // Fleet-wide: the same app lays out the same for everyone, so one user's
+        // confirmed pick auto-resolves this step for all of them. Fire-and-forget.
+        WayloAPIClient.shared.storePick(app: app.lowercased(), stepKey: stepKey.lowercased(),
+                                        relX: Double(rel.x), relY: Double(rel.y))
+    }
+
+    /// Ensure the fleet's pick for this step is in the local store before an
+    /// ambiguity is shown, so the (synchronous) recall can use it. No-op when we
+    /// already have a local pick. Best-effort — a network miss just means we ask.
+    func prefetch(app: String, stepKey: String) async {
+        guard !app.isEmpty, !stepKey.isEmpty else { return }
+        let k = key(app: app, stepKey: stepKey)
+        if queue.sync(execute: { store[k] != nil }) { return }   // already known locally
+        guard let remote = await WayloAPIClient.shared.lookupPick(app: app.lowercased(), stepKey: stepKey.lowercased()) else { return }
+        let rel = CGPoint(x: remote.relX, y: remote.relY)
+        queue.sync {
+            if store[k] == nil { store[k] = rel; persist() }
+        }
+        DebugLogger.log("PICKMEM", "prefetched fleet pick for '\(stepKey)' in \(app) at rel (\(String(format: "%.2f", rel.x)),\(String(format: "%.2f", rel.y)))")
     }
 
     /// The remembered pick as an ABSOLUTE AX point on the given window, or nil.

@@ -598,8 +598,11 @@ final class GuidanceEngine: ObservableObject {
             applyUpdatedInstruction(resolution.updatedInstruction)
 
             // Several confident, distinct matches — never guess. Show numbered
-            // badges on all of them and let the user click the right one.
+            // badges on all of them and let the user click the right one (or
+            // auto-resolve if the fleet already picked this step before).
             if !resolution.alternates.isEmpty {
+                await PickMemory.shared.prefetch(app: TargetAppTracker.shared.targetName, stepKey: step.labelCacheKey)
+                guard token == locateToken, isRunning else { return }
                 presentAmbiguity(step: step, primary: resolution.axPoint, alternates: resolution.alternates)
                 return
             }
@@ -1224,6 +1227,8 @@ final class GuidanceEngine: ObservableObject {
                     return true
                 }
                 if !retry.alternates.isEmpty {
+                    await PickMemory.shared.prefetch(app: TargetAppTracker.shared.targetName, stepKey: step.labelCacheKey)
+                    guard token == locateToken, isRunning else { return true }
                     presentAmbiguity(step: step, primary: retry.axPoint, alternates: retry.alternates)
                     return true
                 }
