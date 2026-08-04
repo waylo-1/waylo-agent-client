@@ -1030,14 +1030,35 @@ final class GuidanceEngine: ObservableObject {
     private func presentAmbiguity(step: Step, primary: CGPoint, alternates: [CGPoint]) {
         let all = [primary] + alternates
         state = .showing
+
+        // LEARNED PICK: if the user already chose among these look-alikes on a
+        // previous run, don't ask again — point at the candidate nearest where
+        // they picked last time (position, remembered relative to the window).
+        if let win = AccessibilityReader.shared.targetFocusedWindowFrame(),
+           let remembered = PickMemory.shared.recall(app: TargetAppTracker.shared.targetName,
+                                                     stepKey: step.labelCacheKey, window: win),
+           let nearest = all.min(by: { hypot($0.x - remembered.x, $0.y - remembered.y)
+                                     < hypot($1.x - remembered.x, $1.y - remembered.y) }) {
+            DebugLogger.log("ENGINE", "PICK MEMORY hit — auto-pointing at remembered candidate (\(Int(nearest.x)),\(Int(nearest.y))), not asking")
+            currentTargetAX = nearest
+            OverlayWindowController.shared.showDot(at: nearest, caption: currentInstruction)
+            statusMessage = "Step \(currentStepIndex + 1) of \(steps.count)"
+            // Still accept any candidate (memory can be slightly off) and re-store
+            // whichever they actually click, so the pick self-corrects.
+            installMultiClickMonitor(targets: all, forStep: currentStepIndex, stepKey: step.labelCacheKey)
+            return
+        }
+
         statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — I see \(all.count) matches; click the right one"
         OverlayWindowController.shared.showCandidateBadges(at: all, caption: currentInstruction)
         Speaker.shared.speak("I found \(all.count) places that look right. Click the correct one and I'll continue.")
-        installMultiClickMonitor(targets: all, forStep: currentStepIndex)
+        installMultiClickMonitor(targets: all, forStep: currentStepIndex, stepKey: step.labelCacheKey)
     }
 
-    /// Click monitor accepting a click near ANY of the candidate targets.
-    private func installMultiClickMonitor(targets: [CGPoint], forStep stepIndex: Int) {
+    /// Click monitor accepting a click near ANY of the candidate targets. The
+    /// clicked candidate is remembered (relative to the window) so the same
+    /// ambiguous step auto-resolves next time — "ask once, never ask again".
+    private func installMultiClickMonitor(targets: [CGPoint], forStep stepIndex: Int, stepKey: String) {
         removeClickMonitor()
         clickObserverId = HotkeyManager.shared.addClickObserver { [weak self] axPoint, _ in
             Task { @MainActor in
@@ -1051,7 +1072,11 @@ final class GuidanceEngine: ObservableObject {
                     return
                 }
                 self.currentTargetAX = hit
-                DebugLogger.log("ENGINE", "ambiguity resolved by user click at (\(Int(hit.x)),\(Int(hit.y))) → advancing")
+                if let win = AccessibilityReader.shared.targetFocusedWindowFrame() {
+                    PickMemory.shared.remember(app: TargetAppTracker.shared.targetName,
+                                               stepKey: stepKey, axPoint: hit, window: win)
+                }
+                DebugLogger.log("ENGINE", "ambiguity resolved by user click at (\(Int(hit.x)),\(Int(hit.y))) → advancing (remembered)")
                 self.advanceAfterClick(stepIndex: stepIndex)
             }
         }
