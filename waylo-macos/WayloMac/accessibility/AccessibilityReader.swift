@@ -96,8 +96,21 @@ final class AccessibilityReader {
 
     private func elements(forPID pid: pid_t, roles: Set<String>) -> [AXElementInfo] {
         let appElement = AXUIElementCreateApplication(pid)
+        // CAP EACH cross-process AX call. The default has effectively no timeout,
+        // so ONE busy/unresponsive app (Mail with a big mailbox) can hang a
+        // single AXUIElementCopyAttributeValue for seconds — and the walk makes
+        // thousands, freezing the MAIN THREAD (and the whole app: the panel
+        // wouldn't open, Esc was laggy) for ~20s. 0.5s per call keeps a hung app
+        // from stalling us; a responsive app answers in <5ms so this is a no-op.
+        AXUIElementSetMessagingTimeout(appElement, 0.5)
         var elements: [AXElementInfo] = []
-        traverseElement(appElement, depth: 0, roles: roles, results: &elements)
+        // Plus a total wall-clock budget so even many slow-but-not-hung calls
+        // can't blow past a couple of seconds — bail with whatever we have.
+        let deadline = Date().addingTimeInterval(2.5)
+        traverseElement(appElement, depth: 0, roles: roles, results: &elements, deadline: deadline)
+        if Date() >= deadline {
+            DebugLogger.log("AX", "tree walk hit the 2.5s budget — returning \(elements.count) elements (app slow/huge)")
+        }
         return elements
     }
 
@@ -393,9 +406,13 @@ final class AccessibilityReader {
     private static let maxElements = 800
 
     /// Recursively walks the AX tree, collecting interactive elements.
-    private func traverseElement(_ element: AXUIElement, depth: Int, roles: Set<String>, results: inout [AXElementInfo]) {
+    /// `deadline` is a hard wall-clock budget — a huge/slow tree (Mail) must
+    /// never freeze the main thread, so we bail with a partial result.
+    private func traverseElement(_ element: AXUIElement, depth: Int, roles: Set<String>,
+                                 results: inout [AXElementInfo], deadline: Date) {
         guard depth < 14 else { return } // Max depth to avoid runaway recursion
         guard results.count < Self.maxElements else { return }
+        guard Date() < deadline else { return }  // out of time — return what we have
 
         let roleStr = copyStringAttribute(element, kAXRoleAttribute)
         let subroleStr = copyStringAttribute(element, kAXSubroleAttribute)
@@ -444,7 +461,8 @@ final class AccessibilityReader {
         AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
         if let childArray = children as? [AXUIElement] {
             for child in childArray {
-                traverseElement(child, depth: depth + 1, roles: roles, results: &results)
+                if Date() >= deadline { return }   // stop mid-loop on a wide/slow node
+                traverseElement(child, depth: depth + 1, roles: roles, results: &results, deadline: deadline)
             }
         }
     }
