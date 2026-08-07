@@ -1800,7 +1800,12 @@ final class GuidanceEngine: ObservableObject {
                                                       w: halfW * 2, h: halfH * 2) else { return }
         let concept = step.targetLabel.isEmpty ? step.elementDescription : step.targetLabel
         IconMemory.shared.remember(crop: crop, app: TargetAppTracker.shared.targetName, concept: concept)
-        DebugLogger.log("CORRECT", "learned ICON PIXELS for '\(concept)' from the click (free next time)")
+        // Also remember WHERE it is, so next run clicks it with no YOLO at all.
+        if let win = AccessibilityReader.shared.targetFocusedWindowFrame() {
+            IconMemory.shared.rememberLocation(app: TargetAppTracker.shared.targetName, concept: concept,
+                                               axPoint: clickAX, window: win, image: capture.image, screen: capture.screen)
+        }
+        DebugLogger.log("CORRECT", "learned ICON PIXELS + LOCATION for '\(concept)' from the click (free next time)")
     }
 
     /// Shared "click landed → move on" handler. Shows an immediate spinner at

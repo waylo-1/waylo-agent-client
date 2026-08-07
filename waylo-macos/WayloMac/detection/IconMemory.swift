@@ -20,6 +20,18 @@ final class IconMemory {
     private let queue = DispatchQueue(label: "waylo.iconmemory")
     private let fileURL: URL
 
+    /// LOCATION fast-path: one remembered spot per app|concept — the icon's
+    /// relative position in the window plus a hash of a fixed box there. Next
+    /// run we crop that exact spot and, IF the hash still matches (the icon is
+    /// still there), click it WITHOUT the slow YOLO call. A moved/changed
+    /// toolbar simply fails the hash check and falls through to vision.
+    private struct LocEntry: Codable { var relX: Double; var relY: Double; var hash: String }
+    private var locations: [String: LocEntry] = [:]
+    private let locFileURL: URL
+    /// Fixed crop size (points) for the location hash, so learn-time and
+    /// recall-time framings match and the hashes are comparable.
+    private static let locBoxPt: CGFloat = 48
+
     /// Match when within this Hamming distance (out of 64). Tight on purpose:
     /// better to miss and fall through to vision than to click the wrong icon.
     static let maxHamming = 6
@@ -29,7 +41,71 @@ final class IconMemory {
             .appendingPathComponent("Sahayak", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("icon_memory.json")
+        locFileURL = dir.appendingPathComponent("icon_locations.json")
         load()
+        loadLocations()
+    }
+
+    // MARK: - Location fast-path (skip YOLO for a learned icon)
+
+    /// Remember WHERE a located icon is (relative to the window) + a hash of a
+    /// fixed box there, so a later run can verify-and-click without YOLO.
+    func rememberLocation(app: String, concept: String, axPoint: CGPoint, window: CGRect,
+                          image: CGImage, screen: NSScreen) {
+        guard !app.isEmpty, !concept.isEmpty, window.width > 1, window.height > 1 else { return }
+        guard let crop = Self.cropBox(around: axPoint, in: image, screen: screen),
+              let h = Self.aHash(crop) else { return }
+        let rel = CGPoint(x: (axPoint.x - window.minX) / window.width,
+                          y: (axPoint.y - window.minY) / window.height)
+        guard (0...1).contains(rel.x), (0...1).contains(rel.y) else { return }
+        let k = key(app: app, concept: concept)
+        queue.sync {
+            locations[k] = LocEntry(relX: Double(rel.x), relY: Double(rel.y), hash: String(h))
+            persistLocations()
+        }
+        DebugLogger.log("ICONMEM", "remembered LOCATION '\(concept)' in \(app) at rel (\(String(format: "%.2f", rel.x)),\(String(format: "%.2f", rel.y)))")
+    }
+
+    /// If we remember this icon's spot AND the pixels there still hash-match,
+    /// return the AX-global point to click — no YOLO, no vision, ~2ms. Else nil.
+    func recallLocation(app: String, concept: String, window: CGRect,
+                        image: CGImage, screen: NSScreen) -> CGPoint? {
+        guard !app.isEmpty, !concept.isEmpty, window.width > 1, window.height > 1 else { return nil }
+        guard let entry = queue.sync(execute: { locations[key(app: app, concept: concept)] }),
+              let storedHash = UInt64(entry.hash) else { return nil }
+        let point = CGPoint(x: window.minX + CGFloat(entry.relX) * window.width,
+                            y: window.minY + CGFloat(entry.relY) * window.height)
+        guard let crop = Self.cropBox(around: point, in: image, screen: screen),
+              let h = Self.aHash(crop) else { return nil }
+        let dist = Self.hamming(storedHash, h)
+        guard dist <= Self.maxHamming else {
+            DebugLogger.log("ICONMEM", "LOCATION recall miss '\(concept)' (dist \(dist) > \(Self.maxHamming)) — icon moved/changed")
+            return nil
+        }
+        DebugLogger.log("ICONMEM", "LOCATION recall HIT '\(concept)' in \(app) at (\(Int(point.x)),\(Int(point.y))) dist \(dist) — skipping YOLO")
+        return point
+    }
+
+    /// Crop a fixed `locBoxPt` square around an AX-global point out of the
+    /// captured image (same conversion the detectors use).
+    static func cropBox(around axPoint: CGPoint, in image: CGImage, screen: NSScreen) -> CGImage? {
+        guard screen.frame.width > 1, screen.frame.height > 1 else { return nil }
+        let axTop = ScreenCoordinates.primaryHeight - screen.frame.maxY
+        let nx = (axPoint.x - screen.frame.minX) / screen.frame.width
+        let ny = (axPoint.y - axTop) / screen.frame.height
+        let halfW = Double(locBoxPt) / 2 / Double(screen.frame.width)
+        let halfH = Double(locBoxPt) / 2 / Double(screen.frame.height)
+        return image.cropNormalized(x: Double(nx) - halfW, y: Double(ny) - halfH, w: halfW * 2, h: halfH * 2)
+    }
+
+    private func persistLocations() {
+        if let data = try? JSONEncoder().encode(locations) { try? data.write(to: locFileURL) }
+    }
+    private func loadLocations() {
+        guard let data = try? Data(contentsOf: locFileURL),
+              let dict = try? JSONDecoder().decode([String: LocEntry].self, from: data) else { return }
+        locations = dict
+        DebugLogger.log("ICONMEM", "loaded \(locations.count) icon location(s)")
     }
 
     private func key(app: String, concept: String) -> String {

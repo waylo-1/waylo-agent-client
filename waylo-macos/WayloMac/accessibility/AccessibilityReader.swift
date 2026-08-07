@@ -3,7 +3,10 @@ import ApplicationServices
 
 /// Reads the AXUIElement tree of the frontmost macOS application.
 /// This is the macOS equivalent of Android's AccessibilityService.
-final class AccessibilityReader {
+/// `@unchecked Sendable`: the tree walk runs on a background queue, but the only
+/// mutable state (`targetElementCache`) is written/read on the main actor, and
+/// the walk itself uses only locals + thread-safe AX APIs.
+final class AccessibilityReader: @unchecked Sendable {
     static let shared = AccessibilityReader()
 
     private init() {}
@@ -61,9 +64,29 @@ final class AccessibilityReader {
     /// of each locate so it never goes stale across steps.
     private var targetElementCache: (pid: pid_t, elements: [AXElementInfo])?
 
+    /// Dedicated thread for the (slow, cross-process) AX tree walk so it NEVER
+    /// runs on the main thread — a huge/slow app (Mail) must not freeze the UI.
+    private let axReadQueue = DispatchQueue(label: "waylo.ax.treeread", qos: .userInitiated)
+
     /// Clear the per-locate element cache. Called at the start of each resolve
     /// so the next step re-reads a fresh tree.
     func invalidateTargetElementCache() { targetElementCache = nil }
+
+    /// Read the target app's element tree OFF the main thread and cache it, so
+    /// the synchronous getTargetAppElements() calls in the same resolve return
+    /// instantly and the UI stays responsive during the (up to 2.5s) walk. Call
+    /// once at the start of each locate; it always refreshes (fresh per step).
+    func prewarmTargetElements() async {
+        let pid = TargetAppTracker.shared.targetPID
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let pid = pid else { targetElementCache = nil; return }
+        let els: [AXElementInfo] = await withCheckedContinuation { cont in
+            axReadQueue.async {
+                cont.resume(returning: self.elements(forPID: pid, roles: Self.interactiveRoles))
+            }
+        }
+        await MainActor.run { self.targetElementCache = (pid, els) }
+    }
 
     /// Returns the AX element tree of the *target* app — the app the user is
     /// actually working in, not Waylo. This is what guidance should use.
@@ -510,7 +533,10 @@ final class AccessibilityReader {
 }
 
 /// Data model for a single accessibility element.
-struct AXElementInfo {
+// AXUIElement is a thread-safe CFType and every field is immutable after
+// construction, so an AXElementInfo is safe to hand from the background AX-read
+// thread back to the main actor.
+struct AXElementInfo: @unchecked Sendable {
     let role: String
     let title: String
     let description: String

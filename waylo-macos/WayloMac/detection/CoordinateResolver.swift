@@ -73,10 +73,11 @@ final class CoordinateResolver {
         DebugLogger.log("RESOLVE", "start target='\(targetLabel)' desc='\(elementDescription)' region=\(screenRegion) step=\(stepIndex)/\(totalSteps)")
         DebugState.shared.update(targetApp: TargetAppTracker.shared.targetName, layer: "resolving…", screen: screen.frame)
 
-        // Read the target app's AX tree ONCE for this whole resolve — the anchor,
-        // label, and description searches below all want the same static tree.
-        // On a slow app (Mail) this collapses three 2.5s tree walks into one.
-        AccessibilityReader.shared.invalidateTargetElementCache()
+        // Read the target app's AX tree ONCE for this whole resolve, OFF the main
+        // thread — the anchor, label, and description searches below all want the
+        // same static tree. This both dedupes (one walk, not three) and keeps the
+        // UI responsive during a slow app's (Mail) up-to-2.5s walk.
+        await AccessibilityReader.shared.prewarmTargetElements()
 
         // If a modal sheet/dialog is up (e.g. the "Empty the Trash?" confirm),
         // its frame focuses BOTH AX (candidate filter) and OCR (crop) on the
@@ -312,6 +313,24 @@ final class CoordinateResolver {
             DebugLogger.log("RESOLVE", "LABEL_CACHE lookup MISS")
         }
 
+        // --- LEARNED-ICON FAST PATH: we located this icon before, so check its
+        // remembered spot FIRST — crop it and, if the pixels still hash-match,
+        // click it with no YOLO and no Gemini (~2ms). A moved/changed toolbar
+        // fails the hash and falls through. This is how a taught icon becomes
+        // fast, not just accurate.
+        if targetType == .icon || targetLabel.isEmpty, !appName.isEmpty {
+            let concept = targetLabel.isEmpty ? elementDescription : targetLabel
+            if let win = AccessibilityReader.shared.targetFocusedWindowFrame(),
+               let pt = IconMemory.shared.recallLocation(app: appName, concept: concept,
+                                                         window: win, image: image, screen: screen),
+               (webContentFrame?.insetBy(dx: -8, dy: -8).contains(pt) ?? true) {
+                DebugLogger.logResolution("icon-memory-loc", found: true, point: pt, label: concept)
+                DebugState.shared.update(layer: "icon memory (loc)")
+                return Resolution(axPoint: pt, updatedInstruction: "",
+                                  targetFrame: CGRect(x: pt.x - 24, y: pt.y - 24, width: 48, height: 48))
+            }
+        }
+
         // For a textless icon the vision layers need a CONCISE object name, not
         // the planner's verbose location sentence ("The colour wheel icon is
         // located to the right of the 'Text Colour' row…"). Sending that whole
@@ -503,6 +522,11 @@ final class CoordinateResolver {
                                                    w: (bb[2] - bb[0]) / 1000, h: (bb[3] - bb[1]) / 1000) {
                     let concept = targetLabel.isEmpty ? elementDescription : targetLabel
                     IconMemory.shared.remember(crop: crop, app: TargetAppTracker.shared.targetName, concept: concept)
+                    // Also remember the SPOT so next run skips YOLO entirely.
+                    if let win = AccessibilityReader.shared.targetFocusedWindowFrame() {
+                        IconMemory.shared.rememberLocation(app: TargetAppTracker.shared.targetName, concept: concept,
+                                                           axPoint: point, window: win, image: image, screen: screen)
+                    }
                 }
                 // STAGE a training example — nothing is written yet. Nova's box
                 // is only a hypothesis; it earns its place in the training set
