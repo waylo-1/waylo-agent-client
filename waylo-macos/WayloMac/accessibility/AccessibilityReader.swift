@@ -53,13 +53,28 @@ final class AccessibilityReader {
         return elements(forPID: frontApp.processIdentifier, roles: Self.interactiveRoles)
     }
 
+    /// Per-locate cache of the target app's element tree. One `resolve()` runs
+    /// several searches (anchor, label, description) that each want the SAME
+    /// tree, and the screen is static during a read-only detection pass — so we
+    /// read it ONCE and reuse. On a slow app (Mail) this turns three 2.5s tree
+    /// walks into one. `invalidateTargetElementCache()` clears it at the start
+    /// of each locate so it never goes stale across steps.
+    private var targetElementCache: (pid: pid_t, elements: [AXElementInfo])?
+
+    /// Clear the per-locate element cache. Called at the start of each resolve
+    /// so the next step re-reads a fresh tree.
+    func invalidateTargetElementCache() { targetElementCache = nil }
+
     /// Returns the AX element tree of the *target* app — the app the user is
     /// actually working in, not Waylo. This is what guidance should use.
     func getTargetAppElements() -> [AXElementInfo] {
         let pid = TargetAppTracker.shared.targetPID
             ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
         guard let pid = pid else { return [] }
-        return elements(forPID: pid, roles: Self.interactiveRoles)
+        if let c = targetElementCache, c.pid == pid { return c.elements }
+        let els = elements(forPID: pid, roles: Self.interactiveRoles)
+        targetElementCache = (pid, els)
+        return els
     }
 
     /// The Dock's on-screen frame (AX coords), or nil. Used to hard-reject

@@ -73,6 +73,11 @@ final class CoordinateResolver {
         DebugLogger.log("RESOLVE", "start target='\(targetLabel)' desc='\(elementDescription)' region=\(screenRegion) step=\(stepIndex)/\(totalSteps)")
         DebugState.shared.update(targetApp: TargetAppTracker.shared.targetName, layer: "resolving…", screen: screen.frame)
 
+        // Read the target app's AX tree ONCE for this whole resolve — the anchor,
+        // label, and description searches below all want the same static tree.
+        // On a slow app (Mail) this collapses three 2.5s tree walks into one.
+        AccessibilityReader.shared.invalidateTargetElementCache()
+
         // If a modal sheet/dialog is up (e.g. the "Empty the Trash?" confirm),
         // its frame focuses BOTH AX (candidate filter) and OCR (crop) on the
         // modal, so we never point at an identical label behind it. An explicit
