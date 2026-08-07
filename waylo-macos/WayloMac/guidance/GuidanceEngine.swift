@@ -116,6 +116,14 @@ final class GuidanceEngine: ObservableObject {
         // WRONG app's screen and points at whatever matched there. Deterministic
         // client-side guard: resolve the app, open/focus it, settle, then start.
         let planApp = plan.app.trimmingCharacters(in: .whitespaces)
+        // Waylo OPENS the target app itself (native apps are a solved problem),
+        // so skip any leading "open the app" steps the planner emitted — the
+        // Spotlight dance (⌘Space → type its name → Return) or a Dock click.
+        // Without this, "take a photo in Photo Booth" opened Photo Booth AND
+        // then instructed the user to open it via Spotlight.
+        let startIdx = firstInAppStepIndex(appName: planApp)
+        if startIdx > 0 { DebugLogger.log("ENGINE", "skipping \(startIdx) leading 'open \(planApp)' step(s) — Waylo opens the app itself") }
+
         if !planApp.isEmpty,
            TargetAppTracker.shared.targetName.caseInsensitiveCompare(planApp) != .orderedSame,
            let url = AppLauncher.resolveApp(named: planApp) {
@@ -124,12 +132,44 @@ final class GuidanceEngine: ObservableObject {
             Task {
                 await ScreenCapturer.shared.settleAfterAction()
                 guard self.isRunning else { return }
-                await self.executeStep(index: 0)
+                await self.executeStep(index: startIdx)
             }
             return
         }
 
-        Task { await executeStep(index: 0) }
+        Task { await executeStep(index: startIdx) }
+    }
+
+    /// The index of the first step that ACTS INSIDE the app, skipping any
+    /// leading steps that merely OPEN the target app — Waylo opens it itself.
+    /// Recognises the Spotlight open-dance (⌘Space, typing the app's name, the
+    /// Return that launches it) and a Dock/"open <app>" launch. Conservative:
+    /// stops at the first real in-app action and never skips the whole plan.
+    private func firstInAppStepIndex(appName: String) -> Int {
+        let app = appName.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !app.isEmpty else { return 0 }
+        var i = 0
+        var inOpenDance = false
+        while i < steps.count - 1 {          // never skip the final step
+            let s = steps[i]
+            let text = "\(s.instruction) \(s.elementDescription) \(s.targetLabel)".lowercased()
+            let key = (s.key ?? "").lowercased()
+            let isSpotlight = text.contains("spotlight")
+                || (s.action == .key && key.contains("space"))
+            let opensApp = AppLauncher.target(for: s) != nil
+                || (text.contains("open") && text.contains(app))
+            // Typing the app's name / pressing Return only count as the open
+            // dance when we're ALREADY launching (after Spotlight/Dock), so a
+            // legitimate leading type or key step is never mistaken for it.
+            let typesAppName = inOpenDance && s.action == .type && text.contains(app)
+            let launchReturn = inOpenDance && s.action == .key && key.contains("return")
+            if isSpotlight || opensApp {
+                inOpenDance = true; i += 1; continue
+            }
+            if typesAppName || launchReturn { i += 1; continue }
+            break
+        }
+        return i
     }
 
     /// Tears down all transient state from any prior run (monitors, dot, timers,
