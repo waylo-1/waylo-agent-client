@@ -35,12 +35,16 @@ struct YOLOElement: Decodable {
     /// Tier 2: zero-shot concept label for a textless icon ("search",
     /// "attach"), or nil when nothing matched distinctly.
     let caption: String?
+    /// The reference icon this box most RESEMBLES (image-to-image match) — how
+    /// every detected icon gets a name. nil when below the similarity gate.
+    let imageCaption: String?
 
     enum CodingKeys: String, CodingKey {
         case x, y, w, h, cx, cy, confidence, source, caption
         case axClass = "ax_class"
         case matchScore = "match_score"
         case matchConf = "match_conf"
+        case imageCaption = "image_caption"
     }
 }
 
@@ -226,7 +230,7 @@ final class YOLODetector {
 
         let cls = best.element.axClass ?? "-"
         DebugLogger.log("L2.5",
-            "MATCH source=\(best.element.source) ax_class=\(cls) " +
+            "MATCH source=\(best.element.source) ax_class=\(cls) img_caption=\(best.element.imageCaption ?? "-") " +
             "conf=\(String(format: "%.2f", best.element.confidence)) score=\(String(format: "%.2f", best.score)) " +
             "point=(\(Int(best.axPoint.x)),\(Int(best.axPoint.y)))")
         DebugLogger.logResolution("L2.5", found: true, point: best.axPoint, label: targetLabel)
