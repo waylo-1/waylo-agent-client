@@ -377,6 +377,26 @@ final class WayloAPIClient {
         Task { _ = try? await session.data(for: request) }
     }
 
+    /// Awaitable variant returning whether the upload was accepted (HTTP 200) —
+    /// used by the seeder so it only marks itself done when references actually
+    /// landed (e.g. not when the backend hasn't been redeployed yet).
+    @discardableResult
+    func uploadIconReferenceResult(label: String, imageBase64: String) async -> Bool {
+        let clean = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 2, !imageBase64.isEmpty,
+              let url = URL(string: "\(baseURL)/icon-reference"),
+              let body = try? JSONSerialization.data(withJSONObject: ["label": clean, "image_b64": imageBase64])
+        else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 15
+        request.httpBody = body
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
+        return true
+    }
+
     // MARK: - POST /ask-screen (vision Q&A about the current screen)
 
     /// Answers a free-form question using a screenshot of the current screen.

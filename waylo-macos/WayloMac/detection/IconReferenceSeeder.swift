@@ -116,22 +116,28 @@ enum IconReferenceSeeder {
         ("gearshape.fill", "settings"),
     ]
 
-    /// Seed once (guarded by UserDefaults). Renders + uploads in the background.
-    /// Bump the key suffix to re-seed after changing the set.
+    /// Seed once (guarded by UserDefaults). Only marks itself done when the
+    /// uploads actually land, so it safely RETRIES on a later launch if the
+    /// backend wasn't reachable/redeployed yet. Bump the key to re-seed.
     static func seedOnceIfNeeded() {
-        let key = "waylo.seededIconRefs.v1"
+        let key = "waylo.seededIconRefs.v2"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
-        DispatchQueue.global(qos: .utility).async {
-            var uploaded = 0
+        Task.detached(priority: .utility) {
+            var ok = 0
             for (symbol, label) in entries {
                 guard let cg = render(symbol: symbol),
                       let (b64, _) = ScreenCapturer.compressedJPEGBase64(cg, maxWidth: 128) else { continue }
-                WayloAPIClient.shared.uploadIconReference(label: label, imageBase64: b64)
-                uploaded += 1
-                usleep(40_000)   // gentle pacing so we don't hammer the box
+                if await WayloAPIClient.shared.uploadIconReferenceResult(label: label, imageBase64: b64) {
+                    ok += 1
+                }
             }
-            UserDefaults.standard.set(true, forKey: key)
-            DebugLogger.log("ICONREF", "seeded \(uploaded) SF Symbol reference icons to the dataset")
+            // Mark done only if most uploads succeeded — else retry next launch.
+            if ok >= entries.count / 2 {
+                UserDefaults.standard.set(true, forKey: key)
+                DebugLogger.log("ICONREF", "seeded \(ok)/\(entries.count) SF Symbol reference icons")
+            } else {
+                DebugLogger.log("ICONREF", "seed incomplete (\(ok)/\(entries.count) landed) — will retry next launch (deploy the /icon-reference backend)")
+            }
         }
     }
 
