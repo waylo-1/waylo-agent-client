@@ -100,6 +100,86 @@ final class AccessibilityReader: @unchecked Sendable {
         return els
     }
 
+    /// Focused DEEP search for an element by its accessible NAME. The normal read
+    /// caps at depth 14 + a time budget, so a control buried deep in a web app's
+    /// DOM — Gmail's compose-toolbar paperclip, whose aria-label is "Attach
+    /// files" — is never collected, even though the browser exposes that name for
+    /// free. When we KNOW the name (a cached working label, or the planner's own
+    /// label), this walks deeper (≤28) but prunes hard to elements whose label
+    /// actually contains that name, so it stays cheap even in a huge tree. This is
+    /// the free/private/pixel-exact path for web icons — far more reliable than
+    /// naming a 30px glyph with vision. Off the main thread; returns the smallest
+    /// clickable match inside `restrictRect`, or nil.
+    private static let deepStopWords: Set<String> =
+        ["the", "a", "an", "to", "of", "in", "on", "and", "or", "for", "icon", "button", "click"]
+    private static let deepClickableRoles: Set<String> =
+        ["AXButton", "AXMenuItem", "AXCheckBox", "AXLink", "AXRadioButton",
+         "AXImage", "AXMenuButton", "AXPopUpButton"]
+
+    func deepFindByName(_ name: String, restrictRect: CGRect? = nil) async -> AXElementInfo? {
+        let words = name.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 && !Self.deepStopWords.contains($0) }
+        guard !words.isEmpty else { return nil }
+        let pid = TargetAppTracker.shared.targetPID
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let pid = pid else { return nil }
+        return await withCheckedContinuation { cont in
+            axReadQueue.async {
+                let app = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(app, 0.5)
+                var hits: [AXElementInfo] = []
+                let deadline = Date().addingTimeInterval(0.9)
+                self.deepCollectByName(app, depth: 0, words: words, restrict: restrictRect,
+                                       results: &hits, deadline: deadline)
+                // Prefer the smallest CLICKABLE match — the icon button itself, not
+                // a big container that happens to carry the same accessible name.
+                func boxArea(_ e: AXElementInfo) -> CGFloat { e.frame.width * e.frame.height }
+                let best = hits.filter { Self.deepClickableRoles.contains($0.role) }
+                                .min(by: { boxArea($0) < boxArea($1) })
+                    ?? hits.min(by: { boxArea($0) < boxArea($1) })
+                if let b = best {
+                    DebugLogger.log("AX", "DEEP name search '\(name)' → \(b.role) '\(b.title.isEmpty ? b.description : b.title)' at (\(Int(b.center.x)),\(Int(b.center.y)))")
+                } else {
+                    DebugLogger.log("AX", "DEEP name search '\(name)' → no match (walked deep, name not in tree)")
+                }
+                cont.resume(returning: best)
+            }
+        }
+    }
+
+    private func deepCollectByName(_ element: AXUIElement, depth: Int, words: [String],
+                                   restrict: CGRect?, results: inout [AXElementInfo], deadline: Date) {
+        guard depth < 28, results.count < 40, Date() < deadline else { return }
+        let title = copyStringAttribute(element, kAXTitleAttribute)
+        let desc = copyStringAttribute(element, kAXDescriptionAttribute)
+        let help = copyStringAttribute(element, kAXHelpAttribute)
+        let identRaw = copyStringAttribute(element, "AXIdentifier")
+        let hay = "\(title) \(desc) \(help) \(identRaw)".lowercased()
+        if !hay.trimmingCharacters(in: .whitespaces).isEmpty, words.allSatisfy({ hay.contains($0) }) {
+            let frame = copyFrame(element)
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            if frame.width > 1, frame.height > 1,
+               (restrict?.insetBy(dx: -8, dy: -8).contains(center) ?? true) {
+                results.append(AXElementInfo(
+                    role: copyStringAttribute(element, kAXRoleAttribute),
+                    title: title, description: desc, helpText: help,
+                    value: copyStringAttribute(element, kAXValueAttribute),
+                    frame: frame, center: center, axElement: element,
+                    identifier: AXElementInfo.meaningfulIdentifier(identRaw)))
+            }
+        }
+        var children: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children)
+        if let arr = children as? [AXUIElement] {
+            for child in arr {
+                if Date() >= deadline { return }
+                deepCollectByName(child, depth: depth + 1, words: words,
+                                  restrict: restrict, results: &results, deadline: deadline)
+            }
+        }
+    }
+
     /// The Dock's on-screen frame (AX coords), or nil. Used to hard-reject
     /// vision detections for "… in the Dock" targets that land elsewhere (a
     /// desktop folder icon once won a "Trash icon in the Dock" step).

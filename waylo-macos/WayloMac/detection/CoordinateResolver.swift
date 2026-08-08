@@ -327,8 +327,23 @@ final class CoordinateResolver {
                 return Resolution(axPoint: element.center, updatedInstruction: "",
                                   axElement: element.axElement, targetFrame: element.frame)
             }
+            // The shallow read caps at depth 14, so a web app's deeply-nested
+            // control (Gmail's paperclip, aria-label "Attach files") isn't in the
+            // candidate set even though the browser exposes its name. We KNOW the
+            // working label here, so do a focused DEEP search for exactly it —
+            // free, private, pixel-exact. This is the reliable web-icon path.
+            for candidate in Self.labelVariants(cachedLabel) where !candidate.isEmpty {
+                if let el = await AccessibilityReader.shared.deepFindByName(candidate, restrictRect: webContentFrame),
+                   passesRegion(el.center, screenRegion, screen: screen) {
+                    DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT via DEEP AX — '\(candidate)' \(el.center)")
+                    DebugLogger.logResolution("label-cache-deepAX", found: true, point: el.center, label: candidate)
+                    DebugState.shared.update(layer: "cache→deep AX", dot: el.center)
+                    return Resolution(axPoint: el.center, updatedInstruction: "",
+                                      axElement: el.axElement, targetFrame: el.frame)
+                }
+            }
             // Cache hit but AX still can't find it — fall through to L3 as normal.
-            DebugLogger.log("RESOLVE", "cache label '\(cachedLabel)' present but L0 missed — continuing to L3")
+            DebugLogger.log("RESOLVE", "cache label '\(cachedLabel)' present but L0+deep missed — continuing to L3")
         } else {
             DebugState.shared.update(cache: "MISS")
             DebugLogger.log("RESOLVE", "LABEL_CACHE lookup MISS")
