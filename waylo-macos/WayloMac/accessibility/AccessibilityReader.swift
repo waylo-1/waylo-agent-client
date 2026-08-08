@@ -142,6 +142,12 @@ final class AccessibilityReader: @unchecked Sendable {
         // from stalling us; a responsive app answers in <5ms so this is a no-op.
         AXUIElementSetMessagingTimeout(appElement, 0.5)
         var elements: [AXElementInfo] = []
+        // PRIORITY PASS: collect the TOOLBAR(s) first. On a huge/slow app (Mail)
+        // the budgeted full walk is depth-first and spends its whole budget on
+        // the message list before ever reaching the toolbar — so named toolbar
+        // icons (Archive, Reply, Flag…) were never seen. The toolbar is tiny, so
+        // grabbing it up front guarantees those buttons are always available.
+        collectToolbars(appElement, roles: roles, results: &elements)
         // Plus a total wall-clock budget so even many slow-but-not-hung calls
         // can't blow past a couple of seconds — bail with whatever we have.
         let deadline = Date().addingTimeInterval(2.5)
@@ -149,7 +155,42 @@ final class AccessibilityReader: @unchecked Sendable {
         if Date() >= deadline {
             DebugLogger.log("AX", "tree walk hit the 2.5s budget — returning \(elements.count) elements (app slow/huge)")
         }
+        // Dedup: a toolbar button may be collected by both passes. Same role at
+        // the same frame = the same element.
+        var seen = Set<String>()
+        elements = elements.filter { e in
+            let k = "\(e.role)|\(Int(e.frame.minX))|\(Int(e.frame.minY))|\(Int(e.frame.width))|\(Int(e.frame.height))"
+            return seen.insert(k).inserted
+        }
         return elements
+    }
+
+    /// Find the target app's toolbar(s) — a small, high-value subtree that holds
+    /// the visible action icons — and collect their buttons FIRST, before the
+    /// budgeted full walk that a big app can exhaust on its content list.
+    private func collectToolbars(_ app: AXUIElement, roles: Set<String>, results: inout [AXElementInfo]) {
+        var winsRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &winsRef)
+        let windows = (winsRef as? [AXUIElement]) ?? []
+        for win in windows {
+            findToolbars(in: win, depth: 0, roles: roles, results: &results)
+        }
+    }
+
+    /// Shallow search (≤5 deep) for AXToolbar under `el`; each found toolbar is
+    /// traversed fully (it's small) with a tight 1s budget of its own.
+    private func findToolbars(in el: AXUIElement, depth: Int, roles: Set<String>, results: inout [AXElementInfo]) {
+        guard depth < 5 else { return }
+        if copyStringAttribute(el, kAXRoleAttribute) == "AXToolbar" {
+            traverseElement(el, depth: 0, roles: roles, results: &results,
+                            deadline: Date().addingTimeInterval(1.0))
+            return
+        }
+        var childrenRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &childrenRef)
+        for child in (childrenRef as? [AXUIElement]) ?? [] {
+            findToolbars(in: child, depth: depth + 1, roles: roles, results: &results)
+        }
     }
 
     /// True if the target app currently shows a real scrollable area — used to
