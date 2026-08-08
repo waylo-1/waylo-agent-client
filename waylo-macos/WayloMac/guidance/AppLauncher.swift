@@ -42,20 +42,21 @@ enum AppLauncher {
             || text.contains("control-click") || text.contains("control click")
             || text.contains("context menu")
 
-        // The Trash / Bin, when the step OPENS it. "Empty Bin"/"Empty Trash" is
-        // a button inside the window — check the targetLabel, not the whole
-        // sentence, or the task "empty the trash" disables its own first step.
-        //
-        // NEVER the macOS Finder Bin when the user is in a BROWSER / web app:
-        // there "trash"/"bin"/"delete" means the in-PAGE icon (Gmail's toolbar
-        // trash), not the desktop Trash. Without this, "delete an email in
-        // Gmail" launched Finder's Bin instead of pointing at Gmail's trash icon.
+        // The macOS Finder Bin — ONLY when the step is genuinely about the
+        // DESKTOP Trash, i.e. it names the Dock, or we're already in Finder.
+        // "delete"/"trash"/"bin" INSIDE another app (Mail's Delete/Trash toolbar
+        // icon, Gmail's page trash) is NOT the Finder Bin — it's a control in
+        // that app, so leave it to normal detection (which now finds Mail's
+        // Delete button via the toolbar AX read). Without this, "delete an email
+        // in Mail" wrongly launched Finder's Bin. "Empty Bin" is a button inside
+        // the Trash window (checked via targetLabel) — never a launch.
         let label = step.targetLabel.lowercased()
         let targetIsEmptyButton = label.hasPrefix("empty")
         let mentionsTrash = text.contains("trash") || text.contains("bin")
+        let inFinder = TargetAppTracker.shared.targetName.lowercased().contains("finder")
         if mentionsTrash, !wantsContextMenu, !targetIsEmptyButton,
            !TargetAppTracker.shared.isBrowser,
-           text.contains("dock") || text.contains("open") || text.contains("click") {
+           (text.contains("dock") || inFinder) {
             return .trash
         }
 

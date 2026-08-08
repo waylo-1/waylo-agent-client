@@ -541,10 +541,11 @@ final class WayloAPIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Two YOLO models + SigLIP matching on a CPU-only server measure ~5.5s;
-        // 8s left almost no headroom and aborted valid detections. The server's
-        // own proxy timeout (12s) is the real ceiling.
-        request.timeoutInterval = 15
+        // Two YOLO models + SigLIP image-to-image dataset matching on the CPU
+        // box can run ~15-20s; keep the client ceiling above the node proxy's
+        // (25s) so the proxy's own timeout/response wins. A faster box returns
+        // in ~2s and never approaches this.
+        request.timeoutInterval = 30
 
         let body: [String: Any] = [
             "screenshot_b64": imageBase64,
