@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // other users' verified guides already taught (best-effort).
         Task.detached(priority: .utility) { await IconMemory.shared.syncFromBackend() }
 
+        // Day-one seed of the labelled-icon dataset from SF Symbols (once).
+        IconReferenceSeeder.seedOnceIfNeeded()
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(
             systemSymbolName: "cursorarrow.rays",

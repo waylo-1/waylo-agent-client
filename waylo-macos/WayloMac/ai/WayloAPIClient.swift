@@ -358,6 +358,25 @@ final class WayloAPIClient {
         return (rx, ry)
     }
 
+    // MARK: - POST /icon-reference (grow the labelled-icon dataset)
+
+    /// Add a REAL labelled icon image to the fleet-wide image-match reference
+    /// library — from the day-one seed and from every confirmed find. This is
+    /// what teaches Waylo exactly what each icon looks like. Fire-and-forget.
+    func uploadIconReference(label: String, imageBase64: String) {
+        let clean = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 2, !imageBase64.isEmpty,
+              let url = URL(string: "\(baseURL)/icon-reference"),
+              let body = try? JSONSerialization.data(withJSONObject: ["label": clean, "image_b64": imageBase64])
+        else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
+    }
+
     // MARK: - POST /ask-screen (vision Q&A about the current screen)
 
     /// Answers a free-form question using a screenshot of the current screen.

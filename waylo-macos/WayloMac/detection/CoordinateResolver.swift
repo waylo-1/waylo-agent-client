@@ -527,6 +527,11 @@ final class CoordinateResolver {
                         IconMemory.shared.rememberLocation(app: TargetAppTracker.shared.targetName, concept: concept,
                                                            axPoint: point, window: win, image: image, screen: screen)
                     }
+                    // Grow the fleet-wide labelled-icon dataset with this REAL
+                    // captured icon, so image-matching learns what it looks like.
+                    if let (b64, _) = ScreenCapturer.compressedJPEGBase64(crop, maxWidth: 128) {
+                        WayloAPIClient.shared.uploadIconReference(label: Self.conciseObjectPhrase(concept), imageBase64: b64)
+                    }
                 }
                 // STAGE a training example — nothing is written yet. Nova's box
                 // is only a hypothesis; it earns its place in the training set

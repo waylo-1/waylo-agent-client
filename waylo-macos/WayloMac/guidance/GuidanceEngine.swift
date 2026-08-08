@@ -1805,7 +1805,11 @@ final class GuidanceEngine: ObservableObject {
             IconMemory.shared.rememberLocation(app: TargetAppTracker.shared.targetName, concept: concept,
                                                axPoint: clickAX, window: win, image: capture.image, screen: capture.screen)
         }
-        DebugLogger.log("CORRECT", "learned ICON PIXELS + LOCATION for '\(concept)' from the click (free next time)")
+        // User-confirmed = gold: add this REAL icon to the fleet-wide dataset.
+        if let (b64, _) = ScreenCapturer.compressedJPEGBase64(crop, maxWidth: 128) {
+            WayloAPIClient.shared.uploadIconReference(label: CoordinateResolver.conciseObjectPhrase(concept), imageBase64: b64)
+        }
+        DebugLogger.log("CORRECT", "learned ICON PIXELS + LOCATION + uploaded reference for '\(concept)'")
     }
 
     /// Shared "click landed → move on" handler. Shows an immediate spinner at
