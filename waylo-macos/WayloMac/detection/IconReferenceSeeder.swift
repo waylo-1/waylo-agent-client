@@ -114,13 +114,99 @@ enum IconReferenceSeeder {
         ("rectangle.portrait.and.arrow.right", "sign out"),
         ("questionmark.circle.fill", "help"),
         ("gearshape.fill", "settings"),
+        // ── Mail / messaging ──
+        ("envelope.open", "open mail"), ("envelope.badge", "unread mail"),
+        ("tray.full", "all mail"), ("tray.2", "inbox"),
+        ("paperplane.fill", "send"), ("arrow.up.circle", "send"),
+        ("exclamationmark.circle", "important"), ("nosign", "spam"),
+        ("folder.badge.person.crop", "shared folder"), ("at", "mention"),
+        ("text.badge.plus", "add label"), ("mail.stack", "mailboxes"),
+        // ── Files / Finder ──
+        ("doc.badge.plus", "new document"), ("doc.on.doc.fill", "duplicate"),
+        ("square.and.arrow.down.on.square", "save"), ("externaldrive", "drive"),
+        ("internaldrive", "disk"), ("icloud", "icloud"),
+        ("icloud.and.arrow.up", "upload"), ("icloud.and.arrow.down", "download"),
+        ("folder.fill", "folder"), ("doc.zipper", "compress"),
+        ("sidebar.left", "sidebar"), ("sidebar.right", "inspector"),
+        ("rectangle.split.3x1", "columns"), ("square.grid.3x3", "grid"),
+        ("photo.on.rectangle", "gallery"), ("tag.fill", "tag"),
+        ("folder.badge.gearshape", "folder settings"), ("shippingbox", "box"),
+        // ── Text / document editing ──
+        ("textformat.size", "text size"), ("textformat.abc", "spelling"),
+        ("character", "font"), ("a.magnify", "find text"),
+        ("text.justify", "justify"), ("text.indent", "indent"),
+        ("increase.indent", "indent"), ("decrease.indent", "outdent"),
+        ("list.bullet.indent", "list"), ("checklist", "checklist"),
+        ("highlighter", "highlight"), ("pencil.tip", "draw"),
+        ("textformat.superscript", "superscript"), ("textformat.subscript", "subscript"),
+        ("paintpalette", "colors"), ("eyedropper", "color picker"),
+        ("text.quote", "quote"), ("function", "formula"),
+        ("tablecells.badge.ellipsis", "table options"), ("chart.pie", "chart"),
+        ("chart.line.uptrend.xyaxis", "chart"), ("photo.badge.plus", "insert image"),
+        // ── Media / playback ──
+        ("backward.fill", "previous"), ("forward.fill", "next"),
+        ("backward.end.fill", "rewind"), ("forward.end.fill", "skip"),
+        ("shuffle", "shuffle"), ("repeat", "repeat"),
+        ("speaker.wave.3", "volume up"), ("speaker.wave.1", "volume down"),
+        ("volume.fill", "volume"), ("record.circle", "record"),
+        ("camera.fill", "camera"), ("camera.rotate", "flip camera"),
+        ("video.fill", "video"), ("video.slash", "stop video"),
+        ("mic.slash", "mute mic"), ("waveform", "audio"),
+        ("airplayvideo", "airplay"), ("rectangle.on.rectangle", "picture in picture"),
+        ("arrow.up.left.and.arrow.down.right", "fullscreen"), ("captions.bubble", "captions"),
+        // ── Communication ──
+        ("bubble.left.and.bubble.right", "chat"), ("message", "message"),
+        ("phone.fill", "call"), ("phone.arrow.up.right", "outgoing call"),
+        ("person.2", "contacts"), ("person.badge.plus", "add contact"),
+        ("person.crop.circle.badge.plus", "add person"), ("hand.wave", "greeting"),
+        ("bell.slash", "mute notifications"), ("bell.badge", "notifications"),
+        // ── Navigation / arrows ──
+        ("chevron.up", "up"), ("chevron.down", "down"),
+        ("arrow.up", "up"), ("arrow.down", "down"),
+        ("arrow.up.right", "open link"), ("arrow.turn.up.right", "forward"),
+        ("arrow.backward.circle", "back"), ("arrow.forward.circle", "forward"),
+        ("chevron.up.chevron.down", "expand"), ("chevron.right.2", "expand"),
+        ("arrow.up.and.down", "resize"), ("arrow.left.and.right", "resize"),
+        ("arrowtriangle.down.fill", "dropdown"), ("chevron.down.circle", "expand"),
+        // ── System / status ──
+        ("bolt.fill", "power"), ("battery.25", "low battery"),
+        ("wifi.slash", "no wifi"), ("antenna.radiowaves.left.and.right", "signal"),
+        ("airplane", "airplane mode"), ("moon.fill", "do not disturb"),
+        ("sun.max.fill", "brightness"), ("display", "display"),
+        ("keyboard", "keyboard"), ("cursorarrow", "pointer"),
+        ("gauge", "performance"), ("thermometer", "temperature"),
+        ("lock.open", "unlock"), ("key", "password"),
+        ("faceid", "face id"), ("touchid", "touch id"),
+        ("shield", "security"), ("hand.raised", "privacy"),
+        ("network", "network"), ("globe", "web"),
+        // ── Editing / actions ──
+        ("plus.circle.fill", "add"), ("minus.circle", "remove"),
+        ("multiply", "close"), ("checkmark.seal", "verified"),
+        ("arrow.triangle.2.circlepath", "sync"), ("arrow.2.squarepath", "refresh"),
+        ("square.and.pencil", "edit"), ("rectangle.and.pencil.and.ellipsis", "edit"),
+        ("trash.slash", "restore"), ("arrow.uturn.left", "undo"),
+        ("arrow.uturn.right", "redo"), ("wand.and.stars", "auto"),
+        ("crop", "crop"), ("rotate.left", "rotate left"), ("rotate.right", "rotate right"),
+        ("selection.pin.in.out", "select"), ("lasso", "select"),
+        ("scissors.badge.ellipsis", "cut"), ("square.on.square", "layers"),
+        // ── Shapes / misc ──
+        ("circle", "circle"), ("square", "square"),
+        ("app", "app"), ("app.badge", "app badge"),
+        ("puzzlepiece", "extension"), ("cube", "3d"),
+        ("bookmark.fill", "bookmark"), ("flag.fill", "flag"),
+        ("pin", "pin"), ("pin.fill", "pin"),
+        ("bag", "shopping"), ("bag.badge.plus", "add to bag"),
+        ("dollarsign.circle", "money"), ("percent", "discount"),
+        ("calendar.badge.plus", "add event"), ("clock.arrow.circlepath", "history"),
+        ("alarm", "alarm"), ("timer", "timer"),
+        ("hourglass", "loading"), ("ellipsis.circle.fill", "more options"),
     ]
 
     /// Seed once (guarded by UserDefaults). Only marks itself done when the
     /// uploads actually land, so it safely RETRIES on a later launch if the
     /// backend wasn't reachable/redeployed yet. Bump the key to re-seed.
     static func seedOnceIfNeeded() {
-        let key = "waylo.seededIconRefs.v2"
+        let key = "waylo.seededIconRefs.v3"   // bumped: much larger SF Symbols set
         guard !UserDefaults.standard.bool(forKey: key) else { return }
         Task.detached(priority: .utility) {
             var ok = 0
