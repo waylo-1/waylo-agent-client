@@ -126,11 +126,11 @@ microservice**. The `/plan` route branches on `platform: "macos"`.
 ### 3.1 Backend URL — `ai/AppConfig.swift` (never hardcoded in Swift)
 Resolved in priority order:
 1. `WAYLO_BACKEND_URL` env var (scheme → Run → Arguments → Environment Variables).
-2. `WayloBackendURL` key in `Info.plist` — currently `http://13.127.137.249:3000` (EC2).
+2. `WayloBackendURL` key in `Info.plist` — currently `http://13.234.152.35:3000` (EC2, Elastic IP).
 3. Fallback `http://localhost:3000`.
 
 The EC2 backend is plain **HTTP**, so `Info.plist` has a scoped ATS exception
-(`NSExceptionDomains` → `13.127.137.249` → `NSExceptionAllowsInsecureHTTPLoads`). If you
+(`NSExceptionDomains` → `13.234.152.35` → `NSExceptionAllowsInsecureHTTPLoads`). If you
 change the backend host, update both the URL and the ATS exception (or serve HTTPS).
 
 ### 3.2 Endpoints the macOS client calls — `ai/WayloAPIClient.swift`

@@ -162,21 +162,28 @@ final class YOLODetector {
         // an unfamiliar screen simply falls through to normal scoring.
         let concept = targetLabel.isEmpty ? elementDescription : targetLabel
         if !IconMemory.shared.isEmpty {
+            // The learned-location sanity gate needs the same window frame the icon
+            // was remembered against, so a hash collision on the far side of the
+            // screen can be rejected instead of drawn as a confident wrong dot.
+            let memWindow = await MainActor.run { AccessibilityReader.shared.targetFocusedWindowFrame() }
             var cgCrops: [CGImage] = []
             var boxIndex: [Int] = []
+            var boxCenters: [CGPoint] = []
             for (i, el) in response.elements.enumerated() {
+                let boxCenter = normalizedToAXPoint(cx: el.cx, cy: el.cy, screen: screen)
                 // WEB-CONTENT restriction: only remember/recall icons that sit
                 // inside the page area, so a chrome glyph can't pixel-match a
                 // page icon's memory.
                 if let rect = restrictAXRect {
-                    let boxCenter = normalizedToAXPoint(cx: el.cx, cy: el.cy, screen: screen)
                     if !rect.insetBy(dx: -8, dy: -8).contains(boxCenter) { continue }
                 }
                 if let c = image.cropNormalized(x: el.x, y: el.y, w: el.w, h: el.h) {
-                    cgCrops.append(c); boxIndex.append(i)
+                    cgCrops.append(c); boxIndex.append(i); boxCenters.append(boxCenter)
                 }
             }
             if let hit = IconMemory.shared.bestMatch(crops: cgCrops,
+                                                     boxCentersAX: boxCenters,
+                                                     window: memWindow,
                                                      app: TargetAppTracker.shared.targetName,
                                                      concept: concept) {
                 let el = response.elements[boxIndex[hit]]

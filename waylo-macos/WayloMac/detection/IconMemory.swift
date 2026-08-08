@@ -172,19 +172,52 @@ final class IconMemory {
 
     /// Given candidate crops (in the same order as their boxes), returns the
     /// index of the one that matches a remembered icon for app+concept, or nil.
-    func bestMatch(crops: [CGImage], app: String, concept: String) -> Int? {
+    ///
+    /// `boxCentersAX` + `window` (both optional but supplied together) add a hard
+    /// LOCATION sanity gate: an 8×8 average hash is coarse, so two different small
+    /// glyphs (a paperclip vs a shopping-bag) can collide within `maxHamming` bits.
+    /// If we also remember WHERE this icon lives, a hash match that sits nowhere
+    /// near the learned spot is a collision, not the icon — reject it. Without the
+    /// gate this layer confidently pointed at the far-left rail for Gmail's
+    /// paperclip. When no location is remembered (e.g. a fleet-synced hash) we fall
+    /// back to hash-only but at a TIGHTER Hamming, since there's nothing to sanity-
+    /// check against and "confidently wrong" is the worst outcome.
+    func bestMatch(crops: [CGImage], boxCentersAX: [CGPoint] = [], window: CGRect? = nil,
+                   app: String, concept: String) -> Int? {
         guard !app.isEmpty, !concept.isEmpty else { return nil }
-        let known: Set<UInt64> = queue.sync { store[key(app: app, concept: concept)] ?? [] }
+        let k = key(app: app, concept: concept)
+        let known: Set<UInt64> = queue.sync { store[k] ?? [] }
         guard !known.isEmpty else { return nil }
+
+        // Learned relative spot for this icon, if any. Gate hash matches against it.
+        let loc: LocEntry? = queue.sync { locations[k] }
+        let haveCenters = boxCentersAX.count == crops.count
+        let canGateByLocation = loc != nil && haveCenters && (window?.width ?? 0) > 1 && (window?.height ?? 0) > 1
+        // ~18% of the window: generous enough for toolbar reflow, strict enough to
+        // kill a match on the opposite side of the screen.
+        let maxRelDist = 0.18
+        // No location to sanity-check against → demand a much closer hash.
+        let hammingGate = canGateByLocation ? Self.maxHamming : min(Self.maxHamming, 3)
 
         var best: (idx: Int, dist: Int)? = nil
         for (i, crop) in crops.enumerated() {
             guard let h = Self.aHash(crop) else { continue }
             let d = known.map { Self.hamming($0, h) }.min() ?? 64
-            if d <= Self.maxHamming, best == nil || d < best!.dist { best = (i, d) }
+            guard d <= hammingGate else { continue }
+            if canGateByLocation, let loc = loc, let win = window {
+                let rel = CGPoint(x: (boxCentersAX[i].x - win.minX) / win.width,
+                                  y: (boxCentersAX[i].y - win.minY) / win.height)
+                let dx = rel.x - CGFloat(loc.relX), dy = rel.y - CGFloat(loc.relY)
+                let relDist = (dx * dx + dy * dy).squareRoot()
+                if relDist > maxRelDist {
+                    DebugLogger.log("ICONMEM", "hash match box \(i) REJECTED — \(String(format: "%.2f", relDist)) from learned spot (collision, not the icon)")
+                    continue
+                }
+            }
+            if best == nil || d < best!.dist { best = (i, d) }
         }
         if let b = best {
-            DebugLogger.log("ICONMEM", "recall HIT '\(concept)' in \(app) → box \(b.idx) (dist \(b.dist))")
+            DebugLogger.log("ICONMEM", "recall HIT '\(concept)' in \(app) → box \(b.idx) (dist \(b.dist))\(canGateByLocation ? " [location-verified]" : "")")
             return b.idx
         }
         return nil

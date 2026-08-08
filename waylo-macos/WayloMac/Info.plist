@@ -28,7 +28,7 @@
 	<dict>
 		<key>NSExceptionDomains</key>
 		<dict>
-			<key>13.127.137.249</key>
+			<key>13.234.152.35</key>
 			<dict>
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
@@ -44,6 +44,6 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Waylo uses speech recognition for voice task input and questions.</string>
 	<key>WayloBackendURL</key>
-	<string>http://13.127.137.249:3000</string>
+	<string>http://13.234.152.35:3000</string>
 </dict>
 </plist>
