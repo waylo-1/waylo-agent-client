@@ -220,6 +220,27 @@ final class CoordinateResolver {
                 element = toggle
             }
 
+            // AMBIGUOUS AX + TEXT target → let OCR arbitrate before we throw two
+            // blind badges at the user. A text target has a literal visible label
+            // ("Open"), and AX ambiguity here usually means it matched empty-label
+            // AXStaticText (a file dialog's filename field grabbed "Open" via an
+            // incidental value). OCR reading that exact word is ground truth —
+            // "text should almost always be correct". Only a CONFIDENT OCR hit
+            // (locateByOCR already gates at 0.8) overrides; otherwise keep the AX
+            // badges as the fallback. If two real same-labelled controls exist,
+            // OCR finds both too and badges still show — so this only ever helps.
+            if targetType == .text, !found.alternates.isEmpty,
+               let ocr = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
+                                           instruction: stepInstruction, image: image, screen: screen,
+                                           region: screenRegion, preferRect: effectivePreferRect,
+                                           restrictRect: webContentFrame) {
+                DebugLogger.log("RESOLVE", "AX ambiguous for text target '\(targetLabel)' — OCR resolved it confidently, preferring OCR over \(found.alternates.count + 1) badges")
+                DebugLogger.logResolution("L1-OCR (ambiguity override)", found: true, point: ocr.point, label: targetLabel)
+                DebugState.shared.update(layer: "OCR (AX-ambiguous)", dot: ocr.point)
+                return Resolution(axPoint: ocr.point, updatedInstruction: "", targetFrame: ocr.frame,
+                                  alternates: ocr.alternates)
+            }
+
             print("[Resolver] L0 AX hit '\(element.title)' \(element.center)")
             DebugLogger.logResolution("L0-AX", found: true, point: element.center, label: "\(element.title) [\(element.role)]")
             DebugState.shared.update(layer: "L0 AX", dot: element.center)
