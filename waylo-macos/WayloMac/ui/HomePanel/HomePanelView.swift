@@ -18,6 +18,7 @@ struct HomePanelView: View {
     @State private var showWhereContext = false
     @State private var emailInput = ""
     @State private var signedIn = UserAccount.isSignedIn
+    @State private var showShortcuts = false
     @State private var isLoading = false
     @State private var isListening = false
     @State private var language = LanguagePreference.current
@@ -55,6 +56,7 @@ struct HomePanelView: View {
                 taskInput
                 learnSection
                 if showDevTools { devTools }
+                productionFooter
                 recentHistory
             } else {
                 activeGuidance
@@ -62,6 +64,7 @@ struct HomePanelView: View {
         }
         .padding(20)
         .frame(width: 340)
+        .onAppear { if WayloConfig.isProduction { engine.mode = .teach } }
     }
 
     // MARK: - Learn an app (continuous skill sessions + curricula)
@@ -192,7 +195,7 @@ struct HomePanelView: View {
                 Button(L10n.t("stop")) { engine.stopGuidance() }
                     .buttonStyle(.bordered)
                     .tint(.red)
-            } else {
+            } else if !WayloConfig.isProduction {
                 Button {
                     showDevTools.toggle()
                 } label: {
@@ -378,25 +381,30 @@ struct HomePanelView: View {
                 .tint(.red)
                 .disabled(taskText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Picker("Mode", selection: Binding(
-                    get: { engine.mode },
-                    set: { engine.mode = $0 }
-                )) {
-                    Text("Teach me").tag(GuideMode.teach)
-                    Text("Do it with me").tag(GuideMode.assist)
-                    Text("Do it for me").tag(GuideMode.agent)
+            // Guide-mode picker is a DEV affordance — production ships teach-only
+            // (Waylo points, you click, you learn). The other modes stay in the
+            // codebase for testing behind WayloConfig.isProduction.
+            if !WayloConfig.isProduction {
+                VStack(alignment: .leading, spacing: 2) {
+                    Picker("Mode", selection: Binding(
+                        get: { engine.mode },
+                        set: { engine.mode = $0 }
+                    )) {
+                        Text("Teach me").tag(GuideMode.teach)
+                        Text("Do it with me").tag(GuideMode.assist)
+                        Text("Do it for me").tag(GuideMode.agent)
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .labelsHidden()
+                    Text(engine.mode == .agent
+                         ? "Waylo does the whole task itself; risky actions still ask you first"
+                         : engine.mode == .assist
+                         ? "Waylo clicks safe steps itself; risky ones you confirm"
+                         : "Waylo points and you click, so you learn it — but it opens apps for you")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .labelsHidden()
-                Text(engine.mode == .agent
-                     ? "Waylo does the whole task itself; risky actions still ask you first"
-                     : engine.mode == .assist
-                     ? "Waylo clicks safe steps itself; risky ones you confirm"
-                     : "Waylo points and you click, so you learn it — but it opens apps for you")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
             }
 
             Picker("Voice", selection: $language) {
@@ -587,6 +595,73 @@ struct HomePanelView: View {
     }
 
     // MARK: - Developer / milestone tools
+
+    /// The production-facing footer: a "Shortcuts & controls" link, the training-
+    /// screenshots toggle (default ON), and — tucked away for support — a copy-
+    /// diagnostics button. Replaces the Developer Tools panel for real users.
+    private var productionFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            HStack {
+                Button { showShortcuts = true } label: {
+                    Label("Shortcuts & controls", systemImage: "keyboard").font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
+                Spacer()
+                if signedIn {
+                    Text(UserAccount.email).font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                }
+            }
+            Toggle(isOn: $captureTrainingImages) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Contribute training screenshots").font(.caption)
+                    Text("Only steps you did correctly and marked ✓. Kept on-device and sent to Waylo to improve detection for everyone.")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .onChange(of: captureTrainingImages) {
+                UserDefaults.standard.set(captureTrainingImages, forKey: YOLODetector.captureTrainingImagesKey)
+            }
+        }
+        .popover(isPresented: $showShortcuts, arrowEdge: .bottom) { shortcutsSheet }
+    }
+
+    private var shortcutsSheet: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Shortcuts & controls").font(.headline)
+            Text("Hold ⌃⌥⌘ (Control–Option–Command) together with each key:")
+                .font(.caption).foregroundColor(.secondary)
+            Group {
+                shortcutRow("⌃⌥⌘ V", "Speak a task — or correct Waylo mid-guide")
+                shortcutRow("⌃⌥⌘ A", "Hold to ask a question while you learn")
+                shortcutRow("⌃⌥⌘ Q", "Ask about what's on the screen")
+                shortcutRow("⌃⌥⌘ N", "“That's the right spot” — continue / re-detect")
+                shortcutRow("⌃⌥⌘ W", "Show or hide the Waylo panel")
+                shortcutRow("Esc", "Stop the current guide")
+                shortcutRow("Hold Right ⌘", "Push-to-talk (speak a task)")
+            }
+            Divider()
+            Button { copyDebugReport() } label: {
+                Label(copiedDebugReport ? "Copied!" : "Copy diagnostics", systemImage: "doc.on.clipboard").font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .help("Copies app state + recent logs for support")
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+
+    private func shortcutRow(_ key: String, _ desc: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(key)
+                .font(.system(.caption, design: .monospaced))
+                .frame(width: 96, alignment: .leading)
+            Text(desc).font(.caption).foregroundColor(.secondary)
+        }
+    }
 
     private var devTools: some View {
         VStack(alignment: .leading, spacing: 8) {
