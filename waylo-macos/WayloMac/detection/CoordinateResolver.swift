@@ -371,7 +371,8 @@ final class CoordinateResolver {
         // --- Label cache (between L2 and L3): a prior working label. If found,
         // try AX (L0) ONLY with it — a hit lets us skip the costly L3 vision call.
         if !appName.isEmpty, !cacheKey.isEmpty,
-           let cachedLabel = await WayloAPIClient.shared.lookupLabel(appName: appName, stepDescription: cacheKey) {
+           let cachedLabel = await WayloAPIClient.shared.lookupLabel(appName: appName, stepDescription: cacheKey),
+           Self.cachedLabelIsSafe(cachedLabel, forStep: "\(targetLabel) \(elementDescription) \(stepInstruction)") {
             DebugState.shared.update(cache: "HIT \(cachedLabel)")
             DebugLogger.log("RESOLVE", "LABEL_CACHE lookup HIT '\(cachedLabel)'")
             // The cached label may itself be in the wrong dialect (an older run
@@ -921,6 +922,23 @@ final class CoordinateResolver {
 
     /// The label plus its dialect variants, original first (so an exact match
     /// on what the planner said always wins when both exist on screen).
+    /// A cached step-label is a DESTRUCTIVE-mismatch guard: it rejects a learned
+    /// "Close"/"Cancel"/"Dismiss"/"Back"/"Delete" label for a step whose intent is
+    /// clearly NOT that. A mis-harvested click (the user hit the dialog's X during a
+    /// describe step) once poisoned the AI Studio "copy the key" step with "Close
+    /// dialog", which then re-pointed at the X every run. If the step genuinely IS
+    /// about closing/cancelling, the label is allowed through.
+    private static let dangerCacheLabels = ["close", "cancel", "dismiss", "back", "delete", "discard", "remove"]
+    static func cachedLabelIsSafe(_ cachedLabel: String, forStep intent: String) -> Bool {
+        let label = cachedLabel.lowercased()
+        guard let danger = dangerCacheLabels.first(where: { label.contains($0) }) else { return true }
+        let want = intent.lowercased()
+        // Allowed only if the step itself is about that destructive/close action.
+        if want.contains(danger) || dangerCacheLabels.contains(where: { want.contains($0) }) { return true }
+        DebugLogger.log("RESOLVE", "cache label '\(cachedLabel)' looks like a close/cancel control but the step isn't — ignoring (stale pollution)")
+        return false
+    }
+
     static func labelVariants(_ label: String) -> [String] {
         guard !label.isEmpty else { return [] }
         var out = [label]
