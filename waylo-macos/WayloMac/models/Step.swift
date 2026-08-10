@@ -55,6 +55,13 @@ struct Step: Codable, Identifiable {
     /// deep AX search for that exact name resolves it pixel-exact and FREE on the
     /// first run — no vision, no learning. "" when unknown/not applicable.
     var accessibleName: String = ""
+    /// URL-GATED navigation. When set (e.g. "leetcode.com"), this step doesn't
+    /// point at anything — Waylo speaks how to get there ("click the address bar,
+    /// type leetcode.com, press Enter — or open it from your bookmarks") and then
+    /// just WATCHES the browser's URL, auto-advancing the moment it matches. Robust
+    /// to HOW the user navigates (typing, bookmark, history, autocomplete); no
+    /// brittle click-address-bar → type → Return sequence to mis-detect.
+    var awaitURL: String = ""
 
     var id: Int { index }
 

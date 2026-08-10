@@ -305,6 +305,15 @@ final class GuidanceEngine: ObservableObject {
             Speaker.shared.speak(step.instruction)
         }
 
+        // URL-GATED navigation: don't point at anything. The user was just told
+        // how to get there (type it, use a bookmark, whatever); we simply WATCH
+        // the browser URL and advance the moment it matches. Robust to how they
+        // navigate — no brittle address-bar → type → Return sequence to mis-point.
+        if !step.awaitURL.isEmpty {
+            beginURLWait(step: step, index: index)
+            return
+        }
+
         // Defensive: a planner sometimes emits a keyboard shortcut as a "click"
         // step (e.g. targetLabel "Press Command+Space"). Don't run the locator on
         // that forever — reroute it to a key/info step that just shows a banner.
@@ -334,6 +343,63 @@ final class GuidanceEngine: ObservableObject {
         case .type, .key, .info:
             presentNonClickStep(effective)
         }
+    }
+
+    /// URL-GATED navigation step: no dot. Show the instruction, then poll the
+    /// browser URL and advance the instant it matches the target domain — however
+    /// the user got there (typing, bookmark, history, autocomplete). This is far
+    /// more robust than pointing at the address bar and waiting for a Return.
+    private func beginURLWait(step: Step, index: Int) {
+        locateToken += 1
+        let token = locateToken
+        removeClickMonitor()
+        removeKeyAdvanceMonitor()
+        currentTargetAX = nil
+        state = .showing
+        OverlayWindowController.shared.hideDot()
+        OverlayWindowController.shared.showBanner(step.instruction)
+        let target = Self.normalizeURLMatch(step.awaitURL)
+        statusMessage = "Step \(index + 1) of \(steps.count) — I'll continue once you're on \(target)"
+        DebugLogger.log("ENGINE", "URL-wait step \(index + 1): watching for URL to reach '\(target)'")
+        // ⌃⌥⌘N lets the user skip ahead if they're already there / stuck.
+        installManualAdvanceHotkey(forStep: index)
+        Task { @MainActor in
+            // Poll (local AX read of the address bar — free) until the URL matches.
+            let deadline = Date().addingTimeInterval(180)
+            while isRunning, currentStepIndex == index, token == locateToken, Date() < deadline {
+                if Self.currentURLMatches(target) {
+                    DebugLogger.log("ENGINE", "URL reached '\(target)' — advancing to step \(index + 2)")
+                    await ScreenCapturer.shared.settleAfterAction()
+                    guard isRunning, currentStepIndex == index, token == locateToken else { return }
+                    await executeStep(index: index + 1)
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 600_000_000)
+            }
+        }
+    }
+
+    /// Normalize a target URL to a bare host+path for matching ("https://www.
+    /// leetcode.com/" → "leetcode.com").
+    static func normalizeURLMatch(_ s: String) -> String {
+        var t = s.lowercased().trimmingCharacters(in: .whitespaces)
+        for p in ["https://", "http://", "www."] where t.hasPrefix(p) { t = String(t.dropFirst(p.count)) }
+        while t.hasSuffix("/") { t = String(t.dropLast()) }
+        return t
+    }
+
+    /// True when the frontmost browser's current URL is on the target domain.
+    /// Matches on the HOST (not a raw substring) so a search query that happens to
+    /// contain the domain doesn't false-trigger before the user actually gets there.
+    static func currentURLMatches(_ target: String) -> Bool {
+        guard !target.isEmpty, let urlStr = AccessibilityReader.shared.targetWebURL() else { return false }
+        let targetHost = target.split(separator: "/").first.map(String.init) ?? target
+        if let comps = URLComponents(string: urlStr), let host = comps.host?.lowercased() {
+            let h = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            if h == targetHost || h.hasSuffix("." + targetHost) { return true }
+        }
+        // Fallback for odd URL strings: substring on the host portion only.
+        return urlStr.lowercased().contains(targetHost)
     }
 
     /// Present a user-choice step WITHOUT running detection: show the

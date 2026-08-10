@@ -69,6 +69,10 @@ enum PlanParser {
         let accessibleName = (dict["accessibleName"] as? String)
             ?? (dict["ariaLabel"] as? String)
             ?? (dict["axName"] as? String) ?? ""
+        // URL-gated navigation step: advance when the browser URL matches.
+        let awaitURL = (dict["awaitURL"] as? String)
+            ?? (dict["awaitUrl"] as? String)
+            ?? (dict["waitForURL"] as? String) ?? ""
 
         return Step(
             index: index,
@@ -86,7 +90,8 @@ enum PlanParser {
             autoAdvanceSeconds: autoAdvanceSeconds,
             silent: silent,
             advanceOnAnyClick: advanceOnAnyClick,
-            accessibleName: accessibleName
+            accessibleName: accessibleName,
+            awaitURL: awaitURL
         )
     }
 
