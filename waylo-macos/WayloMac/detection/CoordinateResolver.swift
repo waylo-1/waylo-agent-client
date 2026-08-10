@@ -65,6 +65,7 @@ final class CoordinateResolver {
         controlKind: String = "",
         anchorText: String = "",
         anchorPosition: String = "",
+        accessibleName: String = "",
         preferRect: CGRect? = nil
     ) async -> Resolution? {
         let image = capture.image
@@ -308,9 +309,35 @@ final class CoordinateResolver {
         // Fast path for the scroll-assist polling loop: AX + OCR only, no network.
         if localOnly { return nil }
 
+        let appName = TargetAppTracker.shared.targetName
+
+        // --- PLANNER-PROVIDED ACCESSIBLE NAME: the primary icon path -----------
+        // The planner (Gemini) knows the app, so it tells us the name a screen
+        // reader announces for this control — Gmail's paperclip is "Attach files",
+        // Docs' comment button is "Add comment". A focused DEEP AX search for that
+        // exact name resolves web AND native icons pixel-exact, FREE, and private —
+        // on the FIRST run, with no learning and no vision call. This is what makes
+        // icon detection production-ready: most icons ARE labelled for screen
+        // readers, we just need the right name, and the planner supplies it.
+        if !accessibleName.isEmpty,
+           let el = await AccessibilityReader.shared.deepFindByName(accessibleName, restrictRect: webContentFrame),
+           passesRegion(el.center, screenRegion, screen: screen) {
+            DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME deep-AX hit — '\(accessibleName)' \(el.center)")
+            DebugLogger.logResolution("accessible-name-deepAX", found: true, point: el.center, label: accessibleName)
+            DebugState.shared.update(layer: "AX name")
+            // Remember it so future runs resolve identically even if the planner's
+            // wording drifts — the cache keys on the step, stores the working name.
+            if !cacheKey.isEmpty {
+                WayloAPIClient.shared.storeLabel(appName: appName, stepDescription: cacheKey, axLabel: accessibleName)
+            }
+            return Resolution(axPoint: el.center, updatedInstruction: "",
+                              axElement: el.axElement, targetFrame: el.frame)
+        } else if !accessibleName.isEmpty {
+            DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME '\(accessibleName)' not in AX tree — continuing to cache/vision")
+        }
+
         // --- Label cache (between L2 and L3): a prior working label. If found,
         // try AX (L0) ONLY with it — a hit lets us skip the costly L3 vision call.
-        let appName = TargetAppTracker.shared.targetName
         if !appName.isEmpty, !cacheKey.isEmpty,
            let cachedLabel = await WayloAPIClient.shared.lookupLabel(appName: appName, stepDescription: cacheKey) {
             DebugState.shared.update(cache: "HIT \(cachedLabel)")

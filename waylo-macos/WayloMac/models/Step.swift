@@ -49,6 +49,12 @@ struct Step: Codable, Identifiable {
     /// soon as it senses ANY click — used when it can't reliably point (e.g. the
     /// Google result link) but the user can click it themselves.
     var advanceOnAnyClick: Bool = false
+    /// The name a screen reader announces for this control — its aria-label (web)
+    /// or AXDescription (native). The planner (which knows the app) fills this for
+    /// icon targets: Gmail's paperclip is announced "Attach files", so a focused
+    /// deep AX search for that exact name resolves it pixel-exact and FREE on the
+    /// first run — no vision, no learning. "" when unknown/not applicable.
+    var accessibleName: String = ""
 
     var id: Int { index }
 

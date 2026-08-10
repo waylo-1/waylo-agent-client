@@ -578,6 +578,7 @@ final class GuidanceEngine: ObservableObject {
             controlKind: step.controlKind,
             anchorText: step.anchorText,
             anchorPosition: step.anchorPosition,
+            accessibleName: step.accessibleName,
             preferRect: preferredWindowFrame
         )
         guard token == locateToken, isRunning else { return }
@@ -613,6 +614,7 @@ final class GuidanceEngine: ObservableObject {
                     controlKind: step.controlKind,
                     anchorText: step.anchorText,
                     anchorPosition: step.anchorPosition,
+                    accessibleName: step.accessibleName,
                     preferRect: preferredWindowFrame
                 )
                 guard token == locateToken, isRunning else { return }
@@ -1250,7 +1252,8 @@ final class GuidanceEngine: ObservableObject {
                 stepIndex: step.index,
                 totalSteps: steps.count,
                 targetType: step.targetType,
-                controlKind: step.controlKind
+                controlKind: step.controlKind,
+                accessibleName: step.accessibleName
             )
             guard token == locateToken, isRunning else { return true }
             if let retry = retry {

@@ -64,6 +64,11 @@ enum PlanParser {
             ?? (dict["autoAdvanceSeconds"] as? NSNumber)?.doubleValue ?? 0
         let silent = (dict["silent"] as? Bool) ?? false
         let advanceOnAnyClick = (dict["advanceOnAnyClick"] as? Bool) ?? false
+        // Screen-reader name (aria-label / AXDescription) the planner provides for
+        // icon targets, so the resolver can deep-search the AX tree for it directly.
+        let accessibleName = (dict["accessibleName"] as? String)
+            ?? (dict["ariaLabel"] as? String)
+            ?? (dict["axName"] as? String) ?? ""
 
         return Step(
             index: index,
@@ -80,7 +85,8 @@ enum PlanParser {
             anchorPosition: anchorPosition,
             autoAdvanceSeconds: autoAdvanceSeconds,
             silent: silent,
-            advanceOnAnyClick: advanceOnAnyClick
+            advanceOnAnyClick: advanceOnAnyClick,
+            accessibleName: accessibleName
         )
     }
 
