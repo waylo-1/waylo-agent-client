@@ -312,7 +312,7 @@ final class YOLODetector {
         // this crop matches the target text, NOTHING here is acceptable —
         // defer to Nova rather than confidently point at the wrong thing.
         if winner.element.matchConf != nil && conf < Self.minMatchConf {
-            DebugLogger.log("L2.5", "REJECTED: matchScore=\(String(format: "%.2f", ms)) looks decisive but absolute conf=\(String(format: "%.3f", conf)) < \(Self.minMatchConf) — target likely NOT among the boxes → L3 Nova")
+            DebugLogger.log("L2.5", "REJECTED: matchScore=\(String(format: "%.2f", ms)) looks decisive but absolute conf=\(String(format: "%.3f", conf)) < \(Self.minMatchConf) — target likely NOT among the boxes → L3 Gemini")
             return nil
         }
 
@@ -334,7 +334,7 @@ final class YOLODetector {
             }
         } else {
             guard semanticWinner || classMatched || unambiguous else {
-                DebugLogger.log("L2.5", "best candidate rejected (matchScore=\(String(format: "%.2f", ms)), no class match, \(candidates.count) candidates) — deferring to L3 Nova")
+                DebugLogger.log("L2.5", "best candidate rejected (matchScore=\(String(format: "%.2f", ms)), no class match, \(candidates.count) candidates) — deferring to L3 Gemini")
                 return nil
             }
         }

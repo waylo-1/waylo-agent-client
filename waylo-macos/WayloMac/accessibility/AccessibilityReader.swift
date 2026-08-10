@@ -345,6 +345,36 @@ final class AccessibilityReader: @unchecked Sendable {
                       width: frame.width, height: max(0, frame.height - chromeStrip))
     }
 
+    /// The URL of the frontmost browser's focused web page. Chrome/Safari expose
+    /// it on the AXWebArea as "AXURL". This tells the planner WHICH site the user
+    /// is already on (mail.google.com, docs.google.com…) so it doesn't add "open
+    /// a tab / search for the site" steps when they're already there. nil for
+    /// non-browsers or when no URL is exposed.
+    func targetWebURL() -> String? {
+        guard TargetAppTracker.shared.isBrowser, let window = focusedTargetWindow() else { return nil }
+        guard let web = firstWebAreaElement(in: window, depth: 0) else { return nil }
+        var urlRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(web, "AXURL" as CFString, &urlRef) == .success,
+              let ref = urlRef else { return nil }
+        // AXURL usually bridges to NSURL→URL; occasionally it's a plain string.
+        if let url = ref as? URL { return url.absoluteString }
+        if let s = ref as? String { return s }
+        return nil
+    }
+
+    /// First AXWebArea ELEMENT under `element` (sibling of largestWebArea, which
+    /// returns only a frame). Does not descend into a web area.
+    private func firstWebAreaElement(in element: AXUIElement, depth: Int) -> AXUIElement? {
+        guard depth < 12 else { return nil }
+        if copyStringAttribute(element, kAXRoleAttribute) == "AXWebArea" { return element }
+        var childrenRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef)
+        for child in (childrenRef as? [AXUIElement]) ?? [] {
+            if let hit = firstWebAreaElement(in: child, depth: depth + 1) { return hit }
+        }
+        return nil
+    }
+
     /// The largest AXWebArea frame under `element` (browsers can host several —
     /// the page, DevTools, extension popups). Does not descend INTO a web area.
     private func largestWebArea(in element: AXUIElement, depth: Int) -> CGRect? {

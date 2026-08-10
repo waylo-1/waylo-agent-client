@@ -478,8 +478,8 @@ final class CoordinateResolver {
             DebugState.shared.update(layer: "FAILED (no screen perm)")
             return nil
         }
-        print("[Resolver] L3 Nova fallback")
-        DebugLogger.log("RESOLVE", "L3 Nova fallback invoked")
+        print("[Resolver] L3 Gemini fallback")
+        DebugLogger.log("RESOLVE", "L3 Gemini fallback invoked")
         // Fold any positional anchor into the description so Nova aims correctly
         // (e.g. "Send button … (located to the right of 'Add a caption')").
         // Use the CONCISE object name for a textless icon (see visionQuery).
@@ -548,9 +548,9 @@ final class CoordinateResolver {
             // star), that's wrong — describe instead of pointing there.
             if let wf = webContentFrame, let point = result.axPoint,
                !wf.insetBy(dx: -8, dy: -8).contains(point) {
-                DebugLogger.log("RESOLVE", "L3 Nova point (\(Int(point.x)),\(Int(point.y))) is OUTSIDE the web area — browser chrome, not the target → region/describe")
+                DebugLogger.log("RESOLVE", "L3 Gemini point (\(Int(point.x)),\(Int(point.y))) is OUTSIDE the web area — browser chrome, not the target → region/describe")
                 DebugLogger.logResolution("L3-Nova", found: false, point: point, label: "off-page \(targetLabel)")
-                DebugState.shared.update(layer: "L3 Nova (off-page)")
+                DebugState.shared.update(layer: "L3 Gemini (off-page)")
                 return approximateFrom(result)
             }
             // Nova low-confidence guard: if Nova admits it's guessing at the
@@ -559,16 +559,16 @@ final class CoordinateResolver {
             // return nil so the engine describes the target and lets the user
             // click. "Don't point when unsure" > a confident wrong dot.
             if let point = result.axPoint, let conf = result.confidence, conf < Self.novaMinConfidence {
-                DebugLogger.log("RESOLVE", "L3 Nova REJECTED: confidence \(String(format: "%.2f", conf)) < \(Self.novaMinConfidence) — region/describe instead of pointing at a guess")
+                DebugLogger.log("RESOLVE", "L3 Gemini REJECTED: confidence \(String(format: "%.2f", conf)) < \(Self.novaMinConfidence) — region/describe instead of pointing at a guess")
                 DebugLogger.logResolution("L3-Nova", found: false, point: point, label: "low-conf \(targetLabel)")
-                DebugState.shared.update(layer: "L3 Nova (low-conf)")
+                DebugState.shared.update(layer: "L3 Gemini (low-conf)")
                 // Prefer the region highlight + hint over a bare spoken describe.
                 return approximateFrom(result)
             }
             if let point = result.axPoint {
                 print("[Resolver] L3 hit \(point)")
                 DebugLogger.logResolution("L3-Nova", found: true, point: point, label: targetLabel)
-                DebugState.shared.update(layer: "L3 Nova", dot: point)
+                DebugState.shared.update(layer: "L3 Gemini", dot: point)
                 // Cache the working label so the next run of this step resolves
                 // via AX (L0) and skips L1/L2/L3 entirely. Fire-and-forget.
                 if !appName.isEmpty, !cacheKey.isEmpty, !result.novaLabel.isEmpty {
@@ -618,13 +618,13 @@ final class CoordinateResolver {
             if !refined.isEmpty {
                 if let element = axSearch(refined, region: screenRegion, screen: screen, restrictRect: webContentFrame) {
                     DebugLogger.logResolution("L3-Nova-refine-AX", found: true, point: element.center, label: refined)
-                    DebugState.shared.update(layer: "L3 Nova→AX", dot: element.center)
+                    DebugState.shared.update(layer: "L3 Gemini→AX", dot: element.center)
                     return Resolution(axPoint: element.center, updatedInstruction: result.updatedInstruction,
                                       axElement: element.axElement, targetFrame: element.frame)
                 }
                 if let point = await visionDetector.findLabel(refined, in: image, on: screen, region: screenRegion) {
                     DebugLogger.logResolution("L3-Nova-refine-OCR", found: true, point: point, label: refined)
-                    DebugState.shared.update(layer: "L3 Nova→OCR", dot: point)
+                    DebugState.shared.update(layer: "L3 Gemini→OCR", dot: point)
                     return Resolution(axPoint: point, updatedInstruction: result.updatedInstruction)
                 }
             }
@@ -683,9 +683,9 @@ final class CoordinateResolver {
                                                   stepIndex: 0, totalSteps: 1,
                                                   image: capture.image, screen: screen),
            let p = r.axPoint {
-            lines.append("L3 Nova: HIT '\(r.novaLabel)' (\(Int(p.x)),\(Int(p.y)))")
+            lines.append("L3 Gemini: HIT '\(r.novaLabel)' (\(Int(p.x)),\(Int(p.y)))")
         } else {
-            lines.append("L3 Nova: miss")
+            lines.append("L3 Gemini: miss")
         }
 
         for line in lines { DebugLogger.log("SELFTEST", line) }

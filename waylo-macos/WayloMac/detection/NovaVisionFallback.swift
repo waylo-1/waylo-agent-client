@@ -1,12 +1,14 @@
 import Foundation
 import AppKit
 
-/// Layer 3: cloud grounding via Nova 2 Lite's object-detection mode (through the
-/// Railway backend's `/nova-vision` route). Nova returns a bounding box on a
-/// 0–1000 normalized scale, which we map to an AX global point.
-///
-/// The normalized scale is resolution-independent, so JPEG compression does not
-/// affect coordinate accuracy.
+/// Layer 3: cloud vision grounding through the backend's `/nova-vision` route.
+/// NOTE: with the backend on AI_PROVIDER=gemini this is **Gemini** object
+/// detection — the class name, endpoint, and `/nova-vision` path are historical
+/// (like the Android `GeminiClient` naming), kept to avoid a coordinated
+/// client+server+route rename. Logs are tagged [GEMINI] so debug reports tell
+/// the truth. Returns a bounding box on a 0–1000 normalized scale, mapped to an
+/// AX global point; the normalized scale is resolution-independent, so JPEG
+/// compression doesn't affect coordinate accuracy.
 final class NovaVisionFallback {
 
     struct Result {
@@ -52,7 +54,7 @@ final class NovaVisionFallback {
         guard let (base64, sentSize) = ScreenCapturer.compressedJPEGBase64(image, maxWidth: 1280) else {
             return nil
         }
-        DebugLogger.log("NOVA", "sending image \(Int(sentSize.width))x\(Int(sentSize.height)) (orig \(image.width)x\(image.height)) screen=\(Int(screen.frame.width))x\(Int(screen.frame.height)) scale=\(screen.backingScaleFactor) target='\(targetLabel)'")
+        DebugLogger.log("GEMINI", "sending image \(Int(sentSize.width))x\(Int(sentSize.height)) (orig \(image.width)x\(image.height)) screen=\(Int(screen.frame.width))x\(Int(screen.frame.height)) scale=\(screen.backingScaleFactor) target='\(targetLabel)'")
 
         // Use the most descriptive label available for the detection target.
         let label = [targetLabel, elementDescription]
@@ -72,26 +74,26 @@ final class NovaVisionFallback {
                 ? bboxToAXRect(response.container!, screen: screen) : nil
             let hint = response.hint
             if containerFrame != nil {
-                DebugLogger.log("NOVA", "container present\(hint.isEmpty ? "" : " + hint: '\(hint)'")")
+                DebugLogger.log("GEMINI", "container present\(hint.isEmpty ? "" : " + hint: '\(hint)'")")
             }
             guard response.found, let bbox = response.bbox, bbox.count == 4 else {
-                DebugLogger.log("NOVA", "not found (found=\(response.found))")
+                DebugLogger.log("GEMINI", "not found (found=\(response.found))")
                 return Result(axPoint: nil, axFrame: nil, updatedInstruction: "", updatedFindDescription: "",
                               novaLabel: "", rawBBox: nil, containerFrame: containerFrame, hint: hint)
             }
-            DebugLogger.log("NOVA", "raw bbox=[\(bbox.map { Int($0) }.map(String.init).joined(separator: ","))] (0-1000)")
+            DebugLogger.log("GEMINI", "raw bbox=[\(bbox.map { Int($0) }.map(String.init).joined(separator: ","))] (0-1000)")
             let axPoint = bboxToAX(bbox, screen: screen)
             let axFrame = axPoint != nil ? bboxToAXRect(bbox, screen: screen) : nil
-            DebugLogger.log("NOVA", "computed axPoint=\(axPoint.map { String(format: "(%.1f,%.1f)", $0.x, $0.y) } ?? "nil")")
+            DebugLogger.log("GEMINI", "computed axPoint=\(axPoint.map { String(format: "(%.1f,%.1f)", $0.x, $0.y) } ?? "nil")")
             // Prefer the label Nova returns; fall back to the label we sent.
             let resolvedLabel = (response.label?.isEmpty == false) ? response.label! : label
             if let c = response.confidence {
-                DebugLogger.log("NOVA", "confidence=\(String(format: "%.2f", c))")
+                DebugLogger.log("GEMINI", "confidence=\(String(format: "%.2f", c))")
             }
             return Result(axPoint: axPoint, axFrame: axFrame, updatedInstruction: "", updatedFindDescription: "", novaLabel: resolvedLabel, rawBBox: bbox, confidence: response.confidence, containerFrame: containerFrame, hint: hint)
         } catch {
             print("[NovaVisionFallback] request failed: \(error)")
-            DebugLogger.log("NOVA", "request failed: \(error.localizedDescription)")
+            DebugLogger.log("GEMINI", "request failed: \(error.localizedDescription)")
             return nil
         }
     }

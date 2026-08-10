@@ -34,6 +34,14 @@ enum ScreenContextBuilder {
             lines.append("Windows: \(windows)")
         }
 
+        // The current web page URL (browsers only). Tells the planner WHICH site
+        // the user is already on, so it doesn't re-open a tab / search for a site
+        // they're already viewing (e.g. already on mail.google.com for a Gmail
+        // task) — the plan starts from the page in front of them.
+        if let url = AccessibilityReader.shared.targetWebURL(), !url.isEmpty {
+            lines.append("Current web page: \(url)")
+        }
+
         // Visible interactive elements of the target app, deduped, shortest
         // first inside each role (short titles are the clickable labels).
         let elements = AccessibilityReader.shared.getTargetAppElements()
