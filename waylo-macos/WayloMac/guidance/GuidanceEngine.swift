@@ -757,6 +757,21 @@ final class GuidanceEngine: ObservableObject {
             // know the toolbar/panel it's in. Highlight that whole area and speak
             // the locator hint — coarsely-right + descriptive, never a wrong dot.
             if resolution.approximate {
+                // If the hint says the element is OFF-SCREEN ("scroll down…") and the
+                // app can scroll, run SCROLL ASSIST — a bouncing arrow that polls as
+                // the user scrolls and auto-advances the moment the item appears —
+                // instead of a static describe box the user has to decode. Fixes the
+                // System Settings sidebar item below the fold ("Touch ID & Password").
+                let hint = resolution.regionHint.lowercased()
+                if hint.contains("scroll"), AccessibilityReader.shared.targetHasScrollArea() {
+                    let dir = hint.contains("scroll up") || hint.contains("upward") ? "up" : "down"
+                    DebugLogger.log("ENGINE", "approximate hint says scroll → scroll assist (\(dir)) for '\(step.targetLabel)'")
+                    let found = await beginScrollAssist(step: step, token: token, direction: dir,
+                                                        instruction: resolution.regionHint)
+                    guard token == locateToken, isRunning else { return }
+                    if found { return }
+                    // Scroll assist timed out — fall back to the static describe box.
+                }
                 presentApproximateRegion(resolution, step: step)
                 return
             }
@@ -1518,7 +1533,8 @@ final class GuidanceEngine: ObservableObject {
                 targetType: step.targetType,
                 controlKind: step.controlKind,
                 anchorText: step.anchorText,
-                anchorPosition: step.anchorPosition
+                anchorPosition: step.anchorPosition,
+                accessibleName: step.accessibleName
             )
             guard token == locateToken, isRunning else { return false }
 
