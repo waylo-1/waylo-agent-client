@@ -602,16 +602,15 @@ struct HomePanelView: View {
     private var productionFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
-            HStack {
-                Button { showShortcuts = true } label: {
-                    Label("Shortcuts & controls", systemImage: "keyboard").font(.caption)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.secondary)
-                Spacer()
-                if signedIn {
-                    Text(UserAccount.email).font(.caption2).foregroundColor(.secondary).lineLimit(1)
-                }
+            Button { showShortcuts = true } label: {
+                Label("Shortcuts & Controls", systemImage: "keyboard")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            if signedIn {
+                Text("Signed in as \(UserAccount.email)")
+                    .font(.caption2).foregroundColor(.secondary).lineLimit(1)
             }
             Toggle(isOn: $captureTrainingImages) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -718,19 +717,8 @@ struct HomePanelView: View {
                     .buttonStyle(.bordered)
             }
 
-            Toggle(isOn: $captureTrainingImages) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Contribute training screenshots").font(.caption)
-                    Text("Only for steps you clicked correctly AND marked ✓. Saved on-device and sent to Waylo to improve detection.")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .onChange(of: captureTrainingImages) {
-                UserDefaults.standard.set(captureTrainingImages, forKey: YOLODetector.captureTrainingImagesKey)
-            }
+            // (The "Contribute training screenshots" toggle now lives in the
+            // always-visible production footer, so it's not duplicated here.)
 
             // Layer self-test: run EVERY layer independently on the current
             // screen and show each one's verdict. Switch to the target app
