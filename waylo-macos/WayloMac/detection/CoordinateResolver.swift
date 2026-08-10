@@ -506,6 +506,16 @@ final class CoordinateResolver {
                 DebugLogger.log("RESOLVE", "container \(Int(frame.width))x\(Int(frame.height)) too small to be a real group — skipping region+describe")
                 return nil
             }
+            // A THIN, NEARLY-FULL-HEIGHT strip is a localization FAILURE, not a
+            // real group — Gemini (often on found=false) guessed a full-height
+            // column when it couldn't place the target vertically. Drawing it puts
+            // a tall box in the wrong place (a YouTube bookmark landed under a
+            // 57x740 strip). Reject → the caller does a plain spoken describe, and
+            // the user can click the real spot + press ⌃⌥⌘N to confirm.
+            if let wf = webContentFrame, frame.width < 120, frame.height > wf.height * 0.55 {
+                DebugLogger.log("RESOLVE", "container \(Int(frame.width))x\(Int(frame.height)) is a full-height strip — not a real group, describing by voice instead")
+                return nil
+            }
             if let wf = webContentFrame {
                 guard wf.insetBy(dx: -20, dy: -20).intersects(frame) else { return nil }
                 let clipped = frame.intersection(wf)

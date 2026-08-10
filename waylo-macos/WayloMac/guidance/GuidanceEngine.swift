@@ -1551,10 +1551,60 @@ final class GuidanceEngine: ObservableObject {
             DebugLogger.log("ENGINE", "debugRelocate ignored (isRunning=\(isRunning) state=\(state))")
             return
         }
-        DebugLogger.log("ENGINE", "debugRelocate → forcing fresh screenshot + Nova recovery for step \(currentStepIndex + 1)")
+        // "That was the right spot, continue." If the user recently clicked AWAY
+        // from the dot on THIS step, ⌃⌥⌘N means "you pointed wrong — it's where I
+        // just clicked": confirm that click as ground truth (learn it fleet-wide)
+        // and advance. This is the reliable, explicit correction the auto
+        // screen-change detection can miss. No recent off-dot click → fall back to
+        // the normal re-detect (fresh screenshot → recovery).
+        if let last = lastOffTargetClick,
+           last.stepIndex == currentStepIndex,
+           Date().timeIntervalSince(last.at) < 30 {
+            DebugLogger.log("ENGINE", "⌃⌥⌘N with a recent off-dot click → confirming it as the target + advancing")
+            lastOffTargetClick = nil
+            confirmClickAsTarget(at: last.point, stepIndex: currentStepIndex)
+            return
+        }
+        DebugLogger.log("ENGINE", "debugRelocate → forcing fresh screenshot + Gemini recovery for step \(currentStepIndex + 1)")
         let idx = currentStepIndex
         OverlayWindowController.shared.hideDot()
         Task { await forceRecover(stepIndex: idx) }
+    }
+
+    /// EXPLICIT correction: the user clicked the real target themselves (the dot
+    /// was wrong) and pressed ⌃⌥⌘N to confirm. Treat their click as ground truth —
+    /// learn it (harvest-guarded label + icon pixels/location + fleet + analytics)
+    /// and advance. Unlike `watchOffTargetClick` this needs NO screen-change
+    /// signal: the keypress IS the confirmation, so it works even when the right
+    /// control doesn't visibly change the screen (selecting an item, focusing a
+    /// field). This is the user's "I fixed it, store my spot and move on" flow.
+    private func confirmClickAsTarget(at clickAX: CGPoint, stepIndex: Int) {
+        guard isRunning, stepIndex < steps.count else { return }
+        let step = steps[stepIndex]
+        let appName = TargetAppTracker.shared.targetName
+        let element = AccessibilityReader.shared.elementAt(axPoint: clickAX)
+        let label = Self.harvestableLabel(from: element)
+        DebugLogger.log("CORRECT", "user confirmed click (⌃⌥⌘N) at (\(Int(clickAX.x)),\(Int(clickAX.y))) as target for step \(stepIndex + 1) — learning '\(label ?? "(pixels only)")'")
+        // Our predicted box was wrong — don't train on it.
+        TrainingHarvest.shared.discard(stepIndex: stepIndex)
+        if let label = label, !step.labelCacheKey.isEmpty {
+            WayloAPIClient.shared.storeLabel(appName: appName, stepDescription: step.labelCacheKey, axLabel: label)
+        }
+        if step.targetType == .icon || step.targetLabel.isEmpty {
+            learnIconPixels(at: clickAX, step: step, element: element)
+        }
+        var corrected: [String: Any] = ["x": Int(clickAX.x), "y": Int(clickAX.y)]
+        if let el = element {
+            corrected["text"] = (el.title.isEmpty ? el.description : el.title)
+            corrected["bounds"] = ["x": Int(el.frame.minX), "y": Int(el.frame.minY),
+                                   "w": Int(el.frame.width), "h": Int(el.frame.height)]
+        }
+        WayloAPIClient.shared.reportDetectionEvent(
+            source: "user_confirm_click", task: taskName, stepNumber: stepIndex + 1,
+            findDescription: step.findDescription, elementType: step.controlKind,
+            screenRegion: step.screenRegion.rawValue, appName: appName, correctedTarget: corrected)
+        currentTargetAX = clickAX
+        advanceAfterClick(stepIndex: stepIndex)
     }
 
     private func forceRecover(stepIndex: Int) async {
@@ -1726,13 +1776,20 @@ final class GuidanceEngine: ObservableObject {
             return
         }
 
-        // OFF-TARGET click: maybe the USER knows better than the dot. If the
-        // screen visibly changes right after their click, their element was
-        // the real target — learn it and move on.
+        // OFF-TARGET click: maybe the USER knows better than the dot. Remember it
+        // so ⌃⌥⌘N ("that was the right spot, continue") can confirm+learn it even
+        // when the click caused no visible screen change. AND, if the screen DOES
+        // visibly change right after, auto-learn it and move on.
         if !isRight {
+            lastOffTargetClick = (point: clickAX, at: Date(), stepIndex: stepIndex)
             watchOffTargetClick(at: clickAX, stepIndex: stepIndex)
         }
     }
+
+    /// The user's most recent click that landed AWAY from the dot during the
+    /// current step — the candidate "you pointed wrong, it's actually here" spot
+    /// that ⌃⌥⌘N confirms.
+    private var lastOffTargetClick: (point: CGPoint, at: Date, stepIndex: Int)?
 
     // MARK: - Detection analytics (fire-and-forget, no screenshots on success)
 

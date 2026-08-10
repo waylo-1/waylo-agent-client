@@ -127,7 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hk.registerModifierHold(keyCode: HotkeyManager.rightCommandKeyCode, name: "voice",
             onPress: { Task { @MainActor in VoiceCommandEngine.shared.beginPushToTalk() } },
             onRelease: { Task { @MainActor in VoiceCommandEngine.shared.endPushToTalk() } })
-        // ⌃⌥⌘ N — re-detect the current step (fresh screenshot → Nova recovery).
+        // ⌃⌥⌘ N — "that was the right spot, continue": if the user just clicked
+        // away from the dot, confirm+learn that click and advance; else re-detect.
         hk.register(keyCode: 45, name: "re-detect") {
             Task { @MainActor in GuidanceEngine.shared.debugRelocate() }
         }
