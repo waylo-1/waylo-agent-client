@@ -34,6 +34,7 @@ final class WayloAPIClient {
         if !screenContext.isEmpty { body["screenContext"] = screenContext }
         if !sessionContext.isEmpty { body["sessionContext"] = sessionContext }
         if !userContext.isEmpty { body["userContext"] = userContext }
+        if UserAccount.isSignedIn { body["userEmail"] = UserAccount.email }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
@@ -301,6 +302,21 @@ final class WayloAPIClient {
     func addIconConcept(name: String) {
         guard !name.isEmpty, let url = URL(string: "\(baseURL)/vocab/add"),
               let body = try? JSONSerialization.data(withJSONObject: ["name": name]) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let session = self.session
+        Task { _ = try? await session.data(for: request) }
+    }
+
+    /// Registers a signed-in user's email with the backend (fire-and-forget), so
+    /// they appear in the users table for business/customer evidence.
+    func register(email: String, name: String = "", source: String = "app") {
+        guard !email.isEmpty, let url = URL(string: "\(baseURL)/register"),
+              let body = try? JSONSerialization.data(withJSONObject: [
+                  "email": email, "name": name, "source": source
+              ]) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

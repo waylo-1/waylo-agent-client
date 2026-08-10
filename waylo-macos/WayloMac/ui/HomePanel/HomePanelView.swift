@@ -16,6 +16,8 @@ struct HomePanelView: View {
     /// from the URL, so this is only occasionally needed.
     @State private var whereContext = ""
     @State private var showWhereContext = false
+    @State private var emailInput = ""
+    @State private var signedIn = UserAccount.isSignedIn
     @State private var isLoading = false
     @State private var isListening = false
     @State private var language = LanguagePreference.current
@@ -311,6 +313,20 @@ struct HomePanelView: View {
 
     private var taskInput: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Lightweight sign-in: capture the email once so usage is tracked per
+            // user (business evidence + the free-tier limit). The Vercel site also
+            // captures it; this covers app-first users. Hidden once signed in.
+            if !signedIn {
+                HStack(spacing: 8) {
+                    TextField("Sign in with your email", text: $emailInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { signInWithEmail() }
+                    Button("Sign in") { signInWithEmail() }
+                        .buttonStyle(.bordered)
+                        .disabled(!emailInput.contains("@"))
+                }
+            }
+
             Text(L10n.t("ask_prompt"))
                 .font(.subheadline)
                 .foregroundColor(.secondary)
@@ -672,6 +688,14 @@ struct HomePanelView: View {
     }
 
     // MARK: - Actions
+
+    private func signInWithEmail() {
+        let e = emailInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard e.contains("@"), e.contains(".") else { return }
+        UserAccount.signIn(email: e, source: "app")
+        signedIn = UserAccount.isSignedIn
+        emailInput = ""
+    }
 
     private func startTask() {
         let task = taskText.trimmingCharacters(in: .whitespaces)
