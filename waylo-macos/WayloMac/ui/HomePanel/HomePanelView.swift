@@ -631,16 +631,26 @@ struct HomePanelView: View {
     private var shortcutsSheet: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Shortcuts & controls").font(.headline)
-            Text("Hold ⌃⌥⌘ (Control–Option–Command) together with each key:")
+            // The easy one, up top and highlighted.
+            VStack(alignment: .leading, spacing: 3) {
+                Label("Just hold the Right ⌘ key and speak", systemImage: "mic.fill")
+                    .font(.subheadline).fontWeight(.semibold)
+                Text("Ask a question, or say what you want to do (“make this bold”, “add a bar chart”). Waylo shows you how — and remembers what you're learning.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.12))
+            .cornerRadius(10)
+
+            Text("Other shortcuts — hold ⌃⌥⌘ (Control–Option–Command) with:")
                 .font(.caption).foregroundColor(.secondary)
             Group {
-                shortcutRow("⌃⌥⌘ V", "Speak a task — or correct Waylo mid-guide")
-                shortcutRow("⌃⌥⌘ A", "Hold to ask a question while you learn")
+                shortcutRow("⌃⌥⌘ A", "Ask a question or follow-up (same as Right ⌘)")
                 shortcutRow("⌃⌥⌘ Q", "Ask about what's on the screen")
                 shortcutRow("⌃⌥⌘ N", "“That's the right spot” — continue / re-detect")
                 shortcutRow("⌃⌥⌘ W", "Show or hide the Waylo panel")
                 shortcutRow("Esc", "Stop the current guide")
-                shortcutRow("Hold Right ⌘", "Push-to-talk (speak a task)")
             }
             Divider()
             Button { copyDebugReport() } label: {

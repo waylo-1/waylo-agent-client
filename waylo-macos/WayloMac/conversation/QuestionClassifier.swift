@@ -5,6 +5,7 @@ enum QuestionType {
     case concept                                   // "what is a VLOOKUP?" → text answer
     case location(targetLabel: String, region: ScreenRegion) // "where is X?" → dot
     case navigation(direction: String)             // "continue" / "go back" / "repeat"
+    case task(query: String)                       // "how do I make text bold" → GUIDE it
     case unknown
 }
 
@@ -26,14 +27,37 @@ final class QuestionClassifier {
         "start over", "restart"
     ]
 
+    // A real EXPLAIN question ("what is…", "why…") → narrate. Everything that
+    // asks HOW to do something, or commands an action, is a TASK we should GUIDE.
+    private let conceptStarters = ["what is", "what's", "what are", "what does",
+        "why ", "explain", "tell me about", "what do you", "meaning of", "difference between"]
+    private let taskStarters = ["how do i", "how to", "how can i", "how would i",
+        "help me", "can you", "i want to", "i need to", "let's", "lets "]
+    private let actionVerbs = ["make", "add", "insert", "create", "change", "turn on",
+        "turn off", "enable", "disable", "delete", "remove", "select", "format",
+        "set ", "write", "type", "send", "attach", "share", "download", "copy",
+        "paste", "bold", "italic", "underline", "highlight", "resize", "rename",
+        "move", "open ", "close", "save", "print", "align", "indent", "bullet"]
+
     func classify(_ text: String) -> QuestionType {
-        let lower = text.lowercased()
+        let lower = text.lowercased().trimmingCharacters(in: .whitespaces)
 
         for keyword in navigationKeywords where lower.contains(keyword) {
             return .navigation(direction: lower)
         }
         for keyword in locationKeywords where lower.contains(keyword) {
             return .location(targetLabel: extractTarget(from: lower), region: inferRegion(from: lower))
+        }
+        // Genuine "what is / why" explain questions stay concept (narrate).
+        if conceptStarters.contains(where: { lower.hasPrefix($0) || lower.contains($0) }) {
+            return .concept
+        }
+        // "How do I / how to …" or a bare action command ("make this bold", "add a
+        // bar chart") is a follow-up TASK — GUIDE it, don't just narrate. This is
+        // the heart of learn-mode: ask, and Waylo shows you how, in context.
+        if taskStarters.contains(where: { lower.hasPrefix($0) })
+            || actionVerbs.contains(where: { lower.hasPrefix($0) || lower.contains(" " + $0) }) {
+            return .task(query: text)
         }
         return text.isEmpty ? .unknown : .concept
     }

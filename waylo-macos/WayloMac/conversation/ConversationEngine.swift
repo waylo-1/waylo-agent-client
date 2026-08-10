@@ -68,8 +68,36 @@ final class ConversationEngine: ObservableObject {
             await handleConcept(text)
         case .location(let target, let region):
             await handleLocation(targetLabel: target, region: region)
+        case .task(let query):
+            await handleTask(query)
         case .unknown:
             Speaker.shared.speak("Sorry, I didn't understand. Please try again.")
+            state = .awaitingResume
+        }
+    }
+
+    /// A follow-up TASK during learn-mode ("how do I make text bold", "add a bar
+    /// chart") — the heart of the feature. Don't narrate: PLAN it (grounded in the
+    /// current screen AND the skill session, so it knows we're in Google Docs and
+    /// what we just did) and GUIDE it with a dot. This is what "ask and Waylo shows
+    /// me how, in context" means.
+    private func handleTask(_ query: String) async {
+        OverlayWindowController.shared.showBanner("Okay — let me show you how to \(query).")
+        Speaker.shared.speak("Sure, let me show you.")
+        do {
+            let context = ScreenContextBuilder.build()
+            let plan = try await WayloAPIClient.shared.generatePlan(
+                task: query, screenContext: context,
+                sessionContext: SkillSession.shared.contextForPlan())
+            OverlayWindowController.shared.hideDot()
+            state = .idle
+            GuidanceEngine.shared.startGuidance(plan: plan)
+            DebugLogger.log("CONVO", "follow-up task → started guide for '\(query)' (\(plan.steps.count) steps)")
+        } catch {
+            let detail: String
+            if case let APIError.serverMessage(msg) = error { detail = msg } else { detail = "please try again" }
+            OverlayWindowController.shared.showBanner("I couldn't work that out: \(detail)", autoDismissAfter: 8)
+            Speaker.shared.speak("Sorry, I couldn't work that out.")
             state = .awaitingResume
         }
     }
