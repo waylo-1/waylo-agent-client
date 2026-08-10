@@ -336,6 +336,30 @@ final class CoordinateResolver {
             DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME '\(accessibleName)' not in AX tree — continuing to cache/vision")
         }
 
+        // PROFILE / AVATAR SYNONYMS: the account icon is one of the most common
+        // targets on any site, but its accessible name varies wildly ("Avatar",
+        // "Account", "Profile", "Your profile", "User menu"). If this looks like a
+        // profile/avatar target and the planner's guessed name missed, try the
+        // usual synonyms so it still resolves exactly instead of falling to vision.
+        let profileHay = "\(accessibleName) \(elementDescription) \(findDescription)".lowercased()
+        if (targetType == .icon || targetLabel.isEmpty),
+           ["avatar", "profile", "account", "user icon", "your picture", "profile picture"].contains(where: profileHay.contains) {
+            for name in ["Avatar", "Account", "Your profile", "Profile", "User menu", "Account settings"]
+            where name.lowercased() != accessibleName.lowercased() {
+                if let el = await AccessibilityReader.shared.deepFindByName(name, restrictRect: webContentFrame),
+                   passesRegion(el.center, screenRegion, screen: screen) {
+                    DebugLogger.log("RESOLVE", "PROFILE synonym deep-AX hit — '\(name)' \(el.center)")
+                    DebugLogger.logResolution("profile-synonym-deepAX", found: true, point: el.center, label: name)
+                    DebugState.shared.update(layer: "AX name (profile)")
+                    if !cacheKey.isEmpty {
+                        WayloAPIClient.shared.storeLabel(appName: appName, stepDescription: cacheKey, axLabel: name)
+                    }
+                    return Resolution(axPoint: el.center, updatedInstruction: "",
+                                      axElement: el.axElement, targetFrame: el.frame)
+                }
+            }
+        }
+
         // --- Label cache (between L2 and L3): a prior working label. If found,
         // try AX (L0) ONLY with it — a hit lets us skip the costly L3 vision call.
         if !appName.isEmpty, !cacheKey.isEmpty,
