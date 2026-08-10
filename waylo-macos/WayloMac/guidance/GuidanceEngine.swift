@@ -480,6 +480,70 @@ final class GuidanceEngine: ObservableObject {
         }
     }
 
+    /// The "never wrong, always learning" safety net. When EVERY layer misses we
+    /// describe the target in words and ask the user to click it. That click is
+    /// ground truth — so unlike `installAnyClickAdvance` (which just advances),
+    /// this LEARNS from it: caches the clicked control's label, remembers the icon
+    /// pixels + location, and uploads it to the fleet dataset. Next time (for this
+    /// user AND everyone) Waylo points at it exactly. A total miss becomes a
+    /// permanent lesson — the same self-improving loop as a correction, but for
+    /// the case where we had nothing at all. Advances on any click regardless, so
+    /// the user is never stuck; only learns when the click stayed in the app and
+    /// landed on a real element.
+    private func installDescribeClickAdvance(forStep stepIndex: Int, bufferSeconds: Double) {
+        removeClickMonitor()
+        let appBefore = TargetAppTracker.shared.targetName
+        clickObserverId = HotkeyManager.shared.addClickObserver { [weak self] axPoint, _ in
+            Task { @MainActor in
+                guard let self = self, self.isRunning, self.state == .showing,
+                      self.currentStepIndex == stepIndex,
+                      !self.clickIsOnWayloUI(axPoint) else { return }
+                self.removeClickMonitor()
+
+                // Learn ONLY when the click stayed in the target app (a click into
+                // another app / the desktop is not the target — don't cache junk).
+                if TargetAppTracker.shared.targetName == appBefore, stepIndex < self.steps.count {
+                    let step = self.steps[stepIndex]
+                    let appName = TargetAppTracker.shared.targetName
+                    let element = AccessibilityReader.shared.elementAt(axPoint: axPoint)
+                    let clickedLabel = element.map { $0.title.isEmpty ? $0.description : $0.title } ?? ""
+                    // Prefer the clicked control's own accessible name; else the
+                    // planner's accessibleName — either lets a future run resolve
+                    // it via the deep AX search, no vision.
+                    let learned = !clickedLabel.isEmpty ? clickedLabel : step.accessibleName
+                    DebugLogger.log("DESCRIBE", "user clicked the target at (\(Int(axPoint.x)),\(Int(axPoint.y))) — learning '\(learned)' for next time")
+                    if !learned.isEmpty, !step.labelCacheKey.isEmpty {
+                        WayloAPIClient.shared.storeLabel(appName: appName,
+                                                         stepDescription: step.labelCacheKey,
+                                                         axLabel: learned)
+                    }
+                    // Textless icon → remember its PIXELS + LOCATION + fleet upload.
+                    if step.targetType == .icon || step.targetLabel.isEmpty {
+                        self.learnIconPixels(at: axPoint, step: step, element: element)
+                    }
+                    var corrected: [String: Any] = ["x": Int(axPoint.x), "y": Int(axPoint.y)]
+                    if let el = element {
+                        corrected["text"] = clickedLabel
+                        corrected["bounds"] = ["x": Int(el.frame.minX), "y": Int(el.frame.minY),
+                                               "w": Int(el.frame.width), "h": Int(el.frame.height)]
+                    }
+                    WayloAPIClient.shared.reportDetectionEvent(
+                        source: "user_describe_click", task: self.taskName,
+                        stepNumber: stepIndex + 1, findDescription: step.findDescription,
+                        elementType: step.controlKind, screenRegion: step.screenRegion.rawValue,
+                        appName: appName, correctedTarget: corrected)
+                }
+
+                DebugLogger.log("ENGINE", "describe: click sensed → advancing step \(stepIndex + 1) after \(bufferSeconds)s buffer")
+                self.snapshotWindows()
+                OverlayWindowController.shared.hideDot()
+                try? await Task.sleep(nanoseconds: UInt64(bufferSeconds * 1_000_000_000))
+                guard self.isRunning, self.currentStepIndex == stepIndex else { return }
+                await self.executeStep(index: stepIndex + 1)
+            }
+        }
+    }
+
     /// True when the click landed on one of Waylo's own interactive windows
     /// (the notch panel). The event tap sees ALL clicks — including ours —
     /// unlike the old NSEvent global monitor which excluded our app.
@@ -867,8 +931,9 @@ final class GuidanceEngine: ObservableObject {
         OverlayWindowController.shared.showBanner(spoken)
         Speaker.shared.speak(spoken)
         DebugLogger.log("DESCRIBE", "not confident — describing instead of guessing: '\(what)'")
-        // Advance when the user clicks the thing themselves…
-        installAnyClickAdvance(forStep: currentStepIndex, bufferSeconds: 2.0)
+        // Advance when the user clicks the thing themselves — AND learn from that
+        // click so next time (for everyone) Waylo points at it exactly.
+        installDescribeClickAdvance(forStep: currentStepIndex, bufferSeconds: 2.0)
         // …or when they press ⌃⌥⌘N to say "found it, continue".
         installManualAdvanceHotkey(forStep: currentStepIndex)
     }
