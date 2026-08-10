@@ -127,6 +127,27 @@ final class CoordinateResolver {
             if let a = anchorInfo { DebugLogger.log("RESOLVE", "anchor '\(anchorText)' at (\(Int(a.point.x)),\(Int(a.point.y))) pos=\(anchorPosition)") }
         }
 
+        // --- ACCESSIBLE NAME FIRST — the strongest, most precise signal --------
+        // A planner-provided aria-label / AXDescription names a UNIQUE control, so
+        // it must beat OCR. OCR matches VISIBLE TEXT, and pages repeat labels (an
+        // AI Studio page shows "Create API key" as BOTH the real button AND a
+        // heading/link) — OCR-first then confidently points at the wrong duplicate.
+        // Deep AX for the exact name lands on the real control every time. This is
+        // why "the tree wasn't working": it worked, but OCR won before we asked it.
+        if !accessibleName.isEmpty,
+           let el = await AccessibilityReader.shared.deepFindByName(accessibleName, restrictRect: webContentFrame),
+           passesRegion(el.center, screenRegion, screen: screen) {
+            DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME deep-AX hit (first) — '\(accessibleName)' \(el.center)")
+            DebugLogger.logResolution("accessible-name-deepAX", found: true, point: el.center, label: accessibleName)
+            DebugState.shared.update(layer: "AX name")
+            if !cacheKey.isEmpty {
+                WayloAPIClient.shared.storeLabel(appName: TargetAppTracker.shared.targetName,
+                                                 stepDescription: cacheKey, axLabel: accessibleName)
+            }
+            return Resolution(axPoint: el.center, updatedInstruction: "",
+                              axElement: el.axElement, targetFrame: el.frame)
+        }
+
         let isControl = ElementFinder.isControlKind(controlKind)
 
         // Plain TEXT/label targets: OCR first (visual ground truth). For real
@@ -319,21 +340,8 @@ final class CoordinateResolver {
         // on the FIRST run, with no learning and no vision call. This is what makes
         // icon detection production-ready: most icons ARE labelled for screen
         // readers, we just need the right name, and the planner supplies it.
-        if !accessibleName.isEmpty,
-           let el = await AccessibilityReader.shared.deepFindByName(accessibleName, restrictRect: webContentFrame),
-           passesRegion(el.center, screenRegion, screen: screen) {
-            DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME deep-AX hit — '\(accessibleName)' \(el.center)")
-            DebugLogger.logResolution("accessible-name-deepAX", found: true, point: el.center, label: accessibleName)
-            DebugState.shared.update(layer: "AX name")
-            // Remember it so future runs resolve identically even if the planner's
-            // wording drifts — the cache keys on the step, stores the working name.
-            if !cacheKey.isEmpty {
-                WayloAPIClient.shared.storeLabel(appName: appName, stepDescription: cacheKey, axLabel: accessibleName)
-            }
-            return Resolution(axPoint: el.center, updatedInstruction: "",
-                              axElement: el.axElement, targetFrame: el.frame)
-        } else if !accessibleName.isEmpty {
-            DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME '\(accessibleName)' not in AX tree — continuing to cache/vision")
+        if !accessibleName.isEmpty {
+            DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME '\(accessibleName)' not resolved earlier — trying cache/vision")
         }
 
         // PROFILE / AVATAR SYNONYMS: the account icon is one of the most common
