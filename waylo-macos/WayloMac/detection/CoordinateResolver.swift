@@ -538,7 +538,11 @@ final class CoordinateResolver {
             totalSteps: totalSteps,
             image: image,
             screen: screen,
-            ocrContext: ocrContext
+            ocrContext: ocrContext,
+            // Web-content step → crop the screenshot to the page so Gemini can't
+            // return browser chrome (menu bar / toolbar / bookmarks) for an
+            // in-page target. nil for native steps (full screen).
+            cropAXRect: webContentFrame
         ) {
             // WEB TOOLBAR ICON — coarse-but-safe FIRST fallback. Once the free
             // layers (AX, strict YOLO) miss a small in-page icon like Gmail's
