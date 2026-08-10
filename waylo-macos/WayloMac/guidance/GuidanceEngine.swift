@@ -507,11 +507,12 @@ final class GuidanceEngine: ObservableObject {
                     let appName = TargetAppTracker.shared.targetName
                     let element = AccessibilityReader.shared.elementAt(axPoint: axPoint)
                     let clickedLabel = element.map { $0.title.isEmpty ? $0.description : $0.title } ?? ""
-                    // Prefer the clicked control's own accessible name; else the
-                    // planner's accessibleName — either lets a future run resolve
-                    // it via the deep AX search, no vision.
-                    let learned = !clickedLabel.isEmpty ? clickedLabel : step.accessibleName
-                    DebugLogger.log("DESCRIBE", "user clicked the target at (\(Int(axPoint.x)),\(Int(axPoint.y))) — learning '\(learned)' for next time")
+                    // HARVEST GUARD: cache the clicked control's label ONLY if it's
+                    // a real, control-like label; else fall back to the planner's
+                    // accessibleName (already clean). Either lets a future run
+                    // resolve via deep AX. Never cache a text-blob the user hit.
+                    let learned = Self.harvestableLabel(from: element) ?? step.accessibleName
+                    DebugLogger.log("DESCRIBE", "user clicked the target at (\(Int(axPoint.x)),\(Int(axPoint.y))) — learning '\(learned.isEmpty ? "(pixels only)" : learned)' for next time")
                     if !learned.isEmpty, !step.labelCacheKey.isEmpty {
                         WayloAPIClient.shared.storeLabel(appName: appName,
                                                          stepDescription: step.labelCacheKey,
@@ -1371,6 +1372,29 @@ final class GuidanceEngine: ObservableObject {
         return Double(letters) / Double(t.count) >= 0.5
     }
 
+    /// HARVEST GUARD — the gate before a user's click teaches a TEXT LABEL to the
+    /// fleet-wide cache. A click only yields a cacheable label when BOTH:
+    ///  1. the text looks like a control label (isPlausibleVisibleLabel: short,
+    ///     mostly letters, ≤5 words) — not an email body / stray value, and
+    ///  2. the clicked element is a REAL control (button/menu/checkbox/tab/link/
+    ///     field), not a static-text blob, row, or generic group.
+    /// Without this, a mis-harvested neighbour poisoned the DB fleet-wide: a
+    /// paperclip step cached "New Message", a "To" step cached a whole email
+    /// preview line. Icons still learn via pixels/location separately — this only
+    /// gates the TEXT-label store. Returns the clean label, or nil to skip caching.
+    private static let harvestControlRoles: Set<String> =
+        ["AXButton", "AXMenuItem", "AXMenuButton", "AXPopUpButton", "AXCheckBox",
+         "AXRadioButton", "AXTab", "AXLink", "AXToolbarButton", "AXMenuBarItem", "AXTextField"]
+
+    static func harvestableLabel(from element: AXElementInfo?) -> String? {
+        guard let el = element else { return nil }
+        let label = (el.title.isEmpty ? el.description : el.title)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isPlausibleVisibleLabel(label) else { return nil }
+        guard harvestControlRoles.contains(el.role) else { return nil }
+        return label
+    }
+
     /// The element isn't on screen — it's probably off the visible area. Show a
     /// bouncing arrow at the scroll bar and ask the user to scroll, polling
     /// (AX + OCR only — fast, free) until it appears. Returns true if found.
@@ -1682,13 +1706,12 @@ final class GuidanceEngine: ObservableObject {
             // resolves via free AX.
             if stepIndex < steps.count {
                 let step = steps[stepIndex]
-                if !step.labelCacheKey.isEmpty,
-                   let el = AccessibilityReader.shared.elementAt(axPoint: clickAX) {
-                    let label = el.title.isEmpty ? el.description : el.title
-                    if !label.isEmpty {
-                        stagedStepLabels[step.labelCacheKey] = label
-                        DebugLogger.log("CACHE", "staged '\(label)' for step \(stepIndex + 1) (commits on ✓)")
-                    }
+                let el = AccessibilityReader.shared.elementAt(axPoint: clickAX)
+                if !step.labelCacheKey.isEmpty, let label = Self.harvestableLabel(from: el) {
+                    stagedStepLabels[step.labelCacheKey] = label
+                    DebugLogger.log("CACHE", "staged '\(label)' for step \(stepIndex + 1) (commits on ✓)")
+                } else if let el = el {
+                    DebugLogger.log("CACHE", "click label not harvestable (role=\(el.role), text='\((el.title.isEmpty ? el.description : el.title).prefix(24))') — not caching")
                 }
             }
             advanceAfterClick(stepIndex: stepIndex)
@@ -1794,8 +1817,11 @@ final class GuidanceEngine: ObservableObject {
             let step = self.steps[stepIndex]
             let appName = TargetAppTracker.shared.targetName
             let element = AccessibilityReader.shared.elementAt(axPoint: clickAX)
-            let label = element.map { $0.title.isEmpty ? $0.description : $0.title } ?? ""
-            DebugLogger.log("CORRECT", "user's click WORKED — learning '\(label)' as the real target for step \(stepIndex + 1)")
+            // HARVEST GUARD: only a real control's short label is cacheable — a
+            // click on a text blob / row must not poison the fleet cache.
+            let label = Self.harvestableLabel(from: element)
+            let rawLabel = element.map { $0.title.isEmpty ? $0.description : $0.title } ?? ""
+            DebugLogger.log("CORRECT", "user's click WORKED — learning '\(label ?? "(no cacheable label; pixels only)")' as the real target for step \(stepIndex + 1)")
 
             // Our predicted box was WRONG — never train on it. (The corrected
             // target is reported below as ground truth instead.)
@@ -1803,7 +1829,7 @@ final class GuidanceEngine: ObservableObject {
 
             // 1. Label cache: next run of this step resolves to the user's
             //    element via AX and skips vision entirely.
-            if !label.isEmpty, !step.labelCacheKey.isEmpty {
+            if let label = label, !step.labelCacheKey.isEmpty {
                 WayloAPIClient.shared.storeLabel(appName: appName,
                                                  stepDescription: step.labelCacheKey,
                                                  axLabel: label)
@@ -1819,7 +1845,7 @@ final class GuidanceEngine: ObservableObject {
             // 2. Analytics: a user_correction event carrying the true target.
             var corrected: [String: Any] = ["x": Int(clickAX.x), "y": Int(clickAX.y)]
             if let el = element {
-                corrected["text"] = label
+                corrected["text"] = rawLabel
                 corrected["bounds"] = ["x": Int(el.frame.minX), "y": Int(el.frame.minY),
                                        "w": Int(el.frame.width), "h": Int(el.frame.height)]
             }

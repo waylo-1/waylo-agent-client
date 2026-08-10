@@ -10,6 +10,12 @@ struct HomePanelView: View {
     @State private var skillInput = ""
     @State private var curriculum: WayloAPIClient.Curriculum?
     @State private var taskText = ""
+    /// Optional user-typed starting context ("Pages is already open", "I'm on the
+    /// Sheets tab") — helps the planner start from the right place for NATIVE apps
+    /// it can't fully read (behind-window / plan-ahead). Web pages are auto-read
+    /// from the URL, so this is only occasionally needed.
+    @State private var whereContext = ""
+    @State private var showWhereContext = false
     @State private var isLoading = false
     @State private var isListening = false
     @State private var language = LanguagePreference.current
@@ -330,6 +336,25 @@ struct HomePanelView: View {
                 Text(L10n.t("listening"))
                     .font(.caption)
                     .foregroundColor(.red)
+            }
+
+            // Optional starting-context field — collapsed by default so it never
+            // clutters the common case. Web pages are read from the URL
+            // automatically; this is for native apps Waylo can't fully see.
+            if showWhereContext {
+                TextField("Where are you now? e.g. \"Pages is already open\"", text: $whereContext)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .onSubmit { startTask() }
+            } else {
+                Button {
+                    withAnimation { showWhereContext = true }
+                } label: {
+                    Label("Add where I am now (optional)", systemImage: "location")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(.secondary)
             }
 
             Button(L10n.t("start_guide")) { startTask() }
@@ -693,9 +718,12 @@ struct HomePanelView: View {
                 // Ground the plan in the live screen (local AX read, ~free).
                 let context = ScreenContextBuilder.build()
                 DebugLogger.log("PLAN", "screenContext \(context.count) chars")
+                let userCtx = whereContext.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !userCtx.isEmpty { DebugLogger.log("PLAN", "userContext: '\(userCtx)'") }
                 let plan = try await WayloAPIClient.shared.generatePlan(
                     task: task, screenContext: context,
-                    sessionContext: SkillSession.shared.contextForPlan())
+                    sessionContext: SkillSession.shared.contextForPlan(),
+                    userContext: userCtx)
                 NSLog("[Waylo] generatePlan OK: %d steps", plan.steps.count)
                 isLoading = false
                 taskText = ""

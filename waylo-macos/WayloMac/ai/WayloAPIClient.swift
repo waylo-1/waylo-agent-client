@@ -16,7 +16,11 @@ final class WayloAPIClient {
     /// Generates a step plan from a natural-language task description.
     /// `screenContext`: compact live AX-tree snapshot (ScreenContextBuilder)
     /// so the planner grounds steps in what's actually on screen.
-    func generatePlan(task: String, screenContext: String = "", sessionContext: String = "") async throws -> GuidePlan {
+    /// `userContext`: an optional free-text note the user typed about where they
+    /// are ("Pages is already open") — treated as ground truth for the plan's
+    /// starting point, for native apps the AX snapshot can't fully see.
+    func generatePlan(task: String, screenContext: String = "", sessionContext: String = "",
+                      userContext: String = "") async throws -> GuidePlan {
         guard let url = URL(string: "\(baseURL)/plan") else { throw APIError.invalidURL }
 
         var request = URLRequest(url: url)
@@ -29,6 +33,7 @@ final class WayloAPIClient {
         var body: [String: Any] = ["task": task, "platform": "macos"]
         if !screenContext.isEmpty { body["screenContext"] = screenContext }
         if !sessionContext.isEmpty { body["sessionContext"] = sessionContext }
+        if !userContext.isEmpty { body["userContext"] = userContext }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
