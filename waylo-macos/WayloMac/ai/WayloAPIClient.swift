@@ -310,6 +310,28 @@ final class WayloAPIClient {
         Task { _ = try? await session.data(for: request) }
     }
 
+    /// JUDGE-MODE disambiguation: the image has NUMBERED red badges on the real
+    /// candidate elements; Gemini returns which badge id is the target (1…count),
+    /// or 0 if none. A reliable multiple-choice — the dot lands on a real element.
+    func pickElement(imageBase64: String, target: String, stepInstruction: String, count: Int) async -> Int {
+        guard count > 0, let url = URL(string: "\(baseURL)/pick-element"),
+              let body = try? JSONSerialization.data(withJSONObject: [
+                  "image_base64": imageBase64, "target": target,
+                  "step_instruction": stepInstruction, "count": count
+              ]) else { return 0 }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        request.timeoutInterval = 30
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return 0 }
+        if let id = obj["id"] as? Int { return id }
+        if let id = obj["id"] as? Double { return Int(id) }
+        return 0
+    }
+
     /// Registers a signed-in user's email with the backend (fire-and-forget), so
     /// they appear in the users table for business/customer evidence.
     func register(email: String, name: String = "", source: String = "app") {

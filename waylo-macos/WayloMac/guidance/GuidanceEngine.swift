@@ -798,7 +798,7 @@ final class GuidanceEngine: ObservableObject {
             if !resolution.alternates.isEmpty {
                 await PickMemory.shared.prefetch(app: TargetAppTracker.shared.targetName, stepKey: step.labelCacheKey)
                 guard token == locateToken, isRunning else { return }
-                presentAmbiguity(step: step, primary: resolution.axPoint, alternates: resolution.alternates)
+                await presentAmbiguity(step: step, primary: resolution.axPoint, alternates: resolution.alternates)
                 return
             }
 
@@ -1226,7 +1226,7 @@ final class GuidanceEngine: ObservableObject {
 
     /// Shows numbered badges over every confident match; the user's click on
     /// any of them completes the step.
-    private func presentAmbiguity(step: Step, primary: CGPoint, alternates: [CGPoint]) {
+    private func presentAmbiguity(step: Step, primary: CGPoint, alternates: [CGPoint]) async {
         let all = [primary] + alternates
         state = .showing
 
@@ -1246,6 +1246,34 @@ final class GuidanceEngine: ObservableObject {
             // whichever they actually click, so the pick self-corrects.
             installMultiClickMonitor(targets: all, forStep: currentStepIndex, stepKey: step.labelCacheKey)
             return
+        }
+
+        // JUDGE MODE: instead of asking the user to pick among 2–3 look-alikes,
+        // let Gemini CHOOSE (Set-of-Mark). We stamp numbered badges on the REAL
+        // candidate points and ask which is the target — a reliable multiple-
+        // choice, and the dot lands on a real element's exact centre. Only in
+        // max-accuracy mode (extra Gemini call); falls back to badges on any miss.
+        if WayloConfig.maxAccuracy, all.count >= 2 {
+            let token = locateToken
+            if let capture = await ScreenCapturer.shared.captureActiveScreen(),
+               let annotated = CandidateStamp.stamp(points: all, on: capture.image, screen: capture.screen) {
+                let target = step.targetLabel.isEmpty ? step.elementDescription : step.targetLabel
+                let id = await WayloAPIClient.shared.pickElement(
+                    imageBase64: annotated, target: target,
+                    stepInstruction: step.instruction, count: all.count)
+                guard token == locateToken, isRunning else { return }
+                if id >= 1, id <= all.count {
+                    let chosen = all[id - 1]
+                    DebugLogger.log("ENGINE", "JUDGE disambiguation: Gemini picked candidate #\(id) at (\(Int(chosen.x)),\(Int(chosen.y))) — precise dot, no badges")
+                    currentTargetAX = chosen
+                    OverlayWindowController.shared.showDot(at: chosen, caption: currentInstruction)
+                    statusMessage = "Step \(currentStepIndex + 1) of \(steps.count)"
+                    // Still accept any candidate + remember the pick (self-correcting).
+                    installMultiClickMonitor(targets: all, forStep: currentStepIndex, stepKey: step.labelCacheKey)
+                    return
+                }
+                DebugLogger.log("ENGINE", "JUDGE disambiguation: Gemini returned \(id) (no confident pick) — falling back to badges")
+            }
         }
 
         statusMessage = "Step \(currentStepIndex + 1) of \(steps.count) — I see \(all.count) matches; click the right one"
@@ -1426,7 +1454,7 @@ final class GuidanceEngine: ObservableObject {
                 if !retry.alternates.isEmpty {
                     await PickMemory.shared.prefetch(app: TargetAppTracker.shared.targetName, stepKey: step.labelCacheKey)
                     guard token == locateToken, isRunning else { return true }
-                    presentAmbiguity(step: step, primary: retry.axPoint, alternates: retry.alternates)
+                    await presentAmbiguity(step: step, primary: retry.axPoint, alternates: retry.alternates)
                     return true
                 }
                 if mode == .assist && step.action == .click {
