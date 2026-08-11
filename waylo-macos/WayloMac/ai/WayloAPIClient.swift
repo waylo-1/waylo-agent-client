@@ -484,7 +484,11 @@ final class WayloAPIClient {
             "step_instruction": stepInstruction
         ]
         if !ocrContext.isEmpty { body["ocr_context"] = ocrContext }
+        // Judge / max-accuracy: ask Gemini to reason about the exact element.
+        if WayloConfig.maxAccuracy { body["high_accuracy"] = true }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Reasoning grounding is slower — give it room in max-accuracy mode.
+        request.timeoutInterval = WayloConfig.maxAccuracy ? 35 : 20
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {

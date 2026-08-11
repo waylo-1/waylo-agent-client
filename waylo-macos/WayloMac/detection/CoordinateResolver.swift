@@ -588,7 +588,15 @@ final class CoordinateResolver {
             // the icon is ("the paperclip, right of the underlined A"). The user
             // finds it; the box is never wrong; and it teaches. Only when Gemini
             // gives no container do we fall through to precise pointing below.
+            // JUDGE / MAX-ACCURACY: when Gemini REASONED about the element and is
+            // confident (>= floor), give a PRECISE dot even for a web icon rather
+            // than defaulting to a coarse region — judges expect exactness, and the
+            // reasoned grounding earns the precision. Below the floor we still fall
+            // to the safe region+describe.
+            let geminiConfident = (result.confidence ?? 0) >= WayloConfig.novaConfidenceFloor
+            let preferPrecise = WayloConfig.maxAccuracy && geminiConfident
             if webContentFrame != nil, (targetType == .icon || targetLabel.isEmpty),
+               !preferPrecise,
                let approx = approximateFrom(result) {
                 DebugLogger.log("RESOLVE", "web icon → region-highlight + describe (first fallback, not a precise dot)")
                 return approx
