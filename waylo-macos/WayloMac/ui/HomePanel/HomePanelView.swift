@@ -19,6 +19,7 @@ struct HomePanelView: View {
     @State private var emailInput = ""
     @State private var signedIn = UserAccount.isSignedIn
     @State private var showShortcuts = false
+    @State private var judgeMode = WayloConfig.maxAccuracy
     @State private var isLoading = false
     @State private var isListening = false
     @State private var language = LanguagePreference.current
@@ -679,6 +680,17 @@ struct HomePanelView: View {
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundColor(.secondary)
+
+            // Judge / max-accuracy mode: Gemini reasons about grounding + precise
+            // dots. More tokens, near-zero misses — enable for the XPRIZE demo.
+            Toggle(isOn: Binding(
+                get: { judgeMode },
+                set: { judgeMode = $0; UserDefaults.standard.set($0, forKey: WayloConfig.maxAccuracyKey) }
+            )) {
+                Text("Judge Mode — max accuracy (Gemini reasons; more tokens)").font(.caption)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
 
             // Experimental: Gemini computer-use decider for AX-hostile apps
             // (plain screenshot → grounded action; falls back to Set-of-Mark

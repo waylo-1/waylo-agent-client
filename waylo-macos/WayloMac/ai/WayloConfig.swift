@@ -10,13 +10,14 @@ enum WayloConfig {
     /// teach-only surface. Kept false for now so testing keeps its tools.
     static let isProduction = false
 
-    /// JUDGE / MAX-ACCURACY mode. When ON, the vision layer asks Gemini to REASON
-    /// about the exact element (more accurate grounding), retries once on a
-    /// low-confidence result, and escalates to Gemini sooner rather than settling
-    /// for an approximate region. Costs more Gemini tokens — worth it for the
-    /// XPRIZE submission/demo where it must "never get it wrong." Toggle off to
-    /// save tokens during heavy development.
-    static let maxAccuracy = true
+    /// JUDGE / MAX-ACCURACY mode — an OPT-IN toggle (Developer Tools), OFF by
+    /// default so the normal app keeps its original, cheap pipeline. When ON, the
+    /// vision layer asks Gemini to REASON about the exact element (more accurate
+    /// grounding) and gives a precise dot on confident results instead of a coarse
+    /// region. Costs more Gemini tokens — flip it on (and set the default true) for
+    /// the XPRIZE submission build where it must "never get it wrong."
+    static let maxAccuracyKey = "waylo.maxAccuracy"
+    static var maxAccuracy: Bool { UserDefaults.standard.bool(forKey: maxAccuracyKey) }
 
     /// Gemini grounding is accepted as a precise dot only above this confidence;
     /// below it (in max-accuracy mode) we retry once, then describe. Higher bar in
