@@ -352,6 +352,7 @@ final class WayloAPIClient {
         let allowed: Bool
         let remaining: Int
         var isPaid: Bool { plan == "paid" }
+        var isDeveloper: Bool { plan == "developer" }
     }
 
     /// Checks the signed-in email against the DB: free (5 tasks) vs paid (50).

@@ -9,6 +9,21 @@ enum WayloConfig {
     /// Judge/max-accuracy always on. FALSE = full dev build with tools + toggles.
     static let isProduction = true
 
+    /// Emails that unlock the FULL developer surface (guide-mode picker, Developer
+    /// Tools, the Judge-Mode toggle) even in the shipped production build — and get
+    /// unlimited tasks from the backend. Keep in sync with DEVELOPER_EMAILS in
+    /// backend_initial/users.js.
+    static let developerEmails: Set<String> = ["yashrock4428@gmail.com"]
+
+    /// True when the currently signed-in user is a developer account.
+    static var isDeveloper: Bool {
+        developerEmails.contains(UserAccount.email.lowercased())
+    }
+
+    /// Whether to show the developer surface (mode picker + Developer Tools):
+    /// any non-production build, or a signed-in developer account.
+    static var showDevSurface: Bool { !isProduction || isDeveloper }
+
     /// JUDGE / MAX-ACCURACY mode — an OPT-IN toggle (Developer Tools), OFF by
     /// default so the normal app keeps its original, cheap pipeline. When ON, the
     /// vision layer asks Gemini to REASON about the exact element (more accurate
@@ -17,6 +32,9 @@ enum WayloConfig {
     /// the XPRIZE submission build where it must "never get it wrong."
     static let maxAccuracyKey = "waylo.maxAccuracy"
     static var maxAccuracy: Bool {
+        // Developer accounts get the local Judge-Mode toggle back so it can be
+        // A/B tested on-device (wins over remote/production defaults).
+        if isDeveloper { return UserDefaults.standard.bool(forKey: maxAccuracyKey) }
         // Backend remote config wins (so Judge Mode can be flipped without a
         // re-download); else shipped build = on, dev build = the local toggle.
         if let remote = remoteConfig("maxAccuracy") as? Bool { return remote }

@@ -87,7 +87,7 @@ struct HomePanelView: View {
         .padding(20)
         .frame(width: 340)
         .onAppear {
-            if WayloConfig.isProduction { engine.mode = .teach }
+            if !WayloConfig.showDevSurface { engine.mode = .teach }
             refreshStatus()
         }
     }
@@ -220,7 +220,7 @@ struct HomePanelView: View {
                 Button(L10n.t("stop")) { engine.stopGuidance() }
                     .buttonStyle(.bordered)
                     .tint(.red)
-            } else if !WayloConfig.isProduction {
+            } else if WayloConfig.showDevSurface {
                 Button {
                     showDevTools.toggle()
                 } label: {
@@ -418,8 +418,8 @@ struct HomePanelView: View {
 
             // Guide-mode picker is a DEV affordance — production ships teach-only
             // (Waylo points, you click, you learn). The other modes stay in the
-            // codebase for testing behind WayloConfig.isProduction.
-            if !WayloConfig.isProduction {
+            // codebase for testing behind the developer surface.
+            if WayloConfig.showDevSurface {
                 VStack(alignment: .leading, spacing: 2) {
                     Picker("Mode", selection: Binding(
                         get: { engine.mode },
@@ -646,14 +646,24 @@ struct HomePanelView: View {
             if signedIn {
                 HStack(spacing: 6) {
                     if let s = status {
-                        Text(s.isPaid ? "Pro" : "Free")
-                            .font(.caption2).fontWeight(.semibold)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background((s.isPaid ? Color.green : Color.secondary).opacity(0.15))
-                            .cornerRadius(5)
-                        Text("\(s.remaining) of \(s.limit) tasks left")
-                            .font(.caption2)
-                            .foregroundColor(s.remaining == 0 ? .red : .secondary)
+                        if s.isDeveloper {
+                            Text("DEV")
+                                .font(.caption2).fontWeight(.semibold)
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Color.purple.opacity(0.15))
+                                .cornerRadius(5)
+                            Text("unlimited tasks")
+                                .font(.caption2).foregroundColor(.secondary)
+                        } else {
+                            Text(s.isPaid ? "Pro" : "Free")
+                                .font(.caption2).fontWeight(.semibold)
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background((s.isPaid ? Color.green : Color.secondary).opacity(0.15))
+                                .cornerRadius(5)
+                            Text("\(s.remaining) of \(s.limit) tasks left")
+                                .font(.caption2)
+                                .foregroundColor(s.remaining == 0 ? .red : .secondary)
+                        }
                     }
                     Spacer()
                     Text(UserAccount.email)
