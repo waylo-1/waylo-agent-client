@@ -29,7 +29,10 @@ import kotlin.coroutines.resume
  *   Layer 2b — YOLO object detector on EC2 (via [YoloDetectionClient]), gated
  *              by [YoloDetectionClient.YOLO_LAYER_ENABLED]. Tried after OCR
  *              misses, before the (slower, paid) Gemini Vision call below.
- *   Layer 3a — Gemini Vision LOCATE: "I expect X, where is it?" → coordinates.
+ *   Layer 3a — Gemini Vision LOCATE: "I expect X, where is it?" → a spoken
+ *              description only (see [FallbackResult.Described]) — never
+ *              places the dot, since a vision found-flag has no score/gap
+ *              to check against GuidanceEngine's confidence floor.
  *   Layer 3b — Gemini Vision TROUBLESHOOT: "X is missing, what should the user
  *              do?" → recovery steps that splice into the remaining plan.
  *
@@ -42,8 +45,18 @@ object FallbackHandler {
 
     /** Outcome of the fallback chain. */
     sealed class FallbackResult {
-        /** Found it — put the dot at this screen coordinate. */
+        /** Found it with a real score — put the dot at this screen coordinate. */
         data class Found(val x: Int, val y: Int, val updatedInstruction: String?) : FallbackResult()
+
+        /**
+         * Gemini Vision says the target is on screen, but a boolean
+         * found-flag from a vision call carries no comparable score/gap —
+         * it can never clear GuidanceEngine's confidence floor on its own.
+         * The dot must not be placed from this alone; [description] is
+         * spoken instead while the caller keeps re-scanning on-device until
+         * a confident match appears.
+         */
+        data class Described(val description: String) : FallbackResult()
 
         /** Gemini analysed the screen and produced new steps to continue from here. */
         data class NewSteps(val steps: List<Step>, val explanation: String) : FallbackResult()
@@ -91,7 +104,7 @@ object FallbackHandler {
         if (bitmap != null) {
             try {
                 val elements = OcrAnalyzer.analyzeScreen(bitmap)
-                val match = OcrAnalyzer.findBestMatch(elements, findDesc, visualDescription, alternateLabels)
+                val match = OcrAnalyzer.findBestMatch(elements, findDesc, visualDescription, alternateLabels, stepIndex)
                 if (match != null) {
                     Log.d(TAG, "Layer 2 OCR hit '${match.text}' at (${match.centerX},${match.centerY})")
                     return@withContext FallbackResult.Found(match.centerX, match.centerY, null)
@@ -116,7 +129,8 @@ object FallbackHandler {
                         bitmap = yoloBitmap,
                         findDescription = findDesc,
                         instruction = instruction,
-                        screenRegion = screenRegion
+                        screenRegion = screenRegion,
+                        stepIndex = stepIndex
                     )
                     if (yoloMatch != null) {
                         Log.d(
@@ -171,10 +185,14 @@ object FallbackHandler {
             findDescription = findDesc
         )
         if (locate != null && locate.found && locate.x > 0) {
-            Log.d(TAG, "Layer 3a located element at (${locate.x},${locate.y})")
-            return@withContext FallbackResult.Found(
-                locate.x, locate.y, locate.instruction.ifBlank { null }
-            )
+            // Deliberately NOT FallbackResult.Found — a vision found-flag has
+            // no score/gap to hold against the confidence floor, so it must
+            // never place the dot directly. Describe the target instead; the
+            // caller keeps re-scanning on-device until a real score clears
+            // the floor.
+            val description = locate.instruction.ifBlank { findDesc }
+            Log.d(TAG, "Layer 3a: vision saw the target, describing rather than placing (no on-device score): $description")
+            return@withContext FallbackResult.Described(description)
         }
         Log.d(TAG, "Layer 3a: element not on screen. Escalating to troubleshoot.")
 

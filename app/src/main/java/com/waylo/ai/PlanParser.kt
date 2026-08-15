@@ -81,11 +81,20 @@ object PlanParser {
                 val alternateLabels = s.optJSONArray("alternateLabels")?.let { arr ->
                     (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
                 } ?: emptyList()
+                // Fall back to describing the target itself (never the dot —
+                // the user should never be told to "follow the dot") when the
+                // backend omits instruction text for a step.
+                val findDescription = s.optString("findDescription", "")
+                val defaultInstruction = if (findDescription.isNotBlank()) {
+                    "Look for $findDescription."
+                } else {
+                    "Continue to the next step."
+                }
                 steps.add(
                     Step(
                         index = s.optInt("stepNumber", i + 1),
-                        instruction = s.optString("instruction", "Follow the dot"),
-                        findDescription = s.optString("findDescription", ""),
+                        instruction = s.optString("instruction", defaultInstruction),
+                        findDescription = findDescription,
                         elementType = s.optString("elementType").takeIf { it.isNotBlank() },
                         screenRegion = s.optString("screenRegion").takeIf { it.isNotBlank() },
                         visualDescription = s.optString("visualDescription").takeIf { it.isNotBlank() },

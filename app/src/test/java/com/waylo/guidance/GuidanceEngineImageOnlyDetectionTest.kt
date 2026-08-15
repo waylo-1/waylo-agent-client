@@ -16,7 +16,7 @@ class GuidanceEngineImageOnlyDetectionTest {
 
     private fun step(elementType: String?, visualDescription: String?) = Step(
         index = 1,
-        instruction = "Look for the red dot on your round profile picture and tap it.",
+        instruction = "Tap your round profile picture.",
         findDescription = "profile picture",
         elementType = elementType,
         visualDescription = visualDescription

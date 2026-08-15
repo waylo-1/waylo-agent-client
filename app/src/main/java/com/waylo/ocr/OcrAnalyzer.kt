@@ -1,5 +1,7 @@
 package com.waylo.ocr
 
+import com.waylo.diagnostics.WayloVerify
+
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.util.Log
@@ -38,6 +40,20 @@ object OcrAnalyzer {
      * own confidence floor.
      */
     private const val MIN_MATCH_SCORE = 30
+
+    /**
+     * A confident top match must also clearly beat the runner-up by this
+     * margin — mirrors [com.waylo.accessibility.ElementFinder.MIN_CONFIDENCE_GAP].
+     * Same absolute value (10) is appropriate here too: unlike ElementFinder,
+     * OCR has no affordance-derived baseline score (no clickable/visible
+     * bonus) — an irrelevant text block scores exactly 0, so [MIN_MATCH_SCORE]
+     * alone already screens out pure noise. What a score-only floor can't
+     * catch is OCR's own specific failure mode: duplicate on-screen text
+     * (e.g. the same label in both a nav bar and a list item below it)
+     * scoring an exact or near-exact tie, where picking the numerically-first
+     * one is an arbitrary guess, not a confident placement.
+     */
+    private const val MIN_MATCH_GAP = 10
 
     private val recognizer: TextRecognizer by lazy {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
@@ -94,15 +110,26 @@ object OcrAnalyzer {
      * ElementFinder gives alternate labels over the accessibility tree).
      * Scoring: exact match +60, partial (substring) +35, per word match +15,
      * per alternate-label hit +15.
-     * Returns the highest scorer if it has any positive score, else null.
+     * Returns the highest scorer only if it clears both [MIN_MATCH_SCORE] and
+     * [MIN_MATCH_GAP] over the runner-up (see [MIN_MATCH_GAP]'s doc) — the
+     * dot must never be placed on an ambiguous, near-tied match. Returns null
+     * otherwise; the caller falls through to the next fallback layer, which
+     * ultimately routes into GuidanceEngine's speakTargetDescription()+
+     * re-scan path rather than ever guessing a position.
      */
     fun findBestMatch(
         elements: List<OcrElement>,
         description: String,
         visualDescription: String? = null,
-        alternateLabels: List<String> = emptyList()
+        alternateLabels: List<String> = emptyList(),
+        stepIndex: Int = -1
     ): OcrElement? {
-        if (elements.isEmpty()) return null
+        if (elements.isEmpty()) {
+            WayloVerify.d("OCR_SCAN | stepIndex=$stepIndex | blockCount=0 | topScore=0 | topMatchedText= | " +
+                    "runnerUpScore=0 | gap=0 | confident=false | failReason=no_candidates"
+            )
+            return null
+        }
         val desc = description.lowercase().trim()
         val tokens = desc.split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()
         if (!visualDescription.isNullOrBlank()) {
@@ -112,10 +139,7 @@ object OcrAnalyzer {
         }
         val cleanedAlternates = alternateLabels.map { it.lowercase().trim() }.filter { it.isNotBlank() }
 
-        var best: OcrElement? = null
-        var bestScore = 0
-
-        for (element in elements) {
+        val scored = elements.map { element ->
             val text = element.text.lowercase().trim()
             var score = 0
             if (text == desc) {
@@ -131,18 +155,33 @@ object OcrAnalyzer {
                 if (text == alt || text.contains(alt)) altHits++
             }
             if (altHits > 0) score += altHits * 15
+            element to score
+        }.sortedByDescending { it.second }
 
-            if (score > bestScore) {
-                bestScore = score
-                best = element
-            }
+        val best = scored.firstOrNull()
+        val runnerUpScore = scored.getOrNull(1)?.second ?: 0
+        val gap = (best?.second ?: 0) - runnerUpScore
+        val confident = best != null && best.second >= MIN_MATCH_SCORE && gap >= MIN_MATCH_GAP
+        val failReason = when {
+            best == null -> "no_candidates"
+            best.second < MIN_MATCH_SCORE -> "below_floor"
+            gap < MIN_MATCH_GAP -> "gap_too_small"
+            else -> "passed"
         }
+        WayloVerify.d("OCR_SCAN | stepIndex=$stepIndex | blockCount=${elements.size} | topScore=${best?.second ?: 0} | " +
+                "topMatchedText=${best?.first?.text?.take(80) ?: ""} | runnerUpScore=$runnerUpScore | gap=$gap | " +
+                "confident=$confident | failReason=$failReason"
+        )
 
-        return if (best != null && bestScore >= MIN_MATCH_SCORE) {
-            Log.d(TAG, "OCR best match: '${best.text}' score=$bestScore center=(${best.centerX},${best.centerY})")
-            best
+        return if (confident) {
+            Log.d(TAG, "OCR best match: '${best!!.first.text}' score=${best.second} runnerUp=$runnerUpScore center=(${best.first.centerX},${best.first.centerY})")
+            best.first
         } else {
-            Log.d(TAG, "OCR found no match for '$description' (best score $bestScore, floor $MIN_MATCH_SCORE).")
+            Log.d(
+                TAG,
+                "OCR found no confident match for '$description' " +
+                    "(best score ${best?.second ?: 0}, runnerUp=$runnerUpScore, floor=$MIN_MATCH_SCORE, gap=$MIN_MATCH_GAP)."
+            )
             null
         }
     }

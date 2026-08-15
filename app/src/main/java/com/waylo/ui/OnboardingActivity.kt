@@ -29,7 +29,11 @@ class OnboardingActivity : AppCompatActivity(), OnboardingHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (PermissionManager.isFullySetup(this)) {
+        // Gate on the two persistent essentials (overlay + accessibility), not
+        // the full four — screen capture's token is lost per process, so
+        // isFullySetup() was almost always false and replayed onboarding every
+        // launch even though the real permissions were already granted.
+        if (PermissionManager.hasEssentialPermissions(this)) {
             goToMain()
             return
         }
@@ -74,12 +78,25 @@ class OnboardingActivity : AppCompatActivity(), OnboardingHost {
     // --- OnboardingHost ---
 
     override fun goToNext() {
-        val next = binding.pager.currentItem + 1
-        if (next < pageCount) {
-            binding.pager.setCurrentItem(next, true)
-        } else {
+        var next = binding.pager.currentItem + 1
+        // Skip any permission page that's already granted, so onboarding never
+        // flashes a page the user has nothing left to do on.
+        while (next < pageCount && isPageGranted(next)) next++
+        // The screen-capture page (last) is optional — once the essentials are
+        // granted, don't bother showing it; just finish.
+        if (next >= pageCount || (next == pageCount - 1 && PermissionManager.hasEssentialPermissions(this))) {
             finishOnboarding()
+        } else {
+            binding.pager.setCurrentItem(next, true)
         }
+    }
+
+    /** True if the permission page at [position] is already granted (Welcome page is never skippable this way). */
+    private fun isPageGranted(position: Int): Boolean = when (position) {
+        1 -> PermissionManager.hasOverlayPermission(this)
+        2 -> PermissionManager.hasAccessibilityEnabled(this)
+        3 -> PermissionManager.hasScreenCapturePermission()
+        else -> false
     }
 
     override fun finishOnboarding() {
