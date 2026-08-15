@@ -6,6 +6,7 @@ struct HomePanelView: View {
     @StateObject private var agent = AgentEngine.shared
     @StateObject private var skill = SkillSession.shared
     @ObservedObject private var history = TaskHistory.shared
+    @ObservedObject private var remoteConfig = RemoteConfig.shared
     /// "Learn an app" input + the fetched curriculum for the active session.
     @State private var skillInput = ""
     @State private var curriculum: WayloAPIClient.Curriculum?
@@ -43,6 +44,20 @@ struct HomePanelView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+
+            // Backend broadcast (announcements / "update available") — set via
+            // remote config, so it can be shown without an app update.
+            if !remoteConfig.message.isEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: remoteConfig.messageLevel == "warning" ? "exclamationmark.triangle.fill" : "info.circle.fill")
+                        .foregroundColor(remoteConfig.messageLevel == "warning" ? .orange : .accentColor)
+                    Text(remoteConfig.message).font(.caption)
+                    Spacer()
+                }
+                .padding(9)
+                .background((remoteConfig.messageLevel == "warning" ? Color.orange : Color.accentColor).opacity(0.12))
+                .cornerRadius(8)
+            }
 
             Divider()
 

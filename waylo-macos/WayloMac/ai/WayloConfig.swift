@@ -17,9 +17,17 @@ enum WayloConfig {
     /// the XPRIZE submission build where it must "never get it wrong."
     static let maxAccuracyKey = "waylo.maxAccuracy"
     static var maxAccuracy: Bool {
-        // Shipped/judge build always runs max-accuracy; dev build uses the toggle.
+        // Backend remote config wins (so Judge Mode can be flipped without a
+        // re-download); else shipped build = on, dev build = the local toggle.
+        if let remote = remoteConfig("maxAccuracy") as? Bool { return remote }
         if isProduction { return true }
         return UserDefaults.standard.bool(forKey: maxAccuracyKey)
+    }
+
+    /// A value from the cached remote config (written by RemoteConfig at launch).
+    /// Read straight from UserDefaults so hot paths never touch the @MainActor object.
+    static func remoteConfig(_ key: String) -> Any? {
+        (UserDefaults.standard.dictionary(forKey: "waylo.remoteConfig"))?[key]
     }
 
     /// Gemini grounding is accepted as a precise dot only above this confidence;

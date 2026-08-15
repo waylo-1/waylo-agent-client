@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // No Dock icon.
         WayloConfig.registerDefaults() // training-capture ON by default in production
+        RemoteConfig.shared.refresh()   // pull backend-tunable config (no re-download needed)
 
         DebugLogger.log("BOOT", "App launched. Hotkeys: ⌃⌥⌘V voice · ⌃⌥⌘N re-detect · ⌃⌥⌘A ask · ⌃⌥⌘Q screen-Q&A · ⌃⌥⌘W panel · ⌃⌥⌘D debug · ⌃⌥⌘T coord-test")
 

@@ -20,10 +20,11 @@ final class CoordinateResolver {
     private let novaFallback = NovaVisionFallback()
     private let colorDetector = ColorDetector()
 
-    /// Below this Nova self-reported confidence, we describe the target instead
-    /// of pointing at what Nova admits is a guess. Conservative: a miss costs a
+    /// Below this Gemini self-reported confidence, we describe the target instead
+    /// of pointing at what it admits is a guess. Conservative: a miss costs a
     /// spoken description; a false accept points the user at the wrong icon.
-    static let novaMinConfidence = 0.55
+    /// Backend-tunable via remote config (so it can be adjusted without a rebuild).
+    static var novaMinConfidence: Double { (WayloConfig.remoteConfig("novaMinConfidence") as? Double) ?? 0.55 }
 
     private init() {}
 

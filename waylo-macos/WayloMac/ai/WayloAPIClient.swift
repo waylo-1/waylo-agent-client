@@ -332,6 +332,18 @@ final class WayloAPIClient {
         return 0
     }
 
+    /// Backend remote config (Judge Mode, thresholds, a broadcast message, update
+    /// prompt) — lets us change app behaviour without a re-download.
+    func fetchConfig() async -> [String: Any]? {
+        guard let url = URL(string: "\(baseURL)/config") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj
+    }
+
     /// The user's subscription + remaining tasks, read from Aurora via the backend.
     struct UsageStatus {
         let plan: String      // "free" | "paid"
