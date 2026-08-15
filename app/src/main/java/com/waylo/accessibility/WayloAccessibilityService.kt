@@ -119,6 +119,23 @@ class WayloAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Turn the accessibility service OFF so a banking/UPI app — which refuses
+     * to run while ANY accessibility service is enabled (an RBI-driven security
+     * check) — can be used without the user hunting through Settings to disable
+     * Waylo manually. Android does NOT allow an app to re-enable its own
+     * accessibility service, so the user re-enables via the notification /
+     * MainActivity when they return to Waylo (see [FinancialAppGuard]).
+     */
+    fun disableForFinancialApp() {
+        Log.d(TAG, "Disabling accessibility so a banking app isn't blocked.")
+        try {
+            disableSelf()
+        } catch (e: Exception) {
+            Log.w(TAG, "disableSelf() failed: ${e.message}")
+        }
+    }
+
     override fun onInterrupt() {
         Log.d(TAG, "AccessibilityService interrupted.")
     }

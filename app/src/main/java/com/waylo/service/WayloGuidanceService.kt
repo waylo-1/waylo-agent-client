@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.waylo.R
 import com.waylo.correction.CorrectionFlow
 import com.waylo.guidance.GuidanceEngine
@@ -35,6 +36,7 @@ class WayloGuidanceService : Service() {
         private const val TAG = "Waylo"
         const val CHANNEL_ID = "waylo_guidance"
         const val NOTIFICATION_ID = 42
+        const val REENABLE_NOTIFICATION_ID = 43
 
         const val ACTION_START_GUIDANCE = "com.waylo.action.START_GUIDANCE"
         const val ACTION_STOP_GUIDANCE = "com.waylo.action.STOP_GUIDANCE"
@@ -72,10 +74,10 @@ class WayloGuidanceService : Service() {
         OverlayManager.init(this) // service context — overlay survives leaving the app
         Log.e("WAYLO_DOT", "OverlayManager initialized")
         // The dot is shown ONLY when GuidanceEngine.start() runs — never on service start.
-        // The correction-flow mic button is the fallback path into CorrectionFlow
-        // (primary path is the volume-down double-press) and stays up for the
-        // service's whole lifetime, not just during an active guidance run.
-        OverlayManager.showMicButton { CorrectionFlow.start() }
+        // The deprecated correction-flow mic button is no longer shown; its slot
+        // on the side is now the red Next button (GuidanceEngine manages it for
+        // the duration of a run). The correction flow still opens via the
+        // volume-down double-press.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -164,6 +166,38 @@ class WayloGuidanceService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to elevate FGS to mediaProjection type.", e)
             }
+        }
+    }
+
+    /**
+     * Post a tappable notification that takes the user straight to Accessibility
+     * settings to turn Waylo back on — shown after Waylo auto-disabled itself
+     * for a banking app (see [com.waylo.guidance.FinancialAppGuard]). Best-effort:
+     * on Android 13+ this silently no-ops if POST_NOTIFICATIONS wasn't granted,
+     * but the foreground-service notification and MainActivity's own re-enable
+     * prompt still cover that case.
+     */
+    fun showReEnableAccessibilityNotification() {
+        val settings = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val pi = PendingIntent.getActivity(this, 1, settings, flags)
+        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_dot)
+            .setContentTitle("Waylo is paused for your banking app")
+            .setContentText("Tap to turn Waylo back on when you're done.")
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        try {
+            NotificationManagerCompat.from(this).notify(REENABLE_NOTIFICATION_ID, notif)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not post re-enable notification: ${e.message}")
         }
     }
 

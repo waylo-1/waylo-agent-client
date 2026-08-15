@@ -1,5 +1,7 @@
 package com.waylo.ai
 
+import com.waylo.diagnostics.WayloVerify
+
 import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
@@ -25,12 +27,14 @@ import java.util.concurrent.TimeUnit
  * `step_instruction`/`screen_region` in, `elements`/`omni_count`/
  * `macos_count`/`merged_count` out, each element carrying
  * `x`/`y`/`w`/`h`/`cx`/`cy`/`confidence`/`source`/`ax_class`). The service
- * does its own matching server-side from `target_label`/`step_instruction`/
- * `screen_region` — no label/text field to score against client-side (unlike
- * ElementFinder/OcrAnalyzer) — so we just take the highest-confidence element
- * and accept it if it clears [MIN_CONFIDENCE]. `source`/`ax_class` are
- * captured on [Detection] (previously silently discarded) for logging/
- * future use, not currently used to pick between candidates.
+ * does its own SigLIP matching server-side from `target_label`/
+ * `step_instruction`/`screen_region` and returns, per element, `match_score`
+ * (relative: which box means the target) and `match_conf` (absolute: is the
+ * target on this screen). We pick by `match_score` and gate on `match_conf`
+ * (see [selectBest]) — NOT by raw detector `confidence`, which ignores the
+ * target. Only when the server applied no matching (no target_label) do we
+ * fall back to confidence. `source`/`ax_class`/`caption` are captured on
+ * [Detection] for logging/future use.
  *
  * What's still genuinely unverified: whether x/y/w/h/cx/cy are normalized
  * (0-1) or pixel values — the schema doesn't declare a range, hence the
@@ -51,6 +55,33 @@ object YoloDetectionClient {
     /** Minimum confidence (0-1) required to trust the top detection. */
     private const val MIN_CONFIDENCE = 0.5f
 
+    /**
+     * Presence gate for the SEMANTIC (SigLIP) path: the winning box's absolute
+     * match_conf must clear this or we treat the target as not-on-screen and
+     * fall through (to Gemini Vision / re-scan) rather than place on a
+     * softmax-crowned false winner. Deliberately lenient to start — this layer
+     * is only reached after the tree AND OCR already missed, so a best-effort
+     * semantic pick beats escalating; the real value is tuned from the
+     * match_conf figures the enriched YOLO_CALL log now records on device.
+     */
+    private const val MATCH_CONF_FLOOR = 0.10f
+
+    /** The winning box's relative match_score must lead the runner-up by this, so a screen of near-tied crops doesn't get an arbitrary winner. */
+    private const val MATCH_SCORE_MARGIN = 0.15f
+
+    /**
+     * Minimum gap (0-1) the top detection's confidence must lead the
+     * runner-up by — mirrors [com.waylo.accessibility.ElementFinder.MIN_CONFIDENCE_GAP]'s
+     * role: [MIN_CONFIDENCE] alone doesn't stop an arbitrary pick between two
+     * similarly-confident boxes (e.g. the real target and a visually similar
+     * icon nearby both clearing 0.5). 0.1 is proportionally equivalent to
+     * ElementFinder's absolute gap of 10 on its own ~0-100 scoring scale,
+     * scaled to this client's 0-1 confidence range (10% of the full range in
+     * both cases). When there's only one detection, runnerUp defaults to 0,
+     * so the gap check adds no extra burden beyond [MIN_CONFIDENCE] itself.
+     */
+    private const val MIN_CONFIDENCE_GAP = 0.1f
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(3, TimeUnit.SECONDS)
@@ -65,50 +96,127 @@ object YoloDetectionClient {
         val source: String? = null,
         /** Server-side semantic class for this element (e.g. an icon/image/button classification), if the service assigned one — previously discarded. */
         val axClass: String? = null,
+        /**
+         * RELATIVE SigLIP match (softmax across boxes, sums to ~1): which box
+         * MEANS the target. Null when the server didn't score (no target_label).
+         * This — not [confidence] — is how we pick the target box.
+         */
+        val matchScore: Float? = null,
+        /**
+         * ABSOLUTE SigLIP match (calibrated sigmoid): is the target actually on
+         * THIS screen. The server's own docs say callers MUST gate on this, or
+         * a screen without the target still yields a confident (wrong) winner.
+         */
+        val matchConf: Float? = null,
+        /** Tier-2 zero-shot caption for a textless icon ("search", "attach"), if the server assigned one. */
+        val caption: String? = null,
         /** SHA-256 of the exact JPEG bytes sent for this detection — a lightweight reference for [com.waylo.ai.FailureReportClient.reportAutoSuccess] (never the raw image). */
         val screenshotHash: String? = null
     )
 
     /**
      * Detect the target element in [bitmap] and return its screen position if
-     * the service's top-confidence element clears [MIN_CONFIDENCE].
+     * the service's top-confidence element clears both [MIN_CONFIDENCE] and
+     * [MIN_CONFIDENCE_GAP] over the runner-up (see [selectBest]).
      * [findDescription]/[instruction]/[screenRegion] are sent as
      * `target_label`/`step_instruction`/`screen_region` so the *service*
      * matches server-side — there is nothing to score client-side. Bounded to
      * [TIMEOUT_MS] total. Returns null on any failure, timeout, empty
-     * element list, or low confidence — the caller should fall through to
-     * Gemini Vision in that case.
+     * element list, or a low/ambiguous confidence — the caller should fall
+     * through to Gemini Vision (and, from there, GuidanceEngine's
+     * speakTargetDescription()+re-scan path rather than ever guessing a
+     * position) in that case.
      */
     suspend fun detectAndMatch(
         bitmap: Bitmap,
         findDescription: String,
         instruction: String? = null,
-        screenRegion: String? = null
+        screenRegion: String? = null,
+        stepIndex: Int = -1
     ): Detection? = withTimeoutOrNull(TIMEOUT_MS) {
         withContext(Dispatchers.IO) {
             try {
-                val elements = requestDetections(bitmap, findDescription, instruction, screenRegion)
+                val elements = requestDetections(bitmap, findDescription, instruction, screenRegion, stepIndex)
                 if (elements == null) {
                     Log.w(TAG, "YoloDetectionClient: no response (bad response or non-2xx)")
                     return@withContext null
                 }
-                val best = elements.maxByOrNull { it.confidence }
-                when {
-                    best == null -> {
-                        Log.d(TAG, "YoloDetectionClient: elements list empty")
-                        null
-                    }
-                    best.confidence >= MIN_CONFIDENCE -> {
-                        Log.d(TAG, "YoloDetectionClient: best confidence=${best.confidence} at (${best.centerX},${best.centerY})")
-                        best
-                    }
-                    else -> {
-                        Log.d(TAG, "YoloDetectionClient: best confidence=${best.confidence} below threshold $MIN_CONFIDENCE")
-                        null
-                    }
-                }
+                selectBest(elements, stepIndex, httpStatus = 200)
             } catch (e: Exception) {
                 Log.e(TAG, "YoloDetectionClient: detectAndMatch failed: ${e.message}", e)
+                WayloVerify.d("YOLO_CALL | stepIndex=$stepIndex | httpStatus=-1 | boxCount=0 | topConfidence=0 | " +
+                        "runnerUpConfidence=0 | gap=0 | confident=false | errorBody=${(e.message ?: "").take(120)}"
+                )
+                null
+            }
+        }
+    }
+
+    /**
+     * Pure confidence-gated selection over a detection list — takes the
+     * parsed elements directly so it's testable without a live network call,
+     * same rationale as [com.waylo.accessibility.ElementFinder]'s score*
+     * functions. Requires the top detection to both clear [MIN_CONFIDENCE]
+     * and lead the runner-up by [MIN_CONFIDENCE_GAP]; returns null otherwise
+     * (including when [elements] is empty). [stepIndex]/[httpStatus] are
+     * logging-only context (defaulted so existing/test callers are
+     * unaffected) — they don't influence the selection itself.
+     */
+    internal fun selectBest(elements: List<Detection>, stepIndex: Int = -1, httpStatus: Int = 200): Detection? {
+        // PREFER the server's SEMANTIC match. match_score says which box MEANS
+        // the target; match_conf says whether the target is even on this
+        // screen. Picking by raw detector `confidence` (as this did before)
+        // ignores the target entirely and lands on whatever box the detector
+        // is surest is *a* UI element — the root cause of "it can't find the
+        // send/trash icon". Only fall back to confidence when the server did
+        // NOT score (no target_label — the Set-of-Mark captioning path).
+        val matchScored = elements.filter { it.matchScore != null }
+        if (matchScored.isNotEmpty()) {
+            val bySem = matchScored.sortedByDescending { it.matchScore ?: -1f }
+            val best = bySem.first()
+            val runnerUp = bySem.getOrNull(1)?.matchScore ?: 0f
+            val bestScore = best.matchScore ?: 0f
+            val bestConf = best.matchConf ?: 0f
+            val margin = bestScore - runnerUp
+            val confident = bestConf >= MATCH_CONF_FLOOR && margin >= MATCH_SCORE_MARGIN
+            WayloVerify.d("YOLO_CALL | stepIndex=$stepIndex | httpStatus=$httpStatus | boxCount=${elements.size} | " +
+                    "matchScore=$bestScore | runnerUpMatchScore=$runnerUp | matchConf=$bestConf | scoreMargin=$margin | " +
+                    "caption=${best.caption ?: ""} | detectorConfidence=${best.confidence} | confident=$confident | errorBody="
+            )
+            return if (confident) {
+                Log.d(TAG, "YoloDetectionClient: semantic pick matchScore=$bestScore conf=$bestConf at (${best.centerX},${best.centerY})")
+                best
+            } else {
+                Log.d(TAG, "YoloDetectionClient: semantic match below floor (conf=$bestConf<$MATCH_CONF_FLOOR or margin=$margin<$MATCH_SCORE_MARGIN)")
+                null
+            }
+        }
+
+        // Legacy path: server applied no semantic matching → detector confidence.
+        val sorted = elements.sortedByDescending { it.confidence }
+        val best = sorted.firstOrNull()
+        val runnerUp = sorted.getOrNull(1)?.confidence ?: 0f
+        val gap = (best?.confidence ?: 0f) - runnerUp
+        val confident = best != null && best.confidence >= MIN_CONFIDENCE && gap >= MIN_CONFIDENCE_GAP
+        WayloVerify.d("YOLO_CALL | stepIndex=$stepIndex | httpStatus=$httpStatus | boxCount=${elements.size} | " +
+                "topConfidence=${best?.confidence ?: 0f} | runnerUpConfidence=$runnerUp | gap=$gap | " +
+                "confident=$confident | errorBody="
+        )
+        return when {
+            best == null -> {
+                Log.d(TAG, "YoloDetectionClient: elements list empty")
+                null
+            }
+            confident -> {
+                Log.d(TAG, "YoloDetectionClient: best confidence=${best.confidence} runnerUp=$runnerUp at (${best.centerX},${best.centerY})")
+                best
+            }
+            else -> {
+                Log.d(
+                    TAG,
+                    "YoloDetectionClient: best confidence=${best.confidence} runnerUp=$runnerUp " +
+                        "below threshold (floor=$MIN_CONFIDENCE, gap=$MIN_CONFIDENCE_GAP)"
+                )
                 null
             }
         }
@@ -118,7 +226,8 @@ object YoloDetectionClient {
         bitmap: Bitmap,
         targetLabel: String,
         stepInstruction: String?,
-        screenRegion: String?
+        screenRegion: String?,
+        stepIndex: Int = -1
     ): List<Detection>? {
         val baos = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
@@ -145,6 +254,9 @@ object YoloDetectionClient {
         val responseBody = response.body?.string()
         if (!response.isSuccessful || responseBody == null) {
             Log.w(TAG, "YoloDetectionClient: HTTP ${response.code}")
+            WayloVerify.d("YOLO_CALL | stepIndex=$stepIndex | httpStatus=${response.code} | boxCount=0 | topConfidence=0 | " +
+                    "runnerUpConfidence=0 | gap=0 | confident=false | errorBody=${(responseBody ?: "").take(120)}"
+            )
             return null
         }
         // The screenshot we send is exactly bitmap.width x bitmap.height, so
@@ -194,7 +306,10 @@ object YoloDetectionClient {
 
             val source = e.optString("source").takeIf { it.isNotBlank() }
             val axClass = e.optString("ax_class").takeIf { it.isNotBlank() }
-            Log.d(TAG, "YoloDetectionClient: element $i source=$source ax_class=$axClass confidence=${e.optDouble("confidence", 0.0)}")
+            val matchScore = e.optDouble("match_score", Double.NaN).let { if (it.isNaN()) null else it.toFloat() }
+            val matchConf = e.optDouble("match_conf", Double.NaN).let { if (it.isNaN()) null else it.toFloat() }
+            val caption = e.optString("caption").takeIf { it.isNotBlank() }
+            Log.d(TAG, "YoloDetectionClient: element $i source=$source ax_class=$axClass confidence=${e.optDouble("confidence", 0.0)} matchScore=$matchScore matchConf=$matchConf caption=$caption")
 
             result.add(
                 Detection(
@@ -203,6 +318,9 @@ object YoloDetectionClient {
                     confidence = e.optDouble("confidence", 0.0).toFloat(),
                     source = source,
                     axClass = axClass,
+                    matchScore = matchScore,
+                    matchConf = matchConf,
+                    caption = caption,
                     screenshotHash = screenshotHash
                 )
             )

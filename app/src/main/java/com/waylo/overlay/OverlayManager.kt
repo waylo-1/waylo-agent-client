@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import com.waylo.diagnostics.WayloVerify
 import com.waylo.ocr.ScreenAnalysisPipeline.PipelineResult
 
 /**
@@ -51,6 +52,15 @@ object OverlayManager {
     var isMicButtonAttached = false
         private set
 
+    private var nextButtonView: NextButtonView? = null
+
+    @Volatile
+    var isNextButtonAttached = false
+        private set
+
+    /** Remembered from the last [showMicButton] call so [setMicButtonSuppressed] can re-show the button without the caller having to supply the tap handler again. */
+    private var micButtonOnTap: (() -> Unit)? = null
+
     fun init(ctx: Context) {
         context = ctx.applicationContext // ALWAYS use applicationContext
         windowManager = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -62,10 +72,12 @@ object OverlayManager {
      * coordinates. If a dot is already attached, the label is updated and the
      * dot glides to the new target instead of respawning.
      */
-    fun showDot(x: Int, y: Int, instruction: String = "Tap here") {
+    fun showDot(x: Int, y: Int, instruction: String = "Tap here", boxW: Int = 0, boxH: Int = 0) {
+        val (x, y) = clampToScreen(x, y)
         if (isAttached) {
             dotView?.setInstruction(instruction)
-            moveDotAnimated(x, y)
+            dotView?.setBox(boxW, boxH)
+            moveDotAnimated(x, y, boxW = boxW, boxH = boxH)
             return
         }
 
@@ -85,6 +97,7 @@ object OverlayManager {
 
         val dot = DotView(ctx)
         dot.setInstruction(instruction)
+        dot.setBox(boxW, boxH)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -136,18 +149,29 @@ object OverlayManager {
      * Glide the existing dot so its CENTRE lands on ([toX], [toY]). Falls back to
      * [showDot] if nothing is attached yet.
      */
-    fun moveDotAnimated(toX: Int, toY: Int, duration: Long = 450) {
-        val dot = dotView ?: run { showDot(toX, toY); return }
+    fun moveDotAnimated(toX: Int, toY: Int, duration: Long = 450, boxW: Int = 0, boxH: Int = 0) {
+        val (toX, toY) = clampToScreen(toX, toY)
+        val dot = dotView ?: run { showDot(toX, toY, boxW = boxW, boxH = boxH); return }
         val wm = windowManager ?: return
         val params = dot.layoutParams as? WindowManager.LayoutParams ?: return
+
+        // The box (icon vs dot, or a new element size) may have changed; apply
+        // it first so the centre offsets below reflect the new view size. The
+        // WRAP_CONTENT window re-measures on each updateViewLayout during the
+        // glide, so a box change takes effect as the dot moves.
+        dot.setBox(boxW, boxH)
 
         val targetX = toX - dot.centerOffsetX()
         val targetY = toY - dot.centerOffsetY()
         val startX = params.x
         val startY = params.y
 
-        // Already there — nothing to animate.
-        if (startX == targetX && startY == targetY) return
+        // Already there — nothing to animate, but a box-size change still needs
+        // one layout push so the overlay window resizes to fit it.
+        if (startX == targetX && startY == targetY) {
+            try { wm.updateViewLayout(dot, params) } catch (_: Exception) {}
+            return
+        }
 
         moveAnimator?.cancel()
         moveAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -167,10 +191,44 @@ object OverlayManager {
         }
     }
 
-    /** Position the dot on a pipeline result, using [labelOverride] if provided. */
+    /**
+     * Clamp a target CENTRE to the visible screen (with a small margin) so a
+     * matched node whose bounds are partly off-screen — e.g. a launcher icon
+     * scrolled past the left edge, which yields a negative `bounds.centerX()`
+     * (the observed `DOT_PLACED ... x=-394` bug) — can never place the dot
+     * off-screen. Applied at this single choke point so it protects every
+     * coordinate source uniformly (tree / OCR / YOLO / vision). Emits
+     * DOT_CLAMPED only when it actually moves the point, so a normal on-screen
+     * placement stays silent.
+     */
+    private fun clampToScreen(x: Int, y: Int): Pair<Int, Int> {
+        val wm = windowManager ?: return x to y
+        val ctx = context ?: return x to y
+        val metrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealMetrics(metrics)
+        val margin = (16 * ctx.resources.displayMetrics.density).toInt()
+        val maxX = (metrics.widthPixels - margin).coerceAtLeast(margin)
+        val maxY = (metrics.heightPixels - margin).coerceAtLeast(margin)
+        val cx = x.coerceIn(margin, maxX)
+        val cy = y.coerceIn(margin, maxY)
+        if (cx != x || cy != y) {
+            WayloVerify.d(
+                "DOT_CLAMPED | fromX=$x | fromY=$y | toX=$cx | toY=$cy | " +
+                    "screenW=${metrics.widthPixels} | screenH=${metrics.heightPixels}"
+            )
+        }
+        return cx to cy
+    }
+
+    /**
+     * Position the box on a pipeline result, using [labelOverride] if provided.
+     * The result's element bounds ([PipelineResult.width]/[height]) size the
+     * box when known; 0 lets [DotView] fall back to its default square.
+     */
     fun showDotAtResult(result: PipelineResult, labelOverride: String? = null) {
         val label = labelOverride ?: result.label
-        showDot(result.x, result.y, label)
+        showDot(result.x, result.y, label, result.width, result.height)
     }
 
     /**
@@ -257,6 +315,7 @@ object OverlayManager {
      * touchable. Idempotent: a second call while already shown is a no-op.
      */
     fun showMicButton(onTap: () -> Unit) {
+        micButtonOnTap = onTap
         if (isMicButtonAttached) return
 
         val ctx = context ?: run {
@@ -319,10 +378,97 @@ object OverlayManager {
         }
     }
 
+    /**
+     * Temporarily hide/show the mic button without forgetting its tap
+     * handler — used by [com.waylo.guidance.GuidanceEngine] while a
+     * TEXT_INPUT step is active or an IME is likely visible, so the button
+     * doesn't sit on top of the keyboard / get accidentally tapped while
+     * typing. Unlike calling [hideMicButton] directly, passing [suppressed]
+     * = false re-attaches the SAME callback last passed to [showMicButton]
+     * rather than requiring the caller to supply one again. A no-op if
+     * [showMicButton] was never called (nothing to re-show).
+     */
+    fun setMicButtonSuppressed(suppressed: Boolean) {
+        if (suppressed) {
+            hideMicButton()
+        } else {
+            micButtonOnTap?.let { showMicButton(it) }
+        }
+    }
+
+    /**
+     * Show the persistent red "Next" button on the right edge (vertically
+     * centred) while guidance runs. Touchable — tapping it force-advances the
+     * current step ([onTap] is wired to GuidanceEngine.manualAdvance). The
+     * reliable manual override when auto-advance can't confirm the user acted.
+     * Idempotent: a second call just refreshes the tap handler.
+     */
+    fun showNextButton(onTap: () -> Unit) {
+        if (isNextButtonAttached) {
+            nextButtonView?.onTap = onTap
+            return
+        }
+        val ctx = context ?: run {
+            Log.e(TAG, "showNextButton: context is null")
+            return
+        }
+        val wm = windowManager ?: run {
+            Log.e(TAG, "showNextButton: windowManager is null")
+            return
+        }
+        if (!Settings.canDrawOverlays(ctx)) {
+            Log.e(TAG, "showNextButton: SYSTEM_ALERT_WINDOW not granted!")
+            return
+        }
+
+        val btn = NextButtonView(ctx)
+        btn.onTap = onTap
+        btn.measure(0, 0)
+        val margin = (8 * ctx.resources.displayMetrics.density).toInt()
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            // Deliberately NOT FLAG_NOT_TOUCHABLE — this button must receive taps.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            x = margin
+            y = 0
+        }
+
+        try {
+            wm.addView(btn, params)
+            nextButtonView = btn
+            isNextButtonAttached = true
+            Log.e(TAG, "showNextButton: SUCCESS")
+        } catch (e: Exception) {
+            Log.e(TAG, "showNextButton addView FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
+        }
+    }
+
+    fun hideNextButton() {
+        val btn = nextButtonView ?: return
+        val wm = windowManager ?: return
+        try {
+            wm.removeView(btn)
+            Log.e(TAG, "hideNextButton: removed successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "hideNextButton exception: ${e.message}")
+        } finally {
+            nextButtonView = null
+            isNextButtonAttached = false
+        }
+    }
+
     fun destroy() {
         hideDot()
         hideArrow()
         hideMicButton()
+        hideNextButton()
         windowManager = null
         context = null
         Log.e(TAG, "OverlayManager destroyed.")

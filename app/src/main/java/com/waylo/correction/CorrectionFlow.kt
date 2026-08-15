@@ -57,10 +57,23 @@ object CorrectionFlow {
     private var awaitingTapJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    /** Begin the flow. A no-op if one is already in progress (a rapid double-press + mic tap shouldn't overlap two prompts). */
+    /**
+     * Begin the flow. A no-op if one is already in progress (a rapid
+     * double-press + mic tap shouldn't overlap two prompts), or if
+     * [GuidanceEngine.shouldSuppressCorrectionPrompt] says a TEXT_INPUT step
+     * is active or an IME is likely visible — the mic button sits bottom-
+     * right, the same region a keyboard occupies, so an ordinary typing tap
+     * can accidentally land on it; without this guard that repeatedly
+     * triggers "What went wrong?" while the user is simply trying to type
+     * (confirmed in a real capture).
+     */
     fun start() {
         if (state != State.IDLE) {
             Log.d(TAG, "CorrectionFlow.start: already in progress (state=$state), ignoring.")
+            return
+        }
+        if (GuidanceEngine.shouldSuppressCorrectionPrompt()) {
+            Log.d(TAG, "CorrectionFlow.start: suppressed — TEXT_INPUT step active or IME likely visible.")
             return
         }
         val context = WayloAccessibilityService.instance ?: run {

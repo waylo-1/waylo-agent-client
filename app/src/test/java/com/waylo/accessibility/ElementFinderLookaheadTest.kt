@@ -131,11 +131,10 @@ class ElementFinderLookaheadTest {
     }
 
     @Test
-    fun `accepts even when the confidence gap would fail isConfident`() {
+    fun `rejects a match when the confidence gap would fail isConfident`() {
         // Two near-identical "History" nodes — ambiguous by isConfident()'s
-        // gap rule, but scorePartialMatch intentionally skips that check
-        // since it's only reached as a last resort after the primary search
-        // already failed for the step's entire patient window.
+        // gap rule. scorePartialMatch must never place the dot below the
+        // same confidence floor as any other match, even as a last resort.
         val first = node(text = "History", clickable = true, visible = true)
         val second = node(text = "History", clickable = true, visible = true)
         val allNodes = listOf(first, second)
@@ -146,10 +145,7 @@ class ElementFinderLookaheadTest {
             visualDescription = null
         )
 
-        assertNotNull(match)
-        assertTrue("score clears the confident bar", match!!.score >= 35)
-        assertEquals("tied with the runner-up", 0, match.score - match.runnerUpScore)
-        assertTrue("this is exactly the case isConfident() would reject", !match.isConfident())
+        assertNull("tied with the runner-up — below the confidence floor", match)
     }
 
     @Test
