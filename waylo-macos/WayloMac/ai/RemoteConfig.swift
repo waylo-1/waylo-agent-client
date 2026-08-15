@@ -35,4 +35,6 @@ final class RemoteConfig: ObservableObject {
     var messageLevel: String { (values["messageLevel"] as? String) ?? "info" }
     var latestVersion: String { (values["latestVersion"] as? String) ?? "" }
     var updateURL: String { (values["updateURL"] as? String) ?? "" }
+    /// "google" → narrate via Cloud TTS (/tts); anything else → on-device voice.
+    var voiceEngine: String { (values["voiceEngine"] as? String) ?? "system" }
 }

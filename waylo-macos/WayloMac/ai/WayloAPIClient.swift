@@ -373,6 +373,24 @@ final class WayloAPIClient {
         return UsageStatus(plan: plan, used: used, limit: limit, allowed: allowed, remaining: remaining)
     }
 
+    /// POST /tts — natural Google Cloud voice for a spoken instruction. Returns
+    /// decoded MP3 audio, or nil (offline / TTS not configured) so the caller
+    /// falls back to the on-device voice.
+    func fetchTTS(text: String, language: String) async -> Data? {
+        guard !text.isEmpty, let url = URL(string: "\(baseURL)/tts") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 12
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text, "language": language])
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let b64 = obj["audio"] as? String,
+              let audio = Data(base64Encoded: b64) else { return nil }
+        return audio
+    }
+
     /// Registers a signed-in user's email with the backend (fire-and-forget), so
     /// they appear in the users table for business/customer evidence.
     func register(email: String, name: String = "", source: String = "app") {
