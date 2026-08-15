@@ -352,13 +352,25 @@ final class AccessibilityReader: @unchecked Sendable {
     /// non-browsers or when no URL is exposed.
     func targetWebURL() -> String? {
         guard TargetAppTracker.shared.isBrowser, let window = focusedTargetWindow() else { return nil }
-        guard let web = firstWebAreaElement(in: window, depth: 0) else { return nil }
-        var urlRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(web, "AXURL" as CFString, &urlRef) == .success,
-              let ref = urlRef else { return nil }
-        // AXURL usually bridges to NSURL→URL; occasionally it's a plain string.
-        if let url = ref as? URL { return url.absoluteString }
-        if let s = ref as? String { return s }
+        // The window's AXDocument is the ACTIVE TAB's URL — the most reliable
+        // source across Chrome/Safari. Try it first: reading only the first web
+        // area's AXURL breaks on iframe-heavy pages (e.g. AI Studio), where that
+        // frame is an embed, not the tab, so the URL-wait never matched.
+        if let doc = urlString(from: window, attribute: "AXDocument") { return doc }
+        // Fall back to scanning web areas for an AXURL that yields a real URL.
+        if let web = firstWebAreaElement(in: window, depth: 0),
+           let u = urlString(from: web, attribute: "AXURL") { return u }
+        return nil
+    }
+
+    /// Reads a URL-valued AX attribute (AXDocument / AXURL), which may bridge to
+    /// URL or arrive as a plain string.
+    private func urlString(from element: AXUIElement, attribute: String) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &ref) == .success,
+              let value = ref else { return nil }
+        if let url = value as? URL { return url.absoluteString }
+        if let s = value as? String, s.contains("://") || s.contains(".") { return s }
         return nil
     }
 
