@@ -87,4 +87,16 @@ object PermissionManager {
             hasAccessibilityEnabled(context) &&
             hasScreenCapturePermission() &&
             hasMicrophonePermission(context)
+
+    /**
+     * The two permissions Waylo genuinely needs before it can run: draw-overlay
+     * and the accessibility service. Both PERSIST across process restarts.
+     * Screen capture (its MediaProjection token is lost whenever Android kills
+     * the background process) and microphone (post-MVP) are deliberately NOT
+     * required here — they're requested lazily only if/when actually needed.
+     * Onboarding is gated on THIS, so once overlay + accessibility are granted
+     * the user never sees the setup pages again.
+     */
+    fun hasEssentialPermissions(context: Context): Boolean =
+        hasOverlayPermission(context) && hasAccessibilityEnabled(context)
 }

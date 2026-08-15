@@ -12,10 +12,12 @@ import android.provider.Settings
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.waylo.R
 import com.waylo.accessibility.WayloAccessibilityService
+import com.waylo.billing.EntitlementManager
 import com.waylo.data.RecentTasksStore
 import com.waylo.databinding.ActivityMainBinding
 import com.waylo.guidance.GuidanceEngine
@@ -120,6 +122,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Shown once the free-task allowance is used up. Offers the ₹99/month
+     * upgrade via UPI. The "I've paid" unlock is honour-system for now (fine for
+     * launch/demo); a server-verified entitlement can replace [EntitlementManager.setPro]
+     * later without touching this UI.
+     */
+    private fun showPaywall() {
+        val used = EntitlementManager.freeTasksUsed(this)
+        AlertDialog.Builder(this)
+            .setTitle("You've used your $used free tasks")
+            .setMessage(
+                "Unlock unlimited Waylo guidance for just ₹${EntitlementManager.PRICE_INR}/month.\n\n" +
+                    "Pay with any UPI app, then tap \"I've paid — unlock\"."
+            )
+            .setPositiveButton("Pay ₹${EntitlementManager.PRICE_INR} with UPI") { _, _ -> payWithUpi() }
+            .setNeutralButton("I've paid — unlock") { _, _ ->
+                EntitlementManager.setPro(this, true)
+                Toast.makeText(this, "Unlocked! Enjoy unlimited Waylo 🎉", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
+    /** Fire a UPI payment intent for the ₹99 upgrade into whatever UPI app the user has. */
+    private fun payWithUpi() {
+        val upiId = EntitlementManager.UPI_ID
+        if (upiId.isBlank() || upiId.startsWith("REPLACE")) {
+            Toast.makeText(this, "Payment isn't set up yet — please try again soon.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val uri = Uri.parse(
+            "upi://pay?pa=$upiId&pn=${Uri.encode(EntitlementManager.UPI_PAYEE_NAME)}" +
+                "&am=${EntitlementManager.PRICE_INR}.00&cu=INR&tn=${Uri.encode("Waylo unlimited")}"
+        )
+        try {
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW, uri), "Pay with"))
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, "No UPI app found on this phone.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun startGuidanceService() {
         val serviceIntent = Intent(this, WayloGuidanceService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -138,6 +181,12 @@ class MainActivity : AppCompatActivity() {
         val task = binding.editTask.text.toString().trim()
         if (task.isEmpty()) {
             Toast.makeText(this, "Please describe what you want to do", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Freemium gate: the first FREE_LIMIT tasks are free; after that, upgrade.
+        if (!EntitlementManager.canStartTask(this)) {
+            showPaywall()
             return
         }
 
@@ -191,6 +240,14 @@ class MainActivity : AppCompatActivity() {
      * user responds to the capture dialog.
      */
     private fun launchGuidance(task: String) {
+        // Count this task against the free allowance (no-op for Pro users), and
+        // let the user know how many free tasks remain.
+        EntitlementManager.recordTaskStarted(this)
+        if (!EntitlementManager.isPro(this)) {
+            val left = EntitlementManager.freeTasksRemaining(this)
+            val msg = if (left > 0) "$left free tasks left" else "That was your last free task — upgrade for unlimited"
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
         startGuidanceService()
         Toast.makeText(this, "Starting guidance for: $task", Toast.LENGTH_SHORT).show()
         RecentTasksStore.addRecent(this, task)

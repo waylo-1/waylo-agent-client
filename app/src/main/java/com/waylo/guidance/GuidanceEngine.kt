@@ -1,10 +1,14 @@
 package com.waylo.guidance
 
+import com.waylo.diagnostics.RunReport
+import com.waylo.diagnostics.WayloVerify
+
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 import com.waylo.accessibility.ElementFinder
+import com.waylo.accessibility.WayloAccessibilityService
 import com.waylo.ai.GeminiClient
 import com.waylo.ai.Plan
 import com.waylo.ai.Step
@@ -50,6 +54,9 @@ object GuidanceEngine {
     // the local guessPackage() heuristic in that case.
     private var currentAppPackage: String? = null
 
+    /** Human-readable app name from the enriched /plan response (e.g. "YouTube"), used by [speakCantReachTarget]'s "Please open X" message. Null for older/cached plans or demo tasks. */
+    private var currentAppName: String? = null
+
     /**
      * Bumped every time a new guidance session actually begins (see
      * [start]). advanceFrom()/checkLookaheadSkip()/tryVisionFallback()'s
@@ -85,6 +92,27 @@ object GuidanceEngine {
     /** Whether the "gentle repeat" patience nudge has already fired for the current step. */
     private var hasRepeatedThisStep = false
 
+    /**
+     * BUG-B fix: elapsedRealtime of the last spoken "target not found"
+     * nudge ([speakTargetDescription]'s `"Look for..."` path /
+     * [speakCantReachTarget]'s "Please open..." path) for the CURRENT step,
+     * or 0L if none has been spoken yet this step. Throttles that speech to
+     * at most once every [PATIENCE_MS] (see [notFoundNudgeAllowed]) — before
+     * this fix it re-spoke on every patient-window escalation, as often as
+     * every [IMAGE_ONLY_LOCATE_TIMEOUT_MS] (6s) for image-only targets.
+     * Reset to 0L per-step in [executeStep].
+     */
+    private var lastNotFoundNudgeAt = 0L
+
+    /**
+     * Step-1 (app-open) empirical escalation ladder position. 0 = only the
+     * gentle "Open [App]" spoken so far; each expired patience window with the
+     * app still not open advances it — see [speakAppOpenEscalation], which
+     * picks its next phrase from what the launcher actually did (drawer opened
+     * or not) rather than a fixed script. Reset per step in [executeStep].
+     */
+    private var appOpenEscalationLevel = 0
+
     /** Guards against overlapping async tap-verification lookups from a burst of content-change events. */
     private var tapEvidenceCheckInFlight = false
 
@@ -95,12 +123,38 @@ object GuidanceEngine {
      * (before the isRunning/etc. guards) in [onWindowStateChanged]/
      * [onContentChanged] so it's fresh the moment guidance needs it, and
      * persists across steps (this is a continuous signal, not per-step
-     * state — only [hasAnnouncedWrongApp] resets per step).
+     * state — only [wrongAppStreak] resets per step).
      */
     private var lastKnownForegroundPackage: String? = null
 
-    /** Whether the "this isn't the right place" nudge has already been said for the CURRENT excursion out of the expected app. Reset per-step, and again as soon as the user's back in the expected app (so a second excursion gets its own one-time nudge). */
-    private var hasAnnouncedWrongApp = false
+    /**
+     * BUG-2/BUG-3 fix: best-effort "an IME/keyboard is probably visible right
+     * now" signal. True the moment a [isImePackage] event fires (even though
+     * that same event is otherwise ignored for [lastKnownForegroundPackage]
+     * purposes, see [isTransientForegroundPackage]); false again the moment
+     * any trusted, non-transient app package event fires. There is no
+     * accessibility-window-type check anywhere in this app (no
+     * [android.view.accessibility.AccessibilityWindowInfo] usage) — this is a
+     * package-name heuristic only, same spirit as [isTransientForegroundPackage],
+     * so it can occasionally miss real IME visibility or guess wrong. That's
+     * an acceptable risk here: it only gates SPEECH/mic-prompt suppression
+     * (see [speakTargetDescription], [updateMicButtonVisibility],
+     * [shouldSuppressCorrectionPrompt]), never a placement-safety decision —
+     * a false negative just means occasionally still talking over the
+     * keyboard, not a wrong dot placement.
+     */
+    private var imeLikelyVisible = false
+
+    /**
+     * Consecutive [isInExpectedApp] misses seen back-to-back in [locateStep]'s
+     * poll loop — diagnostic only (feeds the `WRONG_LOCATION_SUPPRESSED` log's
+     * `confirmedScans` field). The app never speaks anything about being on
+     * the wrong screen (that phrase was removed entirely — see
+     * [locateStep]'s wrong-app branch); this purely helps a future capture
+     * show whether a miss was a one-off blip or a sustained condition. Reset
+     * per-step in [executeStep], and back to 0 the moment a check passes.
+     */
+    private var wrongAppStreak = 0
 
     /** What's currently under the dot for this step, so periodic re-validation can tell if it's gone or beaten. */
     private var placedResult: ScreenAnalysisPipeline.PipelineResult? = null
@@ -158,11 +212,33 @@ object GuidanceEngine {
      */
     private const val IMAGE_ONLY_LOCATE_TIMEOUT_MS = 6_000L
 
-    /** If the target is found but the user hasn't acted in this long, repeat the instruction once. */
+    /**
+     * Two uses: (1) if the target is found but the user hasn't acted in this
+     * long, repeat the instruction once ([schedulePatienceCheck]); (2) the
+     * minimum gap between spoken "target not found" nudges while still
+     * searching ([notFoundNudgeAllowed]) — reused rather than a second
+     * near-duplicate constant, per BUG-B's fix ("use the existing nudge
+     * timer").
+     */
     private const val PATIENCE_MS = 15_000L
 
-    /** Safety re-scan cadence while locating, in case a content-change event never arrives. */
+    /** Safety re-scan cadence while locating, in case a content-change event never arrives — the outer bound [waitForRescanTrigger] falls back to when neither an accessibility event nor [PERIODIC_RESCAN_MS] wakes it first. */
     private const val RESCAN_POLL_MS = 1500L
+
+    /**
+     * BUG-A fix: [periodicRescan] re-runs the find pipeline on this cadence
+     * while a step is LOCATING, independent of accessibility events — a real
+     * capture showed a target already visible on screen not get found until
+     * the user manually caused a new TYPE_WINDOW_CONTENT_CHANGED event (e.g.
+     * a scroll), meaning the existing event-driven trigger plus
+     * [RESCAN_POLL_MS]'s 1.5s fallback wasn't responsive enough. Tighter than
+     * [RESCAN_POLL_MS] deliberately — this is the primary responsiveness
+     * mechanism now; 900ms sits in the requested 800ms-1s band: fast enough
+     * to feel immediate to a user watching the screen, not so fast it
+     * meaningfully increases the tree-walk battery/CPU cost of a mechanism
+     * that already polls every 1.5s at minimum.
+     */
+    private const val PERIODIC_RESCAN_MS = 900L
 
     /** Ambiguous tap-verification signals allowed before we re-speak with the fallbackHint. */
     private const val UNCERTAIN_CHECK_LIMIT = 2
@@ -184,6 +260,32 @@ object GuidanceEngine {
      * target that merely looks similar much later in an unrelated flow.
      */
     private const val LOOKAHEAD_STEPS = 3
+
+    /**
+     * A lookahead skip ABANDONS the intermediate steps between here and the
+     * jumped-to step, so it must clear a MUCH higher bar than the generic
+     * confidence floor (MIN_CONFIDENT_SCORE=35) that a normal placement uses.
+     * Device captures show real "you're already ahead" matches score 145+,
+     * while false jumps — e.g. a contact's round profile photo in the chat
+     * list matching a later "gallery photo thumbnail" step — score ~50. This
+     * threshold cleanly rejects those. When in doubt the loop simply does NOT
+     * skip; the user can always jump forward themselves with the red Next
+     * button, so a missed auto-skip is cheap while a wrong one is confusing.
+     */
+    private const val LOOKAHEAD_SKIP_MIN_SCORE = 80
+
+    /**
+     * Master kill-switch for automatic step-skipping. Turned OFF: device
+     * testing showed it causes more harm than help now that the red Next
+     * button exists — it produced false jumps (a profile photo matching a
+     * later "gallery photo" step; a home-screen Phone icon matching a later
+     * "about phone" step) and, worst, a DOUBLE advance when the user pressed
+     * Next and the freshly-started step immediately skipped itself again.
+     * Forward movement is now driven only by real evidence (the user taps the
+     * boxed target / the next step's target genuinely appears) or the user
+     * pressing Next. Flip back to true to re-enable the lookahead behaviour.
+     */
+    private const val LOOKAHEAD_SKIP_ENABLED = false
 
     /** Delay after a spoken skip/partial-match announcement before acting on it, so TTS isn't cut off mid-sentence. */
     private const val ANNOUNCEMENT_SETTLE_MS = 1500L
@@ -209,7 +311,7 @@ object GuidanceEngine {
      * the backend-resolved target app (from the enriched /plan response), if
      * known; null for demo tasks or older/cached plans.
      */
-    fun start(task: String, stepList: List<Step>, appPackage: String? = null) {
+    fun start(task: String, stepList: List<Step>, appPackage: String? = null, appName: String? = null) {
         if (stepList.isEmpty()) {
             Log.e(TAG, "start() called with no steps.")
             return
@@ -218,12 +320,21 @@ object GuidanceEngine {
         steps = stepList
         currentIndex = 0
         currentAppPackage = appPackage
+        currentAppName = appName
         isRunning = true
         lastAdvanceAt = 0L
         sessionId = java.util.UUID.randomUUID().toString()
         taskGeneration++ // invalidates any stale advanceFrom/checkLookaheadSkip/vision-recovery continuation still pending from a previous session
         Log.e(TAG, "Guidance started: '$task' with ${stepList.size} steps. appPackage=$appPackage")
+        // Open the per-run debug report (crash-safe JSONL + latest.md digest in
+        // the app's files dir). No-ops for report I/O never affect guidance.
+        WayloGuidanceService.instance?.let { svc ->
+            RunReport.startRun(svc, sessionId, task, stepList, appPackage, appName)
+        }
+        appOpenNextPromptSpoken = false
+        OverlayManager.showNextButton { manualAdvance() }
         executeStep(0)
+        announceNextButtonOnce()
     }
 
     /**
@@ -273,7 +384,7 @@ object GuidanceEngine {
                     return@launch
                 }
                 withContext(Dispatchers.Main) {
-                    start(task, plan.steps, plan.appPackage) // delegate to the existing overload
+                    start(task, plan.steps, plan.appPackage, plan.appName) // delegate to the existing overload
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Backend call failed: ${e.message}", e)
@@ -322,8 +433,10 @@ object GuidanceEngine {
         currentStepPhase = null
         OverlayManager.hideDot()
         OverlayManager.hideArrow()
+        OverlayManager.hideNextButton()
         WayloGuidanceService.instance?.speaker?.stop()
         Log.e(TAG, "Guidance stopped.")
+        RunReport.endRun("stopped")
     }
 
     /**
@@ -340,6 +453,7 @@ object GuidanceEngine {
         currentStepPhase = null
         OverlayManager.hideDot()
         OverlayManager.hideArrow()
+        OverlayManager.hideNextButton()
         Log.e(TAG, "Guidance paused for financial app.")
     }
 
@@ -348,7 +462,10 @@ object GuidanceEngine {
         if (!pausedForFinancialApp) return
         pausedForFinancialApp = false
         Log.e(TAG, "Guidance resuming after financial app.")
-        if (isRunning) executeStep(currentIndex)
+        if (isRunning) {
+            OverlayManager.showNextButton { manualAdvance() }
+            executeStep(currentIndex)
+        }
     }
 
     /**
@@ -367,6 +484,9 @@ object GuidanceEngine {
         val step = steps[index]
         Log.e(TAG, "executeStep called for index $index: ${step.instruction}")
         Log.e(TAG, "findDescription: ${step.findDescription}")
+        WayloVerify.d("STEP_START | stepIndex=$index | elementType=${step.elementType ?: "null"} | " +
+                "instruction=${step.instruction.take(60)} | findDescription=${step.findDescription.take(80)}"
+        )
 
         val spoken = shortLabel(step.instruction)
         WayloGuidanceService.instance?.speaker?.speak(step.instruction)
@@ -400,38 +520,69 @@ object GuidanceEngine {
         tapEvidenceCheckInFlight = false
         locateRescanRequested = false
         pendingSkipTargetIndex = null
-        hasAnnouncedWrongApp = false
+        wrongAppStreak = 0
+        lastNotFoundNudgeAt = 0L
+        appOpenEscalationLevel = 0
         advancing = false
 
+        // BUG 3: keep the mic overlay off the keyboard the moment we know
+        // this step is TEXT_INPUT (or IME is already up from a previous
+        // signal) — see updateMicButtonVisibility()'s doc.
+        updateMicButtonVisibility()
+
+        // stepJob?.cancel() below stops any PREVIOUS step's locateStep()/
+        // periodicRescan() coroutines before either is (re-)launched for
+        // this step — so there is never more than one periodic-rescan timer
+        // running at once (BUG A's "not stack multiple timers" requirement).
         stepJob?.cancel()
         val job = Job(scope.coroutineContext[Job])
         stepJob = job
         val stepScope = CoroutineScope(scope.coroutineContext + job)
         currentStepScope = stepScope
 
+        if (isNavigationStep(step)) {
+            // Pure navigation (opening an app / searching for it via the
+            // launcher): no element on THIS screen to point a dot at, so no
+            // L0-L3 search is attempted at all. currentVerification is
+            // already Verification.AppLaunch (see verificationFor) — the
+            // step advances the moment onWindowStateChanged sees the
+            // expected package. Element-finding only begins on the NEXT
+            // step, once we've actually landed in the target app.
+            Log.e(TAG, "executeStep: step $index is pure navigation — skipping element grounding.")
+            currentStepPhase = StepPhase.WAITING_FOR_ACTION
+            dotShownAt = SystemClock.elapsedRealtime()
+            schedulePatienceCheck(index)
+            return
+        }
+
+        val pkg = currentAppPackage ?: guessPackage(currentTask, step.findDescription)
         stepScope.launch {
             val service = WayloGuidanceService.instance
             if (service == null) {
                 Log.e(TAG, "No service context — cannot run guidance.")
                 return@launch
             }
-            val pkg = currentAppPackage ?: guessPackage(currentTask, step.findDescription)
             locateStep(service, index, step, pkg, spoken)
         }
+        // BUG A: an independent, tighter-cadence rescan running alongside
+        // locateStep() — see periodicRescan()'s doc for why and how it
+        // avoids racing locateStep() for who gets to place the dot.
+        stepScope.launch { periodicRescan(index, step, pkg) }
     }
 
     /**
      * Decide how step [index]'s completion will be detected:
      *  - TEXT_INPUT -> [Verification.TextInput] (target's text becomes non-empty).
-     *  - APP_ICON, or step 1 from the home screen, or (for legacy plans with no
-     *    elementType) an instruction that reads like "Open/Launch/Start ..." ->
-     *    [Verification.AppLaunch] (window-state change into the expected app).
+     *  - APP_ICON, NAVIGATION (see [isNavigationStep]), or step 1 from the home
+     *    screen, or (for legacy plans with no elementType) an instruction that
+     *    reads like "Open/Launch/Start ..." -> [Verification.AppLaunch]
+     *    (window-state change into the expected app).
      *  - Everything else (ICON_BUTTON/BUTTON/LIST_ITEM, and any other/unknown
      *    type) -> [Verification.TapInApp] (click or content-change evidence).
      */
     private fun verificationFor(index: Int, step: Step): Verification {
         val type = step.elementType?.uppercase()?.trim()
-        val looksLikeAppOpen = type == "APP_ICON" ||
+        val looksLikeAppOpen = type == "APP_ICON" || type == "NAVIGATION" ||
             (type.isNullOrBlank() && OPEN_INSTRUCTION_PREFIX.containsMatchIn(step.instruction.trim()))
         return when {
             type == "TEXT_INPUT" -> Verification.TextInput
@@ -442,6 +593,19 @@ object GuidanceEngine {
             else -> Verification.TapInApp
         }
     }
+
+    /**
+     * Whether [step] is a pure-navigation action (opening an app, or
+     * searching for it via the launcher's app-drawer search) with nothing
+     * concrete on screen to point a dot at — e.g. "Swipe up from the home
+     * screen and type Instagram to search for it." These steps skip element
+     * grounding (L0-L3) entirely; see [executeStep]. Element-finding resumes
+     * on the NEXT step, once [Verification.AppLaunch] confirms we've landed
+     * in the target app. `internal` for the same unit-testability reason as
+     * [impliedScrollDirection]/[looksLikeImageOnlyTarget].
+     */
+    internal fun isNavigationStep(step: Step): Boolean =
+        step.elementType?.uppercase()?.trim() == "NAVIGATION"
 
     /**
      * The requirement-2 "don't guess" loop: repeatedly try to locate the
@@ -480,42 +644,98 @@ object GuidanceEngine {
         var deadline = stepShownAt + timeoutMs
 
         while (isRunning && currentIndex == index && !pausedForFinancialApp) {
-            // Never search (or place/reference the dot) while the user is
-            // somewhere other than this step's expected app — that's not a
-            // "target hard to find" problem, and a stray match from the
-            // wrong screen must never get placed. Wait here until a window
-            // change brings them back, rather than burning the patient
-            // window on a screen we already know is wrong.
-            if (!isInExpectedApp(index)) {
-                handleWrongApp()
-                waitForRescanTrigger()
-                continue
-            }
-            hasAnnouncedWrongApp = false // back on track — a future excursion gets its own one-time nudge
-
+            // PRIORITY FIX: a confident on-screen match for THIS step's own
+            // target is stronger evidence of "right place" than the
+            // foreground-package reading, which is updated unconditionally
+            // on every accessibility event and can be transiently wrong
+            // (a screen-recorder toggle, system dialog, or IME briefly
+            // reporting com.android.systemui/com.oplus.screenrecorder/etc.
+            // instead of the real app — see isTransientForegroundPackage).
+            // So: ALWAYS attempt to locate the target first, regardless of
+            // isInExpectedApp() — only fall back to the wrong-app guard as a
+            // FALLBACK signal, once no confident match was found this scan.
             val result = locateOnDevice(index, step, pkg)
             if (result != null) {
+                wrongAppStreak = 0
+                if (isPlacementOverridingPackageMismatch(index, lastKnownForegroundPackage, currentAppPackage)) {
+                    WayloVerify.d("PLACEMENT_OVERRIDES_PACKAGE | stepIndex=$index | score=${result.confidence} | " +
+                            "currentPackage=${lastKnownForegroundPackage ?: "null"} | expectedPackage=${currentAppPackage ?: "null"}"
+                    )
+                }
                 onTargetLocated(index, step, spoken, result)
                 return
             }
 
-            // Screen-aware step skipping (only reached when the on-device
-            // search just above came up empty for THIS step this scan — a
-            // confidently-present current-step target always returns above
-            // and never reaches here).
+            // No confident match this scan — NOW the package reading
+            // matters, purely as a fallback signal (never an override of a
+            // real hit, since a hit above always returns before here). Wait
+            // here until a window change brings them back, rather than
+            // burning the patient window on a screen we already know is
+            // wrong.
+            if (!isInExpectedApp(index)) {
+                // Always safe to hide immediately — a stray match from the
+                // wrong screen must never sit there, and hiding an
+                // already-hidden dot/arrow is a harmless no-op.
+                OverlayManager.hideDot()
+                OverlayManager.hideArrow()
+                wrongAppStreak++
+                // The "wrong place / go back" phrase is gone permanently —
+                // silence is the desired behavior while this is happening
+                // (see CHANGE 1). Purely diagnostic; never spoken.
+                WayloVerify.d("WRONG_LOCATION_SUPPRESSED | stepIndex=$index | confirmedScans=$wrongAppStreak")
+
+                if (SystemClock.elapsedRealtime() >= deadline) {
+                    // Regression guard: without this, a foreground-package
+                    // reading that's stuck wrong (see wrongAppStreak's doc —
+                    // lastKnownForegroundPackage has no settling delay) would
+                    // loop in this branch silently FOREVER — it `continue`s
+                    // past the identical deadline-escalation block below on
+                    // every iteration, so it would never reach it. Give the
+                    // user SOME actionable guidance instead of total silence,
+                    // via the same one-shot-per-window mechanism as the
+                    // normal not-found path below (shares `deadline`, so this
+                    // and that path can't both fire for the same window).
+                    // Deliberately does NOT call tryPartialMatchAcceptance/
+                    // tryVisionFallback here — those search the CURRENT
+                    // (confirmed wrong) screen, which is exactly what must
+                    // never happen; speakCantReachTarget only reads step
+                    // data, no live screen search.
+                    Log.e(TAG, "locateStep: step $index still not in expected app after ${timeoutMs}ms — giving actionable guidance instead of looping silently.")
+                    speakCantReachTarget(step, index)
+                    deadline = SystemClock.elapsedRealtime() + timeoutMs
+                }
+                waitForRescanTrigger()
+                continue
+            }
+            wrongAppStreak = 0
+
+            // Screen-aware step skipping — unchanged scope: only reached
+            // once confirmed in the expected app (this step's OWN target
+            // confidence already overrides the package check above; a
+            // LOOKAHEAD step's target is a different, riskier proposition —
+            // searching for it against what might be a genuinely different
+            // app's tree, not just a transiently-misread package, is exactly
+            // what isInExpectedApp exists to prevent).
             if (checkLookaheadSkip(index) != null) return
 
             if (SystemClock.elapsedRealtime() >= deadline) {
-                Log.e(TAG, "locateStep: on-device pipeline timed out for step $index, trying a lowered-confidence partial match.")
+                Log.e(TAG, "locateStep: on-device pipeline timed out for step $index, trying a confidence-gated partial match.")
                 if (tryPartialMatchAcceptance(index, step, pkg)) return
 
-                Log.e(TAG, "locateStep: no partial match either, trying vision fallback.")
-                if (tryVisionFallback(service, index, step, spoken)) return
-                // Vision fallback also missed. Never guess a dot position —
-                // gently re-prompt with the fallback hint and open a fresh
-                // patient window instead of giving up on the user.
-                Log.e(TAG, "locateStep: still not found after ${timeoutMs}ms, re-speaking fallbackHint.")
-                speakFallbackHint(step)
+                Log.e(TAG, "locateStep: no confident partial match either, trying vision fallback.")
+                when (tryVisionFallback(service, index, step, spoken)) {
+                    VisionOutcome.FOUND -> return
+                    VisionOutcome.DESCRIBED -> Unit // already spoken a description of the target — keep waiting
+                    VisionOutcome.MISSED -> {
+                        // Never guess a dot position, and never fall back to
+                        // a "wrong place / go back" phrase — describe the
+                        // target (or, for an AppLaunch step, ask the user to
+                        // open the app) and open a fresh patient window
+                        // instead of giving up on the user.
+                        Log.e(TAG, "locateStep: still not confident after ${timeoutMs}ms, giving actionable guidance instead of guessing.")
+                        speakCantReachTarget(step, index)
+                    }
+                }
                 deadline = SystemClock.elapsedRealtime() + timeoutMs
             }
 
@@ -555,7 +775,15 @@ object GuidanceEngine {
      * qualified (the caller's normal timeout/vision-fallback path continues).
      */
     private fun checkLookaheadSkip(index: Int): Int? {
+        if (!LOOKAHEAD_SKIP_ENABLED) return null
         if (!isRunning || currentIndex != index || pausedForFinancialApp) return null
+        // NEVER skip from the app-open step: the user isn't in the app yet, so
+        // an in-app later-step target that "matches" on the home screen (e.g. a
+        // Phone icon matching a later "about phone" step) is always a false
+        // positive. Step 0 advances only on real app-foreground or the Next
+        // button. (Observed: fromStep=0 -> toStep=1 at score 130 on the home
+        // screen, jumping into Settings before Settings was even open.)
+        if (index == 0) return null
         if (SystemClock.elapsedRealtime() - stepShownAt < MIN_DWELL_MS) return null
 
         val lookahead = ((index + 1)..(index + LOOKAHEAD_STEPS))
@@ -572,7 +800,15 @@ object GuidanceEngine {
         for (i in lookahead.indices) {
             val (targetIndex, targetStep) = lookahead[i]
             val match = matches[i] ?: continue
-            if (!match.isConfident()) continue
+            // High-consequence action: require a STRONG match, not just the
+            // generic confidence floor, or a weak look-alike (a profile photo
+            // vs a "gallery photo thumbnail") can abandon needed steps.
+            if (!match.isConfident() || match.score < LOOKAHEAD_SKIP_MIN_SCORE) {
+                if (match.isConfident()) {
+                    Log.e(TAG, "STEP_SKIP_REJECTED: step ${index + 1} -> step ${targetIndex + 1} score=${match.score} below skip floor $LOOKAHEAD_SKIP_MIN_SCORE")
+                }
+                continue
+            }
 
             if (pendingSkipTargetIndex != targetIndex) {
                 pendingSkipTargetIndex = targetIndex
@@ -580,6 +816,8 @@ object GuidanceEngine {
                     TAG,
                     "STEP_SKIP_PENDING: step ${index + 1} -> step ${targetIndex + 1} " +
                         "(score=${match.score}) seen once, confirming next scan before jumping."
+                )
+                WayloVerify.d("LOOKAHEAD_SKIP | fromStep=$index | toStep=$targetIndex | matchScore=${match.score} | confirmedScans=1"
                 )
                 return null
             }
@@ -589,6 +827,8 @@ object GuidanceEngine {
                 "STEP_SKIP: step ${index + 1} ('${steps[index].findDescription}') not found this scan; " +
                     "jumping to step ${targetIndex + 1} (target='${targetStep.findDescription}', " +
                     "score=${match.score}, runnerUp=${match.runnerUpScore}); lookahead scan=[$scoreLog]"
+            )
+            WayloVerify.d("LOOKAHEAD_SKIP | fromStep=$index | toStep=$targetIndex | matchScore=${match.score} | confirmedScans=2"
             )
             val label = visibleLabelFor(match, targetStep.findDescription)
             WayloGuidanceService.instance?.speaker?.speak("I can see $label already — let's go there.")
@@ -618,37 +858,40 @@ object GuidanceEngine {
      * [index]'s primary findDescription search has had its entire patient
      * window and found nothing, try one more instant on-device check against
      * the step's semantic-goal hints (alternateLabels/visualDescription) via
-     * [ElementFinder.findPartialMatch]. Accepts with an explicit
-     * lowered-confidence announcement so the user knows this placement is a
-     * best guess, not a confirmed match. Logged (tagged `PARTIAL_MATCH`) for
-     * the same later-audit reason as [checkLookaheadSkip].
+     * [ElementFinder.findPartialMatch]. That still requires the full
+     * confidence floor (score + runner-up gap) — this only widens WHAT is
+     * searched (semantic hints instead of findDescription), never lowers the
+     * bar for accepting it, so a hit here is a normal confident placement
+     * with no special caveat spoken. Logged (tagged `PARTIAL_MATCH`) for the
+     * same later-audit reason as [checkLookaheadSkip].
      *
-     * @return true if a partial match was accepted (dot placed, phase moved
-     * to WAITING_FOR_ACTION via [onTargetLocated]) — caller should stop
+     * @return true if a confident partial match was found (dot placed, phase
+     * moved to WAITING_FOR_ACTION via [onTargetLocated]) — caller should stop
      * looping. False if nothing qualified — caller proceeds to vision fallback.
      */
     private fun tryPartialMatchAcceptance(index: Int, step: Step, pkg: String?): Boolean {
         if (!isRunning || currentIndex != index || pausedForFinancialApp) return false
 
         val targetPackageForSearch = if (index == 0) pkg else null
-        val match = ElementFinder.findPartialMatch(step.alternateLabels, step.visualDescription, targetPackageForSearch)
+        val match = ElementFinder.findPartialMatch(step.alternateLabels, step.visualDescription, targetPackageForSearch, index)
             ?: return false
 
         Log.e(
             TAG,
             "PARTIAL_MATCH: step ${index + 1} ('${step.findDescription}') not found after the full patient window; " +
-                "accepting lowered-confidence match via alternateLabels/visualDescription " +
+                "found a confident match via alternateLabels/visualDescription " +
                 "(score=${match.score}, runnerUp=${match.runnerUpScore})."
         )
         val label = visibleLabelFor(match, step.findDescription)
-        WayloGuidanceService.instance?.speaker?.speak("I'm not completely sure, but I think this might be it — let's try here.")
         val bounds = ElementFinder.getBoundsOnScreen(match.node)
         val result = ScreenAnalysisPipeline.PipelineResult(
             x = bounds.centerX(),
             y = bounds.centerY(),
             source = "partial-match",
             confidence = match.score.toFloat(),
-            label = label
+            label = label,
+            width = bounds.width(),
+            height = bounds.height()
         )
         onTargetLocated(index, step, shortLabel(step.instruction), result)
         return true
@@ -673,7 +916,7 @@ object GuidanceEngine {
 
         if (index == 0) {
             val home = withContext(Dispatchers.IO) {
-                ElementFinder.findOnHomeScreen(step.findDescription, pkg, step.alternateLabels)
+                ElementFinder.findOnHomeScreen(step.findDescription, pkg, step.alternateLabels, index)
             }
             if (home != null && home.isConfident()) {
                 val bounds = ElementFinder.getBoundsOnScreen(home.node)
@@ -682,7 +925,9 @@ object GuidanceEngine {
                     y = bounds.centerY(),
                     source = "home-screen",
                     confidence = home.score.toFloat(),
-                    label = step.findDescription
+                    label = step.findDescription,
+                    width = bounds.width(),
+                    height = bounds.height()
                 )
             }
             // A weak/missing home-screen match falls through to the general
@@ -703,7 +948,8 @@ object GuidanceEngine {
                 step.findDescription,
                 targetPackageForSearch,
                 step.alternateLabels,
-                step.visualDescription
+                step.visualDescription,
+                index
             )
         }
         return if (result != null && result.source != "failed") result else null
@@ -723,29 +969,123 @@ object GuidanceEngine {
     }
 
     /**
+     * BUG A fix: runs alongside [locateStep] (launched from [executeStep] on
+     * the same [currentStepScope]/`stepJob`, so it starts and stops with the
+     * step exactly like every other per-step coroutine — see [executeStep]'s
+     * comment on why this can never stack more than one timer). On
+     * [PERIODIC_RESCAN_MS], reruns [locateOnDevice] — the SAME pipeline
+     * [locateStep] itself calls, so no scoring/matching logic is duplicated —
+     * purely to see whether the target has become findable independent of
+     * any accessibility event.
+     *
+     * Deliberately does NOT call [onTargetLocated] itself. [locateStep]'s own
+     * loop is the single path that ever places the dot; if this coroutine
+     * finds a confident result it only flips [locateRescanRequested] to wake
+     * that loop early (the same flag [waitForRescanTrigger] already checks
+     * every 150ms), then stops. That loop then re-locates and places the dot
+     * through its own existing call, so there is exactly one caller of
+     * [onTargetLocated] ever — this coroutine finding something a few
+     * milliseconds before locateStep()'s own next tick cannot race it into a
+     * double placement.
+     *
+     * Stops itself the moment the step is no longer LOCATING (found, wrong
+     * app parked it back to LOCATING then found, or the step changed/ended)
+     * without waiting for cancellation — see [shouldContinuePeriodicRescan].
+     */
+    private suspend fun periodicRescan(index: Int, step: Step, pkg: String?) {
+        while (shouldContinuePeriodicRescan(isRunning, currentIndex == index, currentStepPhase == StepPhase.LOCATING)) {
+            delay(PERIODIC_RESCAN_MS)
+            if (!shouldContinuePeriodicRescan(isRunning, currentIndex == index, currentStepPhase == StepPhase.LOCATING)) return
+
+            val result = locateOnDevice(index, step, pkg)
+            WayloVerify.d("PERIODIC_RESCAN | stepIndex=$index | found=${result != null} | topScore=${result?.confidence ?: 0f}"
+            )
+            if (result != null) {
+                locateRescanRequested = true
+                return
+            }
+        }
+    }
+
+    /**
+     * Pure stop-condition for [periodicRescan]'s loop, extracted so the exact
+     * "start while waiting, stop once found or the step changes" contract is
+     * unit-testable without the coroutine/Android entanglement — same
+     * rationale as [isInExpectedApp]/[impliedScrollDirection]. `internal` for
+     * that reason.
+     */
+    internal fun shouldContinuePeriodicRescan(isRunning: Boolean, isCurrentStep: Boolean, isLocating: Boolean): Boolean =
+        isRunning && isCurrentStep && isLocating
+
+    /**
      * The target cleared the confidence floor: show the dot and switch into
      * the WAITING_FOR_ACTION phase where the accessibility-event handlers
      * below take over verification.
      *
-     * Speech policy: the step's instruction (already spoken once, flushing,
-     * at the start of the step in [executeStep] — it already references the
-     * red dot per the plan's own phrasing, e.g. "Look for the red dot on
-     * your profile picture and tap it.") is the ONLY announcement for
-     * finding the target. There is deliberately no separate "tap it" /
-     * "when you see the red dot" follow-up here, and none on re-scan,
-     * revalidation, or the dot moving — repeating that got noisy fast.
-     * Total speech per step is: the instruction once, at most one gentle
-     * idle nudge ([schedulePatienceCheck]), and the fallbackHint if truly
-     * stuck ([speakFallbackHint]) — nothing else.
+     * Speech policy: the step's instruction is spoken once, flushing, at the
+     * start of the step in [executeStep] — that is the ONLY announcement for
+     * finding/placing the target. BUG-1's fix made [speakTargetDescription]
+     * always speak [Step.instruction] verbatim, which is the exact same text
+     * already spoken at step start — so a previous "Tap X" re-announcement
+     * queued from here would now be a byte-for-byte repeat of what was just
+     * said (it used to describe the matched element using
+     * findDescription/visualDescription/the element's own label, which
+     * *could* differ from the instruction; once forced to instruction-only,
+     * repeating it here can never add information). Removed entirely rather
+     * than kept as a no-op repeat — see WAYLO_SPEECH_MIC_FIX.md. Never a
+     * "the dot" reference — that narration was permanently removed. Total
+     * speech per step: the instruction once, at most one gentle idle nudge
+     * ([schedulePatienceCheck]), and the fallbackHint if truly stuck
+     * ([speakFallbackHint]) — nothing else.
      */
+    /**
+     * Minimum tree-search score required to actually DRAW the box. A match
+     * confident enough to search on (MIN_CONFIDENT_SCORE=35) can still be a weak
+     * look-alike — a device capture showed a "model name text" step put a box on
+     * the wrong element at score 45 ("drawing over wrong things"). Below this
+     * floor we keep the step live (the instruction and the Next button still
+     * work) but draw NO box, since a box on the wrong element is worse than
+     * none. Real placements score well above this (70–185). Applies only to
+     * tree sources; OCR/YOLO/vision carry their own calibrated gates.
+     */
+    private const val DRAW_MIN_TREE_SCORE = 60f
+
+    private fun shouldDrawBoxFor(result: ScreenAnalysisPipeline.PipelineResult): Boolean {
+        val treeSourced = result.source == "accessibility" ||
+            result.source == "home-screen" || result.source == "partial-match"
+        return !(treeSourced && result.confidence < DRAW_MIN_TREE_SCORE)
+    }
+
     private fun onTargetLocated(index: Int, step: Step, spoken: String, result: ScreenAnalysisPipeline.PipelineResult) {
         if (!isRunning || currentIndex != index) return
         Log.e(TAG, "Target located for step ${index + 1}: source=${result.source} confidence=${result.confidence}")
         // The target resolved — if a scroll/swipe arrow was showing while we
-        // searched, switch it out for the dot on the actual target now.
+        // searched, switch it out for the box on the actual target now. But a
+        // weak tree match draws NO box (see shouldDrawBoxFor) rather than
+        // boxing the wrong element.
         OverlayManager.hideArrow()
-        OverlayManager.showDotAtResult(result, spoken)
-        placedResult = result
+        val drawBox = shouldDrawBoxFor(result)
+        if (drawBox) {
+            OverlayManager.showDotAtResult(result, spoken)
+        } else {
+            OverlayManager.hideDot()
+        }
+        val sourceLayer = when (result.source) {
+            "accessibility", "home-screen", "partial-match" -> "TREE"
+            "ocr" -> "OCR"
+            // FallbackHandler tags any Found() from its OCR/YOLO retry chain
+            // as "vision" regardless of which of those two actually hit —
+            // Gemini Vision LOCATE itself never reaches here (it only ever
+            // returns Described, see VISION_CALL for the real sub-layer).
+            "vision" -> "YOLO_OR_OCR_RETRY"
+            else -> result.source.uppercase()
+        }
+        WayloVerify.d("DOT_PLACED | stepIndex=$index | x=${result.x} | y=${result.y} | sourceLayer=$sourceLayer | score=${result.confidence} | drawn=$drawBox"
+        )
+        // Only treat this as the placed target (for the tap-location match) when
+        // we actually drew a box on it — a suppressed weak match must not let a
+        // stray tap near its guessed coords count as "tapped the target".
+        placedResult = if (drawBox) result else null
         dotShownAt = SystemClock.elapsedRealtime()
         currentStepPhase = StepPhase.WAITING_FOR_ACTION
         uncertainChecks = 0
@@ -775,61 +1115,93 @@ object GuidanceEngine {
 
             val pkg = if (index == 0) (currentAppPackage ?: guessPackage(currentTask, step.findDescription)) else null
 
-            // The user may have wandered into a different app entirely while
-            // the dot sat waiting for a tap — the dot must not stay visible
-            // in that case (see locateStep()'s matching gate). Park it and
-            // drop back to LOCATING, where that same gate takes over.
-            if (!isInExpectedApp(index)) {
-                Log.e(TAG, "revalidatePlacement: step $index — no longer in the expected app, parking dot.")
-                OverlayManager.hideDot()
-                placedResult = null
-                currentStepPhase = StepPhase.LOCATING
-                val service = WayloGuidanceService.instance ?: return
-                locateStep(service, index, step, pkg, shortLabel(step.instruction))
-                return
-            }
-
-            // Screen-aware step skipping also applies here, deliberately
-            // WITHOUT gating on the current target being absent (unlike the
-            // LOCATING-phase call in locateStep()): device testing showed the
-            // dot can stay confidently "confirmed" on this step's target
-            // (e.g. a screen title that still matches) even after the user
-            // has already moved to a screen where a LATER step's target is
-            // also directly visible (e.g. YouTube's Settings screen title
-            // still matches "settings icon" while "Manage all history" — the
-            // History step's target — is already showing on that same
-            // screen). Waiting for the reactive tap-evidence check alone left
-            // that sitting unacted-on for several seconds in that capture.
+            // PRIORITY FIX (same as locateStep()): a confident element match
+            // is stronger evidence of "right place" than the foreground-
+            // package reading, which can be transiently wrong (screen-
+            // recorder toggle, system dialog, IME). Screen-aware step
+            // skipping keeps running on EVERY tick regardless of the current
+            // target's status, exactly as before (see its own doc below) —
+            // it and the current-target recheck right after it no longer
+            // depend on isInExpectedApp passing first; the package check now
+            // only applies once NEITHER produces a confident match.
+            //
+            // Screen-aware step skipping, deliberately WITHOUT gating on the
+            // current target being absent (unlike the LOCATING-phase call in
+            // locateStep()): device testing showed the dot can stay
+            // confidently "confirmed" on this step's target (e.g. a screen
+            // title that still matches) even after the user has already
+            // moved to a screen where a LATER step's target is also directly
+            // visible (e.g. YouTube's Settings screen title still matches
+            // "settings icon" while "Manage all history" — the History
+            // step's target — is already showing on that same screen).
+            // Waiting for the reactive tap-evidence check alone left that
+            // sitting unacted-on for several seconds in that capture.
             if (checkLookaheadSkip(index) != null) return
 
             val fresh = locateOnDevice(index, step, pkg)
 
             if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
 
-            if (fresh == null) {
-                Log.e(TAG, "revalidatePlacement: step $index's target no longer confirmable — parking dot and re-scanning.")
+            if (fresh != null) {
+                if (isPlacementOverridingPackageMismatch(index, lastKnownForegroundPackage, currentAppPackage)) {
+                    WayloVerify.d("PLACEMENT_OVERRIDES_PACKAGE | stepIndex=$index | score=${fresh.confidence} | " +
+                            "currentPackage=${lastKnownForegroundPackage ?: "null"} | expectedPackage=${currentAppPackage ?: "null"}"
+                    )
+                }
+                val placed = placedResult
+                val movedFar = placed == null ||
+                    kotlin.math.abs(fresh.x - placed.x) > MOVED_DISTANCE_PX ||
+                    kotlin.math.abs(fresh.y - placed.y) > MOVED_DISTANCE_PX
+                if (movedFar) {
+                    // Same weak-match guard as onTargetLocated: don't re-draw a
+                    // box on a low-confidence tree match.
+                    val drawBox = shouldDrawBoxFor(fresh)
+                    Log.e(TAG, "revalidatePlacement: step $index's best target moved to (${fresh.x},${fresh.y}) — drawBox=$drawBox.")
+                    WayloVerify.d("REVALIDATE | stepIndex=$index | stillValid=true | newTopScore=${fresh.confidence} | reason=moved_dot | drawn=$drawBox")
+                    if (drawBox) {
+                        OverlayManager.showDotAtResult(fresh, shortLabel(step.instruction))
+                        placedResult = fresh
+                    } else {
+                        OverlayManager.hideDot()
+                        placedResult = null
+                    }
+                } else {
+                    WayloVerify.d("REVALIDATE | stepIndex=$index | stillValid=true | newTopScore=${fresh.confidence} | reason=no_change")
+                }
+                continue
+            }
+
+            // No confident match this tick (neither a lookahead jump nor the
+            // current target) — NOW the package reading matters, purely as a
+            // fallback signal. The user may have wandered into a different
+            // app entirely while the dot sat waiting for a tap — the dot
+            // must not stay visible in that case. Park it and drop back to
+            // LOCATING, where locateStep()'s own (also now reordered) gate
+            // takes over.
+            if (!isInExpectedApp(index)) {
+                Log.e(TAG, "revalidatePlacement: step $index — no longer in the expected app, parking dot.")
+                WayloVerify.d("REVALIDATE | stepIndex=$index | stillValid=false | newTopScore=0 | reason=wrong_app")
                 OverlayManager.hideDot()
                 placedResult = null
-                // If this step implies scrolling/swiping, the arrow should
-                // reappear now that we're back to searching — it must
-                // persist until the target is confidently (re-)found, not
-                // just for its original brief window.
-                impliedScrollDirection(step)?.let { OverlayManager.showArrow(it) }
                 currentStepPhase = StepPhase.LOCATING
                 val service = WayloGuidanceService.instance ?: return
                 locateStep(service, index, step, pkg, shortLabel(step.instruction))
                 return
             }
 
-            val placed = placedResult
-            val movedFar = placed == null ||
-                kotlin.math.abs(fresh.x - placed.x) > MOVED_DISTANCE_PX ||
-                kotlin.math.abs(fresh.y - placed.y) > MOVED_DISTANCE_PX
-            if (movedFar) {
-                Log.e(TAG, "revalidatePlacement: step $index's best target moved to (${fresh.x},${fresh.y}) — moving dot.")
-                OverlayManager.showDotAtResult(fresh, shortLabel(step.instruction))
-                placedResult = fresh
-            }
+            Log.e(TAG, "revalidatePlacement: step $index's target no longer confirmable — parking dot and re-scanning.")
+            WayloVerify.d("REVALIDATE | stepIndex=$index | stillValid=false | newTopScore=0 | reason=no_longer_confirmable")
+            OverlayManager.hideDot()
+            placedResult = null
+            // If this step implies scrolling/swiping, the arrow should
+            // reappear now that we're back to searching — it must persist
+            // until the target is confidently (re-)found, not just for its
+            // original brief window.
+            impliedScrollDirection(step)?.let { OverlayManager.showArrow(it) }
+            currentStepPhase = StepPhase.LOCATING
+            val service = WayloGuidanceService.instance ?: return
+            locateStep(service, index, step, pkg, shortLabel(step.instruction))
+            return
         }
     }
 
@@ -858,10 +1230,13 @@ object GuidanceEngine {
             // confirmed inside the target app (never step 0), where every
             // node shares that package and the bonus adds noise, not signal.
             val match = withContext(Dispatchers.IO) {
-                ElementFinder.findElement(step.findDescription, null, step.alternateLabels)
+                ElementFinder.findElement(step.findDescription, null, step.alternateLabels, index)
             }
             if (!isRunning || currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return
-            if (match != null && !match.node.text.isNullOrBlank()) {
+            val hasText = match != null && !match.node.text.isNullOrBlank()
+            WayloVerify.d("ADVANCE_CHECK | stepIndex=$index | elementType=${step.elementType ?: "null"} | verified=$hasText | reason=textInput_poll_hasText=$hasText"
+            )
+            if (hasText) {
                 Log.e(TAG, "pollTextInput: text became non-empty, advancing.")
                 advanceFrom(index)
                 return
@@ -869,19 +1244,25 @@ object GuidanceEngine {
         }
     }
 
+    /** Outcome of [tryVisionFallback], distinguishing "dot placed" from "described but still below the confidence floor". */
+    private enum class VisionOutcome { FOUND, DESCRIBED, MISSED }
+
     /**
      * Layer 3 recovery: when the on-device pipeline can't find the target after
      * a full patient window, call the Gemini Vision fallback chain (also tries
-     * OCR/YOLO again first). Found -> place the dot; NewSteps -> splice
-     * recovery steps in and restart; Failed -> report back so the caller can
-     * keep waiting instead of guessing a position.
+     * OCR/YOLO again first). OCR/YOLO hits (real scores) place the dot;
+     * Gemini Vision LOCATE never does (see [FallbackHandler.FallbackResult.Described])
+     * — it only supplies a better description to speak while the caller keeps
+     * re-scanning on-device. NewSteps splices recovery steps in and restarts;
+     * Failed reports back so the caller can keep waiting instead of guessing
+     * a position.
      */
     private suspend fun tryVisionFallback(
         service: WayloGuidanceService,
         index: Int,
         step: Step,
         spoken: String
-    ): Boolean {
+    ): VisionOutcome {
         val result = FallbackHandler.handle(
             context = service,
             task = currentTask,
@@ -904,7 +1285,17 @@ object GuidanceEngine {
                     label,
                     ScreenAnalysisPipeline.PipelineResult(result.x, result.y, "vision", 100f, label)
                 )
-                true
+                WayloVerify.d("VISION_CALL | stepIndex=$index | outcome=FOUND | descriptionReturned=${(result.updatedInstruction ?: "").take(80)}")
+                VisionOutcome.FOUND
+            }
+
+            is FallbackHandler.FallbackResult.Described -> {
+                Log.e(TAG, "Vision described the target but it has no on-device score yet — waiting for a confident match instead of placing the dot.")
+                // BUG-1 fix: no longer speaks result.description (Gemini
+                // Vision's own phrasing) — only ever the step's instruction.
+                speakTargetDescription(step, stepIndex = index)
+                WayloVerify.d("VISION_CALL | stepIndex=$index | outcome=DESCRIBED | descriptionReturned=${result.description.take(80)}")
+                VisionOutcome.DESCRIBED
             }
 
             is FallbackHandler.FallbackResult.NewSteps -> {
@@ -923,15 +1314,222 @@ object GuidanceEngine {
                     if (taskGeneration != myGeneration) return@launch
                     executeStep(index)
                 }
-                true
+                WayloVerify.d("VISION_CALL | stepIndex=$index | outcome=FOUND | descriptionReturned=${result.explanation.take(80)}")
+                VisionOutcome.FOUND // steps replaced — caller should stop this loop
             }
 
             is FallbackHandler.FallbackResult.Failed -> {
                 Log.e(TAG, "Vision fallback failed: ${result.reason}")
-                false
+                WayloVerify.d("VISION_CALL | stepIndex=$index | outcome=MISSED | descriptionReturned=${result.reason.take(80)}")
+                VisionOutcome.MISSED
             }
         }
     }
+
+    /**
+     * BUG-1 fix: speaks step [step]'s own user-facing [Step.instruction] —
+     * VERBATIM, and ONLY that field. A real capture showed
+     * `SPOKE_DESCRIPTION | whichFieldUsed=findDescription` on every single
+     * step: a previous version of this function built a spoken sentence
+     * from [Step.findDescription]/[Step.visualDescription]/[Step.fallbackHint]
+     * — matcher-only data, never meant for a human ear (`findDescription` in
+     * particular is often a long, hedge-y search phrase full of
+     * "or"/"maybe"/alternate-wording, written for `ElementFinder`/OCR
+     * scoring, not speech). See `WAYLO_SPEECH_MIC_FIX.md` for the full root
+     * cause. [targetDescriptionMessage] is the one place that decides what
+     * text this speaks — kept as a separate, pure, unit-tested function
+     * specifically so "always instruction, never findDescription" has a
+     * direct regression test.
+     *
+     * Never a "the dot" reference or a "wrong place / go back" phrase —
+     * both permanently removed (see this file's history).
+     *
+     * Suppressed entirely (never speaks, not even once) when:
+     *  - [isActionStepNoRepeat] — the user is presumably mid-action
+     *    (typing, swiping, already navigating an app-open step) and must
+     *    never be talked over (BUG 2).
+     *  - [imeLikelyVisible] — same reasoning, keyed off the IME/keyboard
+     *    signal instead of the step type (BUG 2/3).
+     * Otherwise throttled to at most once every [PATIENCE_MS] via
+     * [notFoundNudgeAllowed] (BUG-B fix from a previous session — before
+     * that fix this re-spoke on every patient-window escalation, as often as
+     * every [IMAGE_ONLY_LOCATE_TIMEOUT_MS] for image-only targets).
+     *
+     * The app is English-only right now ([com.waylo.voice.Speaker] hardcodes
+     * `Locale.ENGLISH`) — there is no existing per-language branching to
+     * hook a Hindi variant into, so this speaks English like every other
+     * string in the app.
+     */
+    private fun speakTargetDescription(step: Step, stepIndex: Int = -1) {
+        if (isActionStepNoRepeat(step)) {
+            WayloVerify.d("SPOKE_DESCRIPTION_SUPPRESSED | stepIndex=$stepIndex | reason=action_step_no_repeat")
+            return
+        }
+        if (imeLikelyVisible) {
+            WayloVerify.d("SPOKE_DESCRIPTION_SUPPRESSED | stepIndex=$stepIndex | reason=ime_likely_visible")
+            return
+        }
+        if (!notFoundNudgeAllowed()) {
+            WayloVerify.d("SPOKE_DESCRIPTION_SUPPRESSED | stepIndex=$stepIndex | sinceLastNudgeMs=${SystemClock.elapsedRealtime() - lastNotFoundNudgeAt}"
+            )
+            return
+        }
+        val message = targetDescriptionMessage(step)
+        WayloGuidanceService.instance?.speaker?.speak(message)
+        WayloVerify.d("SPOKE_DESCRIPTION | stepIndex=$stepIndex | whichFieldUsed=instruction | screenRegionUsed=false | fallbackHintUsed=false"
+        )
+    }
+
+    /**
+     * BUG-1 fix: the exact text [speakTargetDescription] speaks — ALWAYS
+     * [Step.instruction] verbatim, never [Step.findDescription]/
+     * [Step.visualDescription]/[Step.fallbackHint]. Kept as its own tiny
+     * function (rather than inlined) purely so this contract has a direct
+     * unit test independent of [speakTargetDescription]'s Android/singleton
+     * entanglement (`WayloGuidanceService.instance`, [SystemClock]) — same
+     * rationale as [isInExpectedApp]'s pure core. `internal` for that
+     * testability.
+     */
+    internal fun targetDescriptionMessage(step: Step): String = step.instruction
+
+    /**
+     * BUG-2: whether the current step is one where the user is presumably
+     * mid-action — typing ([Verification.TextInput]), opening/navigating an
+     * app ([Verification.AppLaunch]: step 0, `APP_ICON`, `NAVIGATION`), or
+     * the instruction implies a scroll/swipe gesture — and so must never be
+     * talked over by a repeated "not found" nudge. `internal` pure core
+     * takes plain booleans rather than [Verification] directly since that
+     * sealed class is `private` (an `internal` function can't expose a
+     * private type in its signature) — same pattern as
+     * [shouldContinuePeriodicRescan] avoiding [StepPhase] for the same
+     * reason.
+     */
+    private fun isActionStepNoRepeat(step: Step): Boolean =
+        isActionStepNoRepeat(
+            isTextInput = currentVerification is Verification.TextInput,
+            isAppLaunch = currentVerification is Verification.AppLaunch,
+            impliesScroll = impliedScrollDirection(step) != null
+        )
+
+    internal fun isActionStepNoRepeat(isTextInput: Boolean, isAppLaunch: Boolean, impliesScroll: Boolean): Boolean =
+        isTextInput || isAppLaunch || impliesScroll
+
+    /**
+     * CHANGE-4 policy: when a step's target genuinely can't be reached — the
+     * patient window expired with nothing found, or the screen was confirmed
+     * wrong for the whole window — tell the user in plain words what to do
+     * instead. Never falls back to a "wrong place / go back" phrase (deleted
+     * permanently) or a dot reference (also deleted). [Verification.AppLaunch]
+     * steps (opening/finding an app — step 0, APP_ICON, NAVIGATION) get
+     * "Please open <app name>" when the plan's own [currentAppName] is known;
+     * everything else — including an AppLaunch step on an older/cached plan
+     * with no app name — falls back to the normal target description (which
+     * throttles itself). BUG-B fix: this branch is throttled the same way
+     * via [notFoundNudgeAllowed], for the same reason.
+     */
+    private fun speakCantReachTarget(step: Step, index: Int) {
+        val appName = currentAppName
+        if (currentVerification is Verification.AppLaunch && !appName.isNullOrBlank()) {
+            if (!notFoundNudgeAllowed()) {
+                WayloVerify.d("SPOKE_DESCRIPTION_SUPPRESSED | stepIndex=$index | sinceLastNudgeMs=${SystemClock.elapsedRealtime() - lastNotFoundNudgeAt}"
+                )
+                return
+            }
+            // Step 1 (opening the app from the launcher): drive the launcher-
+            // aware, outcome-driven ladder instead of just repeating "Please
+            // open X" — the gesture the drawer needs varies by launcher.
+            if (index == 0) {
+                speakAppOpenEscalation(index)
+                return
+            }
+            WayloGuidanceService.instance?.speaker?.speak("Please open $appName.")
+            WayloVerify.d("SPOKE_DESCRIPTION | stepIndex=$index | whichFieldUsed=appName | screenRegionUsed=false | fallbackHintUsed=false | verb=PleaseOpen | queued=false"
+            )
+        } else {
+            speakTargetDescription(step, stepIndex = index)
+        }
+    }
+
+    /**
+     * Empirically detect whether the launcher's app drawer (with its search
+     * bar) is currently open — the run-time signal the app-open ladder uses to
+     * decide whether the gesture it just suggested actually worked. A launcher-
+     * package search field (an EditText, or a node labelled "search") is the
+     * strong signal; a dense grid of launcher icon nodes is a weak secondary.
+     */
+    private fun isAppDrawerLikelyOpen(): Boolean {
+        val nodes = WayloAccessibilityService.instance?.getAllNodes() ?: return false
+        var iconish = 0
+        for (n in nodes) {
+            val pkg = n.packageName?.toString() ?: continue
+            if (!ElementFinder.isLauncherPackage(pkg)) continue
+            val cls = n.className?.toString() ?: ""
+            val label = "${n.text ?: ""} ${n.contentDescription ?: ""}".lowercase()
+            if (cls.contains("EditText", ignoreCase = true) || label.contains("search")) return true
+            if (cls.contains("IconView") || cls.contains("BubbleTextView")) iconish++
+        }
+        return iconish >= 16
+    }
+
+    /**
+     * Step-1 app-open escalation, driven by what the launcher actually does
+     * (runtime detection was chosen over a static per-launcher gesture map).
+     * Called once per expired patience window while the app still hasn't opened
+     * and its icon isn't findable on screen. Each call:
+     *  - if the app drawer is now open → guide the drawer SEARCH (works on
+     *    every launcher regardless of the gesture that opened it);
+     *  - else advance a gesture ladder: first the near-universal swipe-up, and
+     *    only if that DIDN'T open the drawer, suggest a sideways swipe instead
+     *    (left, then right) — reacting to the observed outcome rather than
+     *    guessing the launcher's gesture up front.
+     *
+     * The plain-words icon dot is still placed by the normal locate loop the
+     * instant the icon becomes visible (home screen OR a drawer search result);
+     * this only supplies the spoken guidance while it isn't.
+     */
+    private fun speakAppOpenEscalation(index: Int) {
+        val speaker = WayloGuidanceService.instance?.speaker ?: return
+        val appName = currentAppName ?: "the app"
+
+        if (isAppDrawerLikelyOpen()) {
+            speaker.speak("Now type $appName in the search bar at the top, then tap it.")
+            WayloVerify.d("APP_OPEN_ESCALATION | stepIndex=$index | level=$appOpenEscalationLevel | drawerOpen=true | action=search_prompt")
+            return
+        }
+
+        val phrase = when (appOpenEscalationLevel) {
+            0 -> "Swipe up from the bottom of the screen to see all your apps."
+            1 -> "That didn't open your apps. Try swiping left across the screen instead."
+            2 -> "Still not there? Try swiping right across the screen instead."
+            else -> "Please open $appName on your phone."
+        }
+        speaker.speak(phrase)
+        WayloVerify.d("APP_OPEN_ESCALATION | stepIndex=$index | level=$appOpenEscalationLevel | drawerOpen=false | action=gesture")
+        appOpenEscalationLevel++
+    }
+
+    /**
+     * BUG-B fix: stateful throttle gate for "target not found" nudges (see
+     * [lastNotFoundNudgeAt]'s doc) — returns true (and records `now` as the
+     * new last-spoken time) at most once every [PATIENCE_MS], false
+     * otherwise. Thin wrapper around the pure [shouldAllowNotFoundNudge] so
+     * the actual interval math is unit-testable without touching
+     * [SystemClock]/mutable state directly, same rationale as
+     * [isInExpectedApp]'s pure core.
+     */
+    private fun notFoundNudgeAllowed(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (!shouldAllowNotFoundNudge(now, lastNotFoundNudgeAt, PATIENCE_MS)) return false
+        lastNotFoundNudgeAt = now
+        return true
+    }
+
+    /**
+     * Pure core of [notFoundNudgeAllowed]. `internal` for unit-testability,
+     * same rationale as [isInExpectedApp]/[impliedScrollDirection].
+     */
+    internal fun shouldAllowNotFoundNudge(nowMs: Long, lastNudgeAtMs: Long, minIntervalMs: Long): Boolean =
+        nowMs - lastNudgeAtMs >= minIntervalMs
 
     /**
      * Called by the accessibility service on TYPE_WINDOW_STATE_CHANGED. Only
@@ -941,7 +1539,22 @@ object GuidanceEngine {
      * may have just revealed the current step's target.
      */
     fun onWindowStateChanged(pkg: String) {
+        // FIX item 3: a transient system overlay briefly taking the
+        // foreground (screen recorder toggle, notification shade, a
+        // permission dialog, the IME popping up) is not "the user left the
+        // app" — never let it corrupt lastKnownForegroundPackage, which is
+        // exactly what fed the false wrong-app blocks in the reported run.
+        if (isTransientForegroundPackage(pkg)) {
+            if (isImePackage(pkg)) imeLikelyVisible = true
+            WayloVerify.d("TRANSIENT_PACKAGE_IGNORED | source=onWindowStateChanged | package=$pkg | " +
+                    "keptForeground=${lastKnownForegroundPackage ?: "null"}"
+            )
+            updateMicButtonVisibility()
+            return
+        }
         lastKnownForegroundPackage = pkg
+        imeLikelyVisible = false
+        updateMicButtonVisibility()
         if (!isRunning || steps.isEmpty() || pausedForFinancialApp) return
         locateRescanRequested = true
 
@@ -961,13 +1574,35 @@ object GuidanceEngine {
             verification.expectedPackage != null -> pkg == verification.expectedPackage
             else -> true // no known expected package — best-effort: any navigation counts
         }
+        val step = steps.getOrNull(currentIndex)
+        WayloVerify.d("ADVANCE_CHECK | stepIndex=$currentIndex | elementType=${step?.elementType ?: "null"} | verified=$matched | " +
+                "reason=appLaunch_pkg=${pkg}_expected=${verification.expectedPackage ?: "null"}_fromLauncherOnly=${verification.fromLauncherOnly}"
+        )
         if (!matched) {
             Log.e(TAG, "onWindowStateChanged($pkg): doesn't match expected app (${verification.expectedPackage}).")
+            WayloVerify.d("WRONG_LOCATION | stepIndex=$currentIndex | currentPackage=$pkg | " +
+                    "expectedPackage=${verification.expectedPackage ?: "null"} | whichCheckFailed=appLaunchVerification | " +
+                    "compared=(current=$pkg vs expected=${verification.expectedPackage} fromLauncherOnly=${verification.fromLauncherOnly})"
+            )
             return
         }
 
-        Log.e(TAG, "onWindowStateChanged($pkg): app-launch verified, advancing.")
-        advanceFrom(currentIndex)
+        // App-open policy (user preference): the app is open, but we do NOT
+        // auto-advance — the user stays in control and moves on with the red
+        // Next button. Prompt them once that the app is open and Next is next.
+        Log.e(TAG, "onWindowStateChanged($pkg): app opened — waiting for Next (manual app-open advance).")
+        WayloVerify.d("APP_OPENED | stepIndex=$currentIndex | package=$pkg | policy=wait_for_next")
+        promptPressNextAfterOpenOnce()
+    }
+
+    /** Whether the "app is open, press Next" prompt has been spoken for the current app-open step. Reset per task in [start]. */
+    private var appOpenNextPromptSpoken = false
+
+    private fun promptPressNextAfterOpenOnce() {
+        if (appOpenNextPromptSpoken) return
+        appOpenNextPromptSpoken = true
+        val appName = currentAppName ?: "The app"
+        WayloGuidanceService.instance?.speaker?.speak("$appName is open. Now press the red Next button to continue.")
     }
 
     /**
@@ -975,7 +1610,18 @@ object GuidanceEngine {
      * Feeds the tap-in-app verification check and nudges the locate loop.
      */
     fun onContentChanged(pkg: String) {
+        // FIX item 3 — see onWindowStateChanged's identical guard.
+        if (isTransientForegroundPackage(pkg)) {
+            if (isImePackage(pkg)) imeLikelyVisible = true
+            WayloVerify.d("TRANSIENT_PACKAGE_IGNORED | source=onContentChanged | package=$pkg | " +
+                    "keptForeground=${lastKnownForegroundPackage ?: "null"}"
+            )
+            updateMicButtonVisibility()
+            return
+        }
         lastKnownForegroundPackage = pkg
+        imeLikelyVisible = false
+        updateMicButtonVisibility()
         if (!isRunning || steps.isEmpty() || pausedForFinancialApp) return
         locateRescanRequested = true
 
@@ -1010,8 +1656,19 @@ object GuidanceEngine {
 
         if (viaClick && clickedNode != null) {
             val score = ElementFinder.scoreNode(clickedNode, step.findDescription)
-            if (score >= CLICK_MATCH_FLOOR) {
-                Log.e(TAG, "checkTapInAppEvidence: clicked node matches target (score=$score), advancing.")
+            // Location match: the user clicked a node covering the exact spot we
+            // highlighted. This is the strongest "they tapped what we pointed
+            // at" signal, and unlike text scoring it survives controls whose
+            // label doesn't match findDescription (e.g. a play button whose
+            // contentDescription is just "Play").
+            val placed = placedResult
+            val clickedOnPlacedTarget = placed != null &&
+                ElementFinder.getBoundsOnScreen(clickedNode).contains(placed.x, placed.y)
+            if (score >= CLICK_MATCH_FLOOR || clickedOnPlacedTarget) {
+                val why = if (score >= CLICK_MATCH_FLOOR) "clickedNodeMatch_score=$score" else "clickedPlacedTarget"
+                Log.e(TAG, "checkTapInAppEvidence: click confirmed ($why), advancing.")
+                WayloVerify.d("ADVANCE_CHECK | stepIndex=$index | elementType=${step.elementType ?: "null"} | verified=true | reason=$why"
+                )
                 advanceFrom(index)
                 return
             }
@@ -1034,12 +1691,12 @@ object GuidanceEngine {
                 // already shares this app's package, so the bonus can only
                 // add noise, not discriminate the real target.
                 val stillThere = withContext(Dispatchers.IO) {
-                    ElementFinder.findElement(step.findDescription, null, step.alternateLabels)
+                    ElementFinder.findElement(step.findDescription, null, step.alternateLabels, index)
                 }
                 val nextStep = steps.getOrNull(index + 1)
                 val nextAppeared = nextStep?.let { next ->
                     withContext(Dispatchers.IO) {
-                        ElementFinder.findElement(next.findDescription, null, next.alternateLabels)
+                        ElementFinder.findElement(next.findDescription, null, next.alternateLabels, index + 1)
                     }
                 }
                 if (currentIndex != index || currentStepPhase != StepPhase.WAITING_FOR_ACTION) return@launchInStep
@@ -1049,21 +1706,36 @@ object GuidanceEngine {
 
                 when {
                     nextIsUp || (targetGone && viaClick) -> {
-                        Log.e(
-                            TAG,
-                            "checkTapInAppEvidence: confirmed (${if (nextIsUp) "next target appeared" else "target gone + click"})."
+                        val reason = if (nextIsUp) "next target appeared" else "target gone + click"
+                        Log.e(TAG, "checkTapInAppEvidence: confirmed ($reason).")
+                        WayloVerify.d("ADVANCE_CHECK | stepIndex=$index | elementType=${step.elementType ?: "null"} | verified=true | reason=$reason"
                         )
                         advanceFrom(index)
                     }
                     targetGone -> {
                         uncertainChecks++
                         Log.e(TAG, "checkTapInAppEvidence: ambiguous (#$uncertainChecks) for step $index.")
+                        WayloVerify.d("ADVANCE_CHECK | stepIndex=$index | elementType=${step.elementType ?: "null"} | verified=false | reason=ambiguous_targetGone_uncertainChecks=$uncertainChecks"
+                        )
                         if (uncertainChecks >= UNCERTAIN_CHECK_LIMIT) {
                             uncertainChecks = 0
+                            // Do NOT auto-complete on "target gone" — target
+                            // absence is ambiguous (the user finished AND acted,
+                            // OR they simply never reached the screen). A prior
+                            // version completed the LAST step this way and fired
+                            // a false "task complete" on a look-step whose target
+                            // was never found. The last step now completes only
+                            // on a real tap of the boxed control (clickedPlaced-
+                            // Target above) or the user pressing Next. Just
+                            // re-offer the hint here.
                             speakFallbackHint(step)
                         }
                     }
-                    else -> Unit // target still clearly present — nothing changed, keep waiting.
+                    else -> {
+                        // target still clearly present — nothing changed, keep waiting.
+                        WayloVerify.d("ADVANCE_CHECK | stepIndex=$index | elementType=${step.elementType ?: "null"} | verified=false | reason=target_still_present"
+                        )
+                    }
                 }
             } finally {
                 tapEvidenceCheckInFlight = false
@@ -1093,6 +1765,8 @@ object GuidanceEngine {
             ElementFinder.scoreNode(sourceNode, step.findDescription) >= CLICK_MATCH_FLOOR
         if (looksLikeOurTarget && !text.isNullOrBlank()) {
             Log.e(TAG, "onTextChanged: target text became non-empty, advancing.")
+            WayloVerify.d("ADVANCE_CHECK | stepIndex=$index | elementType=${step.elementType ?: "null"} | verified=true | reason=textChanged_directNode"
+            )
             advanceFrom(index)
             return
         }
@@ -1102,12 +1776,14 @@ object GuidanceEngine {
         // targetPackage: we're always already inside the target app here.
         launchInStep {
             val match = withContext(Dispatchers.IO) {
-                ElementFinder.findElement(step.findDescription, null, step.alternateLabels)
+                ElementFinder.findElement(step.findDescription, null, step.alternateLabels, index)
             }
             if (currentIndex == index && currentStepPhase == StepPhase.WAITING_FOR_ACTION &&
                 match != null && !match.node.text.isNullOrBlank()
             ) {
                 Log.e(TAG, "onTextChanged: re-resolved target now has text, advancing.")
+                WayloVerify.d("ADVANCE_CHECK | stepIndex=$index | elementType=${step.elementType ?: "null"} | verified=true | reason=textChanged_reResolved"
+                )
                 advanceFrom(index)
             }
         }
@@ -1123,7 +1799,21 @@ object GuidanceEngine {
         if (!isRunning || currentIndex != index || advancing) return
         advancing = true
         currentStepPhase = null // stop reacting to further signals for this step immediately
-        Log.e(TAG, "advanceFrom($index): verified, advancing to step ${index + 2}.")
+        // Log BOTH the raw 0-based array index and the 1-based display number
+        // for each of the two steps involved, spelled out explicitly — a
+        // previous version of this line ("advanceFrom($index): verified,
+        // advancing to step ${index + 2}") was misread from a real capture as
+        // "step 3 got skipped" when index was 2, because it printed a raw
+        // 0-based index right next to a 1-based number with no labels. It
+        // wasn't: executeStep(index + 1) below always advances the array by
+        // exactly one position (see stepDisplayNumber's doc and
+        // GuidanceEngineStepNumberingTest) — there was no skip, only an
+        // ambiguous log line.
+        Log.e(
+            TAG,
+            "advanceFrom: step ${stepDisplayNumber(index)} (array index $index) verified, " +
+                "advancing to step ${stepDisplayNumber(index + 1)} (array index ${index + 1})."
+        )
         val myGeneration = taskGeneration
         scope.launch {
             val now = SystemClock.elapsedRealtime()
@@ -1141,12 +1831,27 @@ object GuidanceEngine {
         }
     }
 
+    /**
+     * 1-based, human-readable step number for 0-based array position
+     * [arrayIndex] — matches the numbering convention used by every other
+     * step-related log line in this file (STEP_SKIP, STEP_START, etc.:
+     * `${index + 1}` for "this index's own 1-based number"). Absent a
+     * backend plan gap, this also matches the plan's own `stepNumber`/
+     * [Step.index] field. `internal` for unit-testability, same rationale as
+     * [isInExpectedApp]/[impliedScrollDirection].
+     */
+    internal fun stepDisplayNumber(arrayIndex: Int): Int = arrayIndex + 1
+
     /** Launch [block] scoped to the current step's job, so stop/pause/advance cancel it automatically. */
     private fun launchInStep(block: suspend CoroutineScope.() -> Unit): Job? =
         currentStepScope?.launch(block = block)
 
     /** Speak the instruction again together with the backend's fallbackHint, without advancing. */
     private fun speakFallbackHint(step: Step) {
+        // Step 1 is the app-open step: per product direction we don't nag with
+        // "swipe up / search" hints — the user opens the app themselves and we
+        // advance on app-foreground or the red Next button. Skip the fallback.
+        if (currentIndex == 0) return
         val hint = step.fallbackHint?.takeIf { it.isNotBlank() }
         val message = if (hint != null) "${step.instruction}. $hint" else step.instruction
         WayloGuidanceService.instance?.speaker?.speak(message)
@@ -1157,6 +1862,31 @@ object GuidanceEngine {
         if (!isRunning) return
         Log.e(TAG, "Manual advance from step ${currentIndex + 1}.")
         advanceFrom(currentIndex)
+    }
+
+    /**
+     * User pressed the on-screen red Next button — force-advance the current
+     * step regardless of auto-verification. The reliable manual override for
+     * steps where auto-advance can't tell the user acted (video players with no
+     * click event, the app-open step, etc.). Goes through the same
+     * rate-limited [advanceFrom] path as any other advance signal.
+     */
+    fun manualAdvance() {
+        if (!isRunning) return
+        WayloVerify.d("MANUAL_ADVANCE | stepIndex=$currentIndex")
+        Log.e(TAG, "manualAdvance: user pressed Next on step ${currentIndex + 1}")
+        advanceFrom(currentIndex)
+    }
+
+    /** Whether the one-time "you can press the red Next button" hint has been spoken this process. */
+    private var announcedNextButton = false
+
+    private fun announceNextButtonOnce() {
+        if (announcedNextButton) return
+        announcedNextButton = true
+        WayloGuidanceService.instance?.speaker?.speakQueued(
+            "You can press the red Next button on the right side to move to the next step."
+        )
     }
 
     /**
@@ -1234,23 +1964,149 @@ object GuidanceEngine {
      */
     internal fun isInExpectedApp(index: Int, foregroundPackage: String?, expectedAppPackage: String?): Boolean {
         val fg = foregroundPackage ?: return true
-        return if (index == 0) {
-            ElementFinder.isLauncherPackage(fg)
+        val whichCheck: String
+        val result: Boolean
+        if (index == 0) {
+            whichCheck = "isLauncherPackage"
+            result = ElementFinder.isLauncherPackage(fg)
         } else {
-            expectedAppPackage == null || fg == expectedAppPackage
+            whichCheck = "packageEquality"
+            result = expectedAppPackage == null || fg == expectedAppPackage
         }
+        if (!result) {
+            WayloVerify.d("WRONG_LOCATION | stepIndex=$index | currentPackage=$fg | " +
+                    "expectedPackage=${expectedAppPackage ?: "null(launcher)"} | whichCheckFailed=$whichCheck | " +
+                    "compared=(current=$fg vs expected=${expectedAppPackage ?: "any launcher"})"
+            )
+        }
+        return result
     }
 
-    /** Hide any overlay and say the wrong-app nudge once per excursion (see [hasAnnouncedWrongApp]). */
-    private fun handleWrongApp() {
-        OverlayManager.hideDot()
-        OverlayManager.hideArrow()
-        if (!hasAnnouncedWrongApp) {
-            hasAnnouncedWrongApp = true
-            Log.e(TAG, "handleWrongApp: foreground=$lastKnownForegroundPackage, expected=$currentAppPackage — nudging back.")
-            WayloGuidanceService.instance?.speaker?.speak("This isn't the right place — please press the back button to go back.")
-        }
+    /**
+     * FIX item 3: known/likely transient system-overlay packages that can
+     * briefly appear in TYPE_WINDOW_STATE_CHANGED/TYPE_WINDOW_CONTENT_CHANGED
+     * events without the user having actually left the target app — a
+     * screen-recorder toggle notification, the notification shade, a
+     * permission/system dialog, or an IME popping up. Exact-match set for
+     * well-known packages observed or documented; OEM-specific variants
+     * (e.g. non-Pixel screen recorders/keyboards) are caught by
+     * [TRANSIENT_PACKAGE_PATTERNS] below instead of trying to enumerate
+     * every OEM's package name.
+     */
+    private val TRANSIENT_PACKAGES = setOf(
+        "com.android.systemui", // notification shade, quick settings, recents, volume panel, system dialogs
+        "com.oplus.screenrecorder", // the exact package from the reported run
+        "com.google.android.permissioncontroller", // Android runtime-permission dialogs
+        "com.android.permissioncontroller", // AOSP naming variant on some OS versions
+        "com.google.android.inputmethod.latin", // Gboard
+        "com.samsung.android.honeyboard",
+        "com.touchtype.swiftkey"
+    )
+
+    /**
+     * Substring patterns catching screen-recorder/IME package name variants
+     * across OEMs not worth enumerating individually — e.g. Samsung/Xiaomi/
+     * other skins each ship their own screen-recorder and keyboard app under
+     * a different package, but they overwhelmingly contain one of these
+     * words.
+     */
+    private val TRANSIENT_PACKAGE_PATTERNS = listOf(
+        Regex("screenrecord", RegexOption.IGNORE_CASE), // covers screenrecord AND screenrecorder
+        Regex("inputmethod", RegexOption.IGNORE_CASE)
+    )
+
+    /**
+     * Whether [pkg] is a known/likely transient system overlay (see
+     * [TRANSIENT_PACKAGES]/[TRANSIENT_PACKAGE_PATTERNS]) rather than a
+     * genuine app the user navigated to — such packages must never
+     * overwrite [lastKnownForegroundPackage] or be treated as "the user
+     * left the app" (see [onWindowStateChanged]/[onContentChanged]).
+     * `internal` for unit-testability, same rationale as [isInExpectedApp].
+     */
+    internal fun isTransientForegroundPackage(pkg: String): Boolean =
+        pkg in TRANSIENT_PACKAGES || TRANSIENT_PACKAGE_PATTERNS.any { it.containsMatchIn(pkg) }
+
+    /**
+     * BUG-2/BUG-3: subset of [TRANSIENT_PACKAGES]/[TRANSIENT_PACKAGE_PATTERNS]
+     * that are specifically IME/keyboard packages, as opposed to screen
+     * recorders or system dialogs — used to track [imeLikelyVisible]
+     * separately, since "an IME is probably up" is a more specific,
+     * actionable signal for speech/mic-prompt suppression than "some
+     * transient overlay is up." Deliberately a small, separate list (not
+     * derived from [TRANSIENT_PACKAGES]) so this concern stays independently
+     * readable, matching this file's existing style of plain, explicit sets.
+     */
+    private val IME_PACKAGES = setOf(
+        "com.google.android.inputmethod.latin", // Gboard
+        "com.samsung.android.honeyboard",
+        "com.touchtype.swiftkey"
+    )
+
+    private val IME_PACKAGE_PATTERN = Regex("inputmethod", RegexOption.IGNORE_CASE)
+
+    /**
+     * Whether [pkg] is specifically a known/likely IME package (a subset of
+     * [isTransientForegroundPackage]'s broader check). `internal` for
+     * unit-testability, same rationale as [isInExpectedApp].
+     */
+    internal fun isImePackage(pkg: String): Boolean =
+        pkg in IME_PACKAGES || IME_PACKAGE_PATTERN.containsMatchIn(pkg)
+
+    /**
+     * BUG 3: keeps the mic overlay off the keyboard — hides it while a
+     * TEXT_INPUT step is active or [imeLikelyVisible], re-shows it (with the
+     * same tap handler it was first shown with, see
+     * [OverlayManager.setMicButtonSuppressed]) once neither applies. Only
+     * meaningful during an active run — [taskComplete] tears the mic button
+     * down completely and separately (not via this function), so this
+     * always no-ops once guidance has stopped, and can never undo that
+     * teardown just because an unrelated window-state event fires afterward
+     * (which happens constantly, for every app on the device, not just
+     * Waylo's).
+     */
+    private fun updateMicButtonVisibility() {
+        if (!isRunning) return
+        val suppress = imeLikelyVisible || currentVerification is Verification.TextInput
+        OverlayManager.setMicButtonSuppressed(suppress)
     }
+
+    /**
+     * BUG 3: whether [com.waylo.correction.CorrectionFlow.start] should
+     * refuse to run right now — while a TEXT_INPUT step is active, or an
+     * IME/keyboard is likely visible ([imeLikelyVisible]). The mic button
+     * sits bottom-right, the same region a keyboard occupies, so an ordinary
+     * typing tap can accidentally land on it instead of the keyboard; this
+     * guard is what stops that from repeatedly triggering "What went wrong?"
+     * while the user is simply trying to type (a real capture showed this
+     * happening). Also covers the volume-down double-press entry point,
+     * which works independent of the mic button's own visibility. `fun`
+     * (not `internal`) since [com.waylo.correction.CorrectionFlow] is a
+     * different package.
+     */
+    fun shouldSuppressCorrectionPrompt(): Boolean =
+        imeLikelyVisible || (isRunning && currentVerification is Verification.TextInput)
+
+    /**
+     * FIX: whether a confident element match this scan is happening DESPITE
+     * the foreground-package check failing — i.e. whether to log
+     * `PLACEMENT_OVERRIDES_PACKAGE`. This is a named, testable predicate for
+     * this fix's core contract ("a confident element match always places the
+     * dot, even when the package reading says wrong app/transient overlay")
+     * — used by both [locateStep] and [revalidatePlacement] at the exact
+     * point they've already found a confident result and are about to place/
+     * keep the dot, specifically for the reported scenario: the foreground
+     * package momentarily read as a transient overlay
+     * (com.oplus.screenrecorder, com.android.systemui, etc.) instead of the
+     * real app. The actual PLACEMENT decision lives in each function's
+     * control flow (a confident result always returns/continues before the
+     * package check is even consulted — see their comments); this function
+     * only decides whether that placement counts as an "override" worth
+     * logging. `internal` for unit-testability, same rationale as
+     * [isInExpectedApp].
+     */
+    internal fun isPlacementOverridingPackageMismatch(index: Int, foregroundPackage: String?, expectedAppPackage: String?): Boolean =
+        !isInExpectedApp(index, foregroundPackage, expectedAppPackage)
+
 
     /** Known package names for common apps, keyed by a recognisable keyword. */
     private val KNOWN_PACKAGES = mapOf(
@@ -1275,7 +2131,20 @@ object GuidanceEngine {
         return KNOWN_PACKAGES.entries.firstOrNull { haystack.contains(it.key) }?.value
     }
 
-    /** Only reachable via [advanceFrom] on the verified last step — never a bare timeout. */
+    /**
+     * Only reachable via [advanceFrom] on the verified last step — never a
+     * bare timeout.
+     *
+     * BUG 3: tears down the mic/feedback overlay the same moment the dot/
+     * arrow hide and "task complete" is spoken — a real capture showed it
+     * lingering indefinitely after completion (it was previously only ever
+     * torn down in [WayloGuidanceService.onDestroy], i.e. full service
+     * shutdown). This is a full, permanent teardown (unlike
+     * [updateMicButtonVisibility]'s transient per-step suppress/restore) —
+     * the mic becomes guidance-run-scoped by this fix rather than
+     * service-lifetime-scoped; re-showing it for a subsequent task is a
+     * follow-up product decision, not part of this fix.
+     */
     private fun taskComplete() {
         if (!isRunning) return // idempotent — guards a stale continuation racing a genuine completion
         stepJob?.cancel()
@@ -1284,9 +2153,12 @@ object GuidanceEngine {
         currentStepPhase = null
         OverlayManager.hideDot()
         OverlayManager.hideArrow()
+        OverlayManager.hideMicButton()
+        OverlayManager.hideNextButton()
         WayloGuidanceService.instance?.speaker?.speak("All done! Task complete.")
         isRunning = false
         Log.e(TAG, "Task complete: '$currentTask'")
+        RunReport.endRun("completed")
     }
 
     fun getCurrentStep(): Step? = steps.getOrNull(currentIndex)

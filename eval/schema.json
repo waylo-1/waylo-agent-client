@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WayloGroundingEvalCase",
+  "description": "One row of eval/cases.csv — a single (screenshot, findDescription, ground-truth answer) grounding eval case. See eval/README.md for how these are built and what 'pass' means when replaying a case against a detector.",
+  "type": "object",
+  "required": [
+    "case_id",
+    "app",
+    "screen_description",
+    "findDescription",
+    "expected_label",
+    "expected_position_hint",
+    "category",
+    "notes"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "description": "Stable, unique identifier. Never renumber existing cases.",
+      "pattern": "^[a-z0-9]+-[0-9]{3}$"
+    },
+    "app": {
+      "type": "string",
+      "description": "The app the screenshot is from, e.g. 'YouTube'. Matches Plan.appName where applicable."
+    },
+    "screen_description": {
+      "type": "string",
+      "description": "Plain-English description of the screen/state shown, for a human skimming the CSV without opening the image."
+    },
+    "findDescription": {
+      "type": "string",
+      "description": "The exact (or realistic) backend-style find description for this step — same field/format as Step.findDescription in PlanParser.kt."
+    },
+    "expected_label": {
+      "type": "string",
+      "description": "The correct element's own visible text or contentDescription — the human-verified ground truth. May be empty for a pure image-only target with no text/contentDescription at all (rely on expected_position_hint instead)."
+    },
+    "expected_position_hint": {
+      "type": "string",
+      "description": "Plain-English location description, used when expected_label alone is ambiguous (icon-only elements, duplicate text on screen)."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["text", "icon", "nav", "profile"],
+      "description": "text = text-labeled button/list item. icon = app icon or icon-only button with no visible text. nav = bottom nav bar / tab bar item. profile = profile picture/avatar, usually image-only."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Known ambiguity, rationale for the case, or 'EXAMPLE — replace with a real labeled screenshot' for placeholder rows."
+    },
+    "screenshot_path": {
+      "type": "string",
+      "description": "Optional. Relative path to the actual screenshot file, e.g. eval/screenshots/yt-001.png. Omitted/blank for placeholder EXAMPLE rows, which have no backing image yet.",
+      "default": ""
+    }
+  },
+  "additionalProperties": false
+}

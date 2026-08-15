@@ -44,3 +44,12 @@ backend_initial/
 Thumbs.db
 *.swp
 .vscode/
+
+# Local run logs / build artifacts — never commit
+*.apk
+crash_log.txt
+detect_log.txt
+dot_log.txt
+*log*.txt
+verify_log*.txt
+waylo_test*.txt

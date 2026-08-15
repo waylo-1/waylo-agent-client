@@ -33,7 +33,15 @@ object ScreenAnalysisPipeline {
         val y: Int,
         val source: String, // "accessibility", "ocr", "gemini", "failed"
         val confidence: Float,
-        val label: String
+        val label: String,
+        /**
+         * The matched element's on-screen size in px, when known (tree/home/
+         * partial-match layers, which have real node bounds). 0 for OCR/vision/
+         * failed results. Used by the overlay to draw a dotted box covering an
+         * icon target instead of a bare centre dot — see OverlayManager.
+         */
+        val width: Int = 0,
+        val height: Int = 0
     )
 
     /**
@@ -47,12 +55,13 @@ object ScreenAnalysisPipeline {
         description: String,
         targetPackage: String? = null,
         alternateLabels: List<String> = emptyList(),
-        visualDescription: String? = null
+        visualDescription: String? = null,
+        stepIndex: Int = -1
     ): PipelineResult =
         withContext(Dispatchers.IO) {
             // --- Layer 1: accessibility tree ---
             Log.e("WAYLO_DOT", "Pipeline layer 1 starting for: $description")
-            val match = ElementFinder.findElement(description, targetPackage, alternateLabels)
+            val match = ElementFinder.findElement(description, targetPackage, alternateLabels, stepIndex)
             Log.e("WAYLO_DOT", "Layer 1 result: ${match?.score} score, node: ${match?.node?.contentDescription}")
             if (match != null && match.isConfident()) {
                 val bounds = ElementFinder.getBoundsOnScreen(match.node)
@@ -65,7 +74,9 @@ object ScreenAnalysisPipeline {
                     y = bounds.centerY(),
                     source = "accessibility",
                     confidence = match.score.toFloat(),
-                    label = label
+                    label = label,
+                    width = bounds.width(),
+                    height = bounds.height()
                 )
                 Log.e("WAYLO_DOT", "Final pipeline result: source=${r.source} x=${r.x} y=${r.y}")
                 return@withContext r
@@ -78,7 +89,7 @@ object ScreenAnalysisPipeline {
             if (bitmap != null) {
                 try {
                     val elements = OcrAnalyzer.analyzeScreen(bitmap)
-                    val ocrMatch = OcrAnalyzer.findBestMatch(elements, description, visualDescription, alternateLabels)
+                    val ocrMatch = OcrAnalyzer.findBestMatch(elements, description, visualDescription, alternateLabels, stepIndex)
                     Log.e("WAYLO_DOT", "Layer 2 result: ${ocrMatch?.text} at ${ocrMatch?.centerX},${ocrMatch?.centerY}")
                     if (ocrMatch != null) {
                         Log.d(TAG, "Pipeline: Layer 2 (OCR) hit '${ocrMatch.text}'.")
@@ -121,9 +132,10 @@ object ScreenAnalysisPipeline {
         description: String,
         targetPackage: String? = null,
         alternateLabels: List<String> = emptyList(),
-        visualDescription: String? = null
+        visualDescription: String? = null,
+        stepIndex: Int = -1
     ): PipelineResult =
-        analyze(context, description, targetPackage, alternateLabels, visualDescription)
+        analyze(context, description, targetPackage, alternateLabels, visualDescription, stepIndex)
 
     /**
      * Convenience: run the pipeline then place/move the dot on the result.
@@ -134,9 +146,10 @@ object ScreenAnalysisPipeline {
         description: String,
         targetPackage: String? = null,
         alternateLabels: List<String> = emptyList(),
-        visualDescription: String? = null
+        visualDescription: String? = null,
+        stepIndex: Int = -1
     ): PipelineResult {
-        val result = analyze(context, description, targetPackage, alternateLabels, visualDescription)
+        val result = analyze(context, description, targetPackage, alternateLabels, visualDescription, stepIndex)
         if (result.source != "failed") {
             withContext(Dispatchers.Main) {
                 OverlayManager.showDotAtResult(result)

@@ -1,5 +1,7 @@
 package com.waylo.accessibility
 
+import com.waylo.diagnostics.WayloVerify
+
 import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
@@ -93,6 +95,40 @@ object ElementFinder {
     )
 
     /**
+     * WAYLO_VERIFY diagnostic log for a single tree-scan attempt (findElement/
+     * findOnHomeScreen/scorePartialMatch). Reports confidence against the SAME
+     * gate as [MatchResult.isConfident] (MIN_CONFIDENT_SCORE/MIN_CONFIDENCE_GAP)
+     * regardless of which looser threshold the calling function itself uses
+     * for its own null-return decision, so this always reflects why the dot
+     * would or wouldn't actually be placed. Logging only — does not read or
+     * affect any return value. [stepIndex] is -1 when the caller has no step
+     * context (e.g. an ad-hoc/test caller).
+     */
+    private fun logTreeScan(stepIndex: Int, scored: List<Pair<AccessibilityNodeInfo, ScoreBreakdown>>) {
+        val top = scored.getOrNull(0)
+        val runnerUp = scored.getOrNull(1)
+        val topScore = top?.second?.total ?: 0
+        val runnerUpScore = runnerUp?.second?.total ?: 0
+        val gap = topScore - runnerUpScore
+        val confident = top != null && topScore >= MIN_CONFIDENT_SCORE && gap >= MIN_CONFIDENCE_GAP
+        val failReason = when {
+            top == null -> "no_candidates"
+            topScore < MIN_CONFIDENT_SCORE -> "below_floor"
+            gap < MIN_CONFIDENCE_GAP -> "gap_too_small"
+            else -> "passed"
+        }
+        val top3 = scored.take(3).joinToString(" ") { (node, breakdown) ->
+            "(score=${breakdown.total},text=${node.text?.toString()?.take(40) ?: ""},desc=${node.contentDescription?.toString()?.take(40) ?: ""})"
+        }
+        WayloVerify.d("TREE_SCAN | stepIndex=$stepIndex | candidateCount=${scored.size} | topScore=$topScore | " +
+                "topText=${top?.first?.text?.toString()?.take(80) ?: ""} | topContentDesc=${top?.first?.contentDescription?.toString()?.take(80) ?: ""} | " +
+                "topViewId=${top?.first?.viewIdResourceName ?: ""} | runnerUpScore=$runnerUpScore | " +
+                "runnerUpText=${runnerUp?.first?.text?.toString()?.take(80) ?: ""} | gap=$gap | confident=$confident | " +
+                "failReason=$failReason | top3=$top3"
+        )
+    }
+
+    /**
      * Find the best on-screen element matching [rawDescription].
      *
      * The raw description (often a full sentence from the backend) is cleaned by
@@ -103,7 +139,8 @@ object ElementFinder {
     fun findElement(
         rawDescription: String,
         targetPackage: String? = null,
-        alternateLabels: List<String> = emptyList()
+        alternateLabels: List<String> = emptyList(),
+        stepIndex: Int = -1
     ): MatchResult? {
         // Strip filler words, keep only meaningful tokens.
         val tokens = rawDescription.lowercase()
@@ -137,6 +174,8 @@ object ElementFinder {
             )
         }
 
+        logTreeScan(stepIndex, scored)
+
         val best = scored.firstOrNull()
         val runnerUp = scored.getOrNull(1)?.second?.total ?: 0
         return if (best != null && best.second.total > MIN_SCORE) {
@@ -155,7 +194,8 @@ object ElementFinder {
     fun findOnHomeScreen(
         rawDescription: String,
         targetPackage: String? = null,
-        alternateLabels: List<String> = emptyList()
+        alternateLabels: List<String> = emptyList(),
+        stepIndex: Int = -1
     ): MatchResult? {
         val tokens = rawDescription.lowercase()
             .replace(Regex("[^a-z0-9 ]"), " ")
@@ -191,6 +231,8 @@ object ElementFinder {
                     "pkg='${node.packageName}' [${breakdown.parts.joinToString(", ")}]"
             )
         }
+
+        logTreeScan(stepIndex, scored)
 
         val best = scored.firstOrNull()
         val runnerUp = scored.getOrNull(1)?.second?.total ?: 0
@@ -247,27 +289,29 @@ object ElementFinder {
     }
 
     /**
-     * Last-resort, deliberately looser search used only after the primary
-     * findDescription search has failed for a step's *entire* patient window.
-     * Scores directly against the step's semantic-goal hints — [alternateLabels]
-     * (via the existing altHits bonus) and the individual words of
-     * [visualDescription] (via the existing desc/wordHits bonuses) — rather
-     * than the findDescription that just failed, and accepts real signal even
-     * where the gap to the runner-up would fail [MatchResult.isConfident]
-     * (that stricter gap check exists to pick a clean winner when the primary
-     * search is still live; here we've already exhausted the primary search
-     * and are deliberately accepting a weaker, "best guess" signal instead of
-     * stalling forever). Returns null if there's nothing to search with (no
-     * alternateLabels AND no visualDescription words) or nothing clears the bar.
+     * Last-resort search used only after the primary findDescription search
+     * has failed for a step's *entire* patient window. Scores directly
+     * against the step's semantic-goal hints — [alternateLabels] (via the
+     * existing altHits bonus) and the individual words of [visualDescription]
+     * (via the existing desc/wordHits bonuses) — rather than the
+     * findDescription that just failed.
+     *
+     * Despite the name, this is NOT a lowered-confidence path: it still
+     * requires the full [MatchResult.isConfident] gate (score floor AND
+     * runner-up gap). The dot must never be placed below that bar — see
+     * GuidanceEngine's confidence-floor policy. Returns null if there's
+     * nothing to search with (no alternateLabels AND no visualDescription
+     * words) or nothing clears [MatchResult.isConfident].
      */
     fun findPartialMatch(
         alternateLabels: List<String>,
         visualDescription: String?,
-        targetPackage: String? = null
+        targetPackage: String? = null,
+        stepIndex: Int = -1
     ): MatchResult? {
         val service = WayloAccessibilityService.instance ?: return null
         val allNodes = service.getAllNodes().filter { it.packageName?.toString() != OWN_PACKAGE }
-        return scorePartialMatch(allNodes, alternateLabels, visualDescription, targetPackage)
+        return scorePartialMatch(allNodes, alternateLabels, visualDescription, targetPackage, stepIndex)
     }
 
     /**
@@ -278,7 +322,8 @@ object ElementFinder {
         allNodes: List<AccessibilityNodeInfo>,
         alternateLabels: List<String>,
         visualDescription: String?,
-        targetPackage: String? = null
+        targetPackage: String? = null,
+        stepIndex: Int = -1
     ): MatchResult? {
         val visualTokens = visualDescription.orEmpty().lowercase()
             .replace(Regex("[^a-z0-9 ]"), " ")
@@ -291,11 +336,11 @@ object ElementFinder {
             .map { node -> Pair(node, scoreNodeWithBreakdown(node, cleanedVisual, visualTokens, targetPackage, alternateLabels)) }
             .filter { it.second.total > 0 }
             .sortedByDescending { it.second.total }
+        logTreeScan(stepIndex, scored)
         val best = scored.firstOrNull() ?: return null
         val runnerUp = scored.getOrNull(1)?.second?.total ?: 0
-        return if (best.second.total >= MIN_CONFIDENT_SCORE) {
-            MatchResult(best.first, best.second.total, cleanedVisual.ifBlank { alternateLabels.joinToString(" ") }, runnerUp)
-        } else null
+        val result = MatchResult(best.first, best.second.total, cleanedVisual.ifBlank { alternateLabels.joinToString(" ") }, runnerUp)
+        return if (result.isConfident()) result else null
     }
 
     /**
