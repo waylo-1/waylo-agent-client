@@ -50,6 +50,11 @@ struct HomePanelView: View {
                 // Agent mode ("Do it for me") in flight: live action feed +
                 // a way OUT — Esc or this button.
                 agentActivity
+            } else if !signedIn {
+                // Sign-in is REQUIRED: the user must enter the email they
+                // registered with on the website; we check their plan (free 5 /
+                // paid 25) before anything else.
+                signInGate
             } else if !engine.isRunning {
                 // isRunning flips false the moment a guide finishes, so the
                 // completion state must be shown here — the .complete branch
@@ -317,24 +322,34 @@ struct HomePanelView: View {
         }
     }
 
+    // MARK: - Sign-in gate (required before use)
+
+    private var signInGate: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Image(systemName: "person.crop.circle.badge.checkmark")
+                .font(.system(size: 32)).foregroundColor(.red)
+            Text("Sign in to Waylo").font(.title3).fontWeight(.bold)
+            Text("Enter the email you signed up with on the Waylo website. We'll load your plan — Free (\(status?.limit ?? 5) tasks) or Pro (25 tasks).")
+                .font(.callout).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                TextField("you@email.com", text: $emailInput)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { signInWithEmail() }
+                Button("Continue") { signInWithEmail() }
+                    .buttonStyle(.borderedProminent).tint(.red)
+                    .disabled(!emailInput.contains("@") || !emailInput.contains("."))
+            }
+            Text("Not signed up yet? Get Waylo on the website first, then come back with the same email.")
+                .font(.caption2).foregroundColor(.secondary)
+        }
+        .padding(.vertical, 6)
+    }
+
     // MARK: - Task input
 
     private var taskInput: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Lightweight sign-in: capture the email once so usage is tracked per
-            // user (business evidence + the free-tier limit). The Vercel site also
-            // captures it; this covers app-first users. Hidden once signed in.
-            if !signedIn {
-                HStack(spacing: 8) {
-                    TextField("Sign in with your email", text: $emailInput)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { signInWithEmail() }
-                    Button("Sign in") { signInWithEmail() }
-                        .buttonStyle(.bordered)
-                        .disabled(!emailInput.contains("@"))
-                }
-            }
-
             Text(L10n.t("ask_prompt"))
                 .font(.subheadline)
                 .foregroundColor(.secondary)
@@ -628,6 +643,10 @@ struct HomePanelView: View {
                     Spacer()
                     Text(UserAccount.email)
                         .font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                    Button("Sign out") {
+                        UserAccount.signOut(); signedIn = false; status = nil
+                    }
+                    .buttonStyle(.plain).font(.caption2).foregroundColor(.secondary)
                 }
             }
             Toggle(isOn: $captureTrainingImages) {
