@@ -1,0 +1,35 @@
+# Signing material — NEVER commit private keys / certs
+.signing/
+*.p12
+*.key
+*.crt
+*.cer
+*.mobileprovision
+*.provisionprofile
+
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Release/packaging artifacts (built by build-release.sh)
+dist/
+*.zip
+*.dmg
+*.pkg
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/

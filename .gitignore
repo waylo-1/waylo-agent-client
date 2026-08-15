@@ -53,3 +53,11 @@ dot_log.txt
 *log*.txt
 verify_log*.txt
 waylo_test*.txt
+# ---- macOS app (Xcode) ----
+# Self-signed code-signing private keys — never commit.
+waylo-macos/.signing/
+# Xcode per-user state and build output.
+**/xcuserdata/
+*.xcuserstate
+waylo-macos/**/build/
+DerivedData/
