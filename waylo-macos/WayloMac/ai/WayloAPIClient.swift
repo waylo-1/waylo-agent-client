@@ -332,6 +332,34 @@ final class WayloAPIClient {
         return 0
     }
 
+    /// The user's subscription + remaining tasks, read from Aurora via the backend.
+    struct UsageStatus {
+        let plan: String      // "free" | "paid"
+        let used: Int
+        let limit: Int        // 5 (free) or 50 (paid)
+        let allowed: Bool
+        let remaining: Int
+        var isPaid: Bool { plan == "paid" }
+    }
+
+    /// Checks the signed-in email against the DB: free (5 tasks) vs paid (50).
+    func fetchStatus(email: String) async -> UsageStatus? {
+        guard !email.isEmpty, var comps = URLComponents(string: "\(baseURL)/me") else { return nil }
+        comps.queryItems = [URLQueryItem(name: "email", value: email)]
+        guard let url = comps.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let plan = (obj["plan"] as? String) ?? "free"
+        let used = (obj["used"] as? Int) ?? 0
+        let limit = (obj["limit"] as? Int) ?? 5
+        let allowed = (obj["allowed"] as? Bool) ?? true
+        let remaining = (obj["remaining"] as? Int) ?? max(0, limit - used)
+        return UsageStatus(plan: plan, used: used, limit: limit, allowed: allowed, remaining: remaining)
+    }
+
     /// Registers a signed-in user's email with the backend (fire-and-forget), so
     /// they appear in the users table for business/customer evidence.
     func register(email: String, name: String = "", source: String = "app") {

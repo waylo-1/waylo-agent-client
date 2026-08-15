@@ -19,6 +19,7 @@ struct HomePanelView: View {
     @State private var emailInput = ""
     @State private var signedIn = UserAccount.isSignedIn
     @State private var showShortcuts = false
+    @State private var status: WayloAPIClient.UsageStatus?
     @State private var judgeMode = WayloConfig.maxAccuracy
     @State private var isLoading = false
     @State private var isListening = false
@@ -65,7 +66,10 @@ struct HomePanelView: View {
         }
         .padding(20)
         .frame(width: 340)
-        .onAppear { if WayloConfig.isProduction { engine.mode = .teach } }
+        .onAppear {
+            if WayloConfig.isProduction { engine.mode = .teach }
+            refreshStatus()
+        }
     }
 
     // MARK: - Learn an app (continuous skill sessions + curricula)
@@ -610,8 +614,21 @@ struct HomePanelView: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
             if signedIn {
-                Text("Signed in as \(UserAccount.email)")
-                    .font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                HStack(spacing: 6) {
+                    if let s = status {
+                        Text(s.isPaid ? "Pro" : "Free")
+                            .font(.caption2).fontWeight(.semibold)
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background((s.isPaid ? Color.green : Color.secondary).opacity(0.15))
+                            .cornerRadius(5)
+                        Text("\(s.remaining) of \(s.limit) tasks left")
+                            .font(.caption2)
+                            .foregroundColor(s.remaining == 0 ? .red : .secondary)
+                    }
+                    Spacer()
+                    Text(UserAccount.email)
+                        .font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                }
             }
             Toggle(isOn: $captureTrainingImages) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -780,6 +797,14 @@ struct HomePanelView: View {
         UserAccount.signIn(email: e, source: "app")
         signedIn = UserAccount.isSignedIn
         emailInput = ""
+        refreshStatus()
+    }
+
+    /// Ask the backend (which reads Aurora) whether this email is free or paid,
+    /// and how many tasks remain — shown in the panel; the backend enforces it.
+    private func refreshStatus() {
+        guard UserAccount.isSignedIn else { status = nil; return }
+        Task { status = await WayloAPIClient.shared.fetchStatus(email: UserAccount.email) }
     }
 
     private func startTask() {
