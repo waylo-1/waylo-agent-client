@@ -26,6 +26,11 @@ final class WayloAPIClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Reviewer ("judge") build → unlimited tasks: the backend waives the
+        // paywall for requests carrying this key. No-op in the website build.
+        if WayloConfig.isJudgeBuild {
+            request.setValue(WayloConfig.judgeBuildKey, forHTTPHeaderField: "X-Waylo-Build-Key")
+        }
         // Plan generation is a full LLM call; a cold Claude/Bedrock response can
         // exceed 30s, which used to abort real (slow but successful) plans.
         request.timeoutInterval = 90

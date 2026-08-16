@@ -1,49 +1,58 @@
 #!/usr/bin/env bash
 #
-# Builds a distributable Waylo.app (Release) and packages it as a .zip and a
-# .dmg you can upload to GitHub Releases / S3 and link from your Vercel page.
+# Builds the two distributable Waylo.app releases and packages each as .zip + .dmg:
 #
-# Usage:   ./build-release.sh
-# Output:  dist/Waylo-macOS.zip   and   dist/Waylo-macOS.dmg
+#   dist/Waylo-macOS.{zip,dmg}           — WEBSITE build (freemium: free 5 / paid 25)
+#   dist/Waylo-Reviewer-macOS.{zip,dmg}  — XPRIZE REVIEWER build (unlimited tasks)
 #
+# Both ship the clean production surface (Judge/max-accuracy ON, NO developer
+# tools). The reviewer build is compiled with the JUDGE_BUILD flag, which makes
+# it send a build key so the backend waives the paywall — nothing else differs.
+#
+# Usage:   ./build-release.sh            # builds both
+#          ./build-release.sh website    # just the website build
+#          ./build-release.sh reviewer   # just the reviewer build
 set -euo pipefail
 cd "$(dirname "$0")"
 
 SCHEME="WayloMac"
 CONFIG="Release"
-DERIVED="build/release"
-APP_NAME="Waylo"
 OUT="dist"
-
-echo "▶ Building $SCHEME ($CONFIG)…"
-xcodebuild -project WayloMac.xcodeproj -scheme "$SCHEME" -configuration "$CONFIG" \
-  -derivedDataPath "$DERIVED" clean build | tail -6
-
-APP_PATH="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"
-[ -d "$APP_PATH" ] || { echo "✗ Build failed: $APP_PATH not found"; exit 1; }
-
 mkdir -p "$OUT"
-rm -rf "$OUT/$APP_NAME.app"
-cp -R "$APP_PATH" "$OUT/$APP_NAME.app"
 
-# Zip (ditto preserves the code signature and macOS metadata).
-ZIP="$OUT/$APP_NAME-macOS.zip"
-rm -f "$ZIP"
-ditto -c -k --sequesterRsrc --keepParent "$OUT/$APP_NAME.app" "$ZIP"
+# build_channel <name> <derivedDir> <appBaseName> [extra xcodebuild settings…]
+build_channel() {
+  local name="$1" derived="$2" base="$3"; shift 3
+  echo "▶ Building $name build ($CONFIG)…"
+  xcodebuild -project WayloMac.xcodeproj -scheme "$SCHEME" -configuration "$CONFIG" \
+    -derivedDataPath "$derived" "$@" clean build | tail -4
 
-# DMG (nicer for a download button). Falls back silently if hdiutil is busy.
-DMG="$OUT/$APP_NAME-macOS.dmg"
-rm -f "$DMG"
-hdiutil create -volname "$APP_NAME" -srcfolder "$OUT/$APP_NAME.app" -ov -format UDZO "$DMG" >/dev/null 2>&1 \
-  && echo "✓ DMG:  $DMG" || echo "⚠ DMG step skipped (hdiutil failed) — use the .zip"
+  local appPath="$derived/Build/Products/$CONFIG/$SCHEME.app"
+  [ -d "$appPath" ] || { echo "✗ $name build failed: $appPath not found"; exit 1; }
 
-echo "✓ App:  $OUT/$APP_NAME.app"
-echo "✓ ZIP:  $ZIP"
-echo
-echo "Next: upload the .zip (or .dmg) to GitHub Releases, copy the asset URL,"
-echo "and use it as the download link on your Vercel landing page."
-echo
-echo "Note: this build is self-signed. First-time users must remove the"
-echo "quarantine flag after downloading:"
-echo "    xattr -dr com.apple.quarantine /Applications/Waylo.app"
-echo "or right-click the app → Open → Open."
+  rm -rf "$OUT/$base.app"; cp -R "$appPath" "$OUT/$base.app"
+
+  local zip="$OUT/$base-macOS.zip"
+  rm -f "$zip"
+  ditto -c -k --sequesterRsrc --keepParent "$OUT/$base.app" "$zip"
+
+  local dmg="$OUT/$base-macOS.dmg"
+  rm -f "$dmg"
+  hdiutil create -volname "$base" -srcfolder "$OUT/$base.app" -ov -format UDZO "$dmg" >/dev/null 2>&1 \
+    && echo "✓ DMG:  $dmg" || echo "⚠ DMG skipped (hdiutil busy) — use the .zip"
+  echo "✓ ZIP:  $zip"
+  echo
+}
+
+WHICH="${1:-both}"
+if [ "$WHICH" = "both" ] || [ "$WHICH" = "website" ]; then
+  build_channel "WEBSITE" "build/release" "Waylo"
+fi
+if [ "$WHICH" = "both" ] || [ "$WHICH" = "reviewer" ]; then
+  build_channel "REVIEWER" "build/reviewer" "Waylo-Reviewer" \
+    "SWIFT_ACTIVE_COMPILATION_CONDITIONS=JUDGE_BUILD"
+fi
+
+echo "Done. Upload the .dmg (or .zip) to GitHub Releases / S3 and link it from Vercel."
+echo "Self-signed build — first-time users right-click the app → Open → Open,"
+echo "or run: xattr -dr com.apple.quarantine /Applications/Waylo.app"

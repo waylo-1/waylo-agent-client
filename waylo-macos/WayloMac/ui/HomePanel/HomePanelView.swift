@@ -645,7 +645,15 @@ struct HomePanelView: View {
             .controlSize(.large)
             if signedIn {
                 HStack(spacing: 6) {
-                    if let s = status {
+                    if WayloConfig.isJudgeBuild {
+                        Text("REVIEWER")
+                            .font(.caption2).fontWeight(.semibold)
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Color.blue.opacity(0.18))
+                            .cornerRadius(5)
+                        Text("unlimited tasks")
+                            .font(.caption2).foregroundColor(.secondary)
+                    } else if let s = status {
                         if s.isDeveloper {
                             Text("DEV")
                                 .font(.caption2).fontWeight(.semibold)

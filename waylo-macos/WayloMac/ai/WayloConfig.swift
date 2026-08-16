@@ -24,6 +24,21 @@ enum WayloConfig {
     /// any non-production build, or a signed-in developer account.
     static var showDevSurface: Bool { !isProduction || isDeveloper }
 
+    /// The XPRIZE REVIEWER ("judge") build: unlimited tasks — the backend waives
+    /// the paywall for requests carrying `judgeBuildKey` — with the SAME clean
+    /// production UI and NO developer tools. Built with the JUDGE_BUILD compile
+    /// flag (see build-release.sh); the public website build has it OFF, so its
+    /// users still get the freemium limit.
+    #if JUDGE_BUILD
+    static let isJudgeBuild = true
+    #else
+    static let isJudgeBuild = false
+    #endif
+
+    /// Shared key the reviewer build sends so the backend waives the paywall.
+    /// Must match JUDGE_BUILD_KEY on the server.
+    static let judgeBuildKey = "waylo-xprize-reviewer-2026"
+
     /// JUDGE / MAX-ACCURACY mode — an OPT-IN toggle (Developer Tools), OFF by
     /// default so the normal app keeps its original, cheap pipeline. When ON, the
     /// vision layer asks Gemini to REASON about the exact element (more accurate

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RemoteConfig.shared.refresh()   // pull backend-tunable config (no re-download needed)
 
         DebugLogger.log("BOOT", "App launched. Hotkeys: ⌃⌥⌘V voice · ⌃⌥⌘N re-detect · ⌃⌥⌘A ask · ⌃⌥⌘Q screen-Q&A · ⌃⌥⌘W panel · ⌃⌥⌘D debug · ⌃⌥⌘T coord-test")
+        DebugLogger.log("BOOT", "channel=\(WayloConfig.isJudgeBuild ? "REVIEWER (unlimited)" : "website") production=\(WayloConfig.isProduction) maxAccuracy=\(WayloConfig.maxAccuracy) devSurface=\(WayloConfig.showDevSurface)")
 
         // Track which real app the user is working in (not Waylo itself).
         TargetAppTracker.shared.start()
