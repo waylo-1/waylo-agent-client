@@ -123,6 +123,18 @@ final class CoordinateResolver {
             DebugLogger.log("RESOLVE", "MODAL step — AX + OCR confined to dialog \(Int(df.width))x\(Int(df.height))")
         }
 
+        // NATIVE MODAL + SLIDER: grab THE slider from inside the sheet's SUBTREE
+        // and box its whole frame. Name/rect search can't do this — a same-named
+        // control behind the sheet (e.g. the "Text size" row) overlaps its rect
+        // and carries the same name. The sheet subtree structurally excludes it.
+        if dialogFrame != nil, controlKind.lowercased() == "slider",
+           let sheet = AccessibilityReader.shared.targetFocusedDialogElement(),
+           let slider = AccessibilityReader.shared.firstElementOfRole(["AXSlider", "AXValueIndicator"], under: sheet) {
+            DebugLogger.log("RESOLVE", "MODAL slider by role → \(slider.role) box \(Int(slider.frame.width))x\(Int(slider.frame.height)) at (\(Int(slider.center.x)),\(Int(slider.center.y)))")
+            return Resolution(axPoint: slider.center, updatedInstruction: "",
+                              axElement: slider.axElement, targetFrame: slider.frame)
+        }
+
         // Resolve an anchor location (nearby text the planner gave) once, so AX
         // can prefer the target in the right direction from it.
         var anchorInfo: (point: CGPoint, position: String)?

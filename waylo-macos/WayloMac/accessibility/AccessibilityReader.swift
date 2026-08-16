@@ -458,6 +458,74 @@ final class AccessibilityReader: @unchecked Sendable {
         return nil
     }
 
+    /// The focused modal/sheet ELEMENT (not just its frame). Searching this
+    /// element's SUBTREE excludes controls that sit behind the modal but overlap
+    /// its rectangle — which a rect filter alone cannot do.
+    func targetFocusedDialogElement() -> AXUIElement? {
+        let pid = TargetAppTracker.shared.targetPID
+            ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let pid = pid else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        var winsRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &winsRef)
+        let windows = (winsRef as? [AXUIElement]) ?? []
+        for win in windows {
+            var sheetsRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(win, "AXSheets" as CFString, &sheetsRef)
+            if let sheet = (sheetsRef as? [AXUIElement])?.first {
+                let f = copyFrame(sheet)
+                if f.width > 1, f.height > 1 { return sheet }
+            }
+        }
+        var focusedRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focusedRef)
+        let candidates = [focusedRef].compactMap { $0 as! AXUIElement? } + windows
+        for win in candidates {
+            let role = copyStringAttribute(win, kAXRoleAttribute)
+            let subrole = copyStringAttribute(win, kAXSubroleAttribute)
+            if role == "AXSheet" || subrole == "AXDialog" || subrole == "AXSystemDialog" || subrole == "AXSheet" {
+                let f = copyFrame(win)
+                if f.width > 1, f.height > 1 { return win }
+            }
+        }
+        return nil
+    }
+
+    /// First element whose role is in `roles`, anywhere under `root`'s subtree.
+    /// Used to grab THE control of a kind (e.g. the one AXSlider) inside a modal,
+    /// where matching by name would hit a same-named control behind it.
+    func firstElementOfRole(_ roles: [String], under root: AXUIElement) -> AXElementInfo? {
+        guard !roles.isEmpty else { return nil }
+        var found: AXElementInfo?
+        func walk(_ el: AXUIElement, depth: Int) {
+            if found != nil || depth > 20 { return }
+            let role = copyStringAttribute(el, kAXRoleAttribute)
+            if roles.contains(role) {
+                let frame = copyFrame(el)
+                if frame.width > 1, frame.height > 1 {
+                    found = AXElementInfo(
+                        role: role,
+                        title: copyStringAttribute(el, kAXTitleAttribute),
+                        description: copyStringAttribute(el, kAXDescriptionAttribute),
+                        helpText: copyStringAttribute(el, kAXHelpAttribute),
+                        value: copyStringAttribute(el, kAXValueAttribute),
+                        frame: frame, center: CGPoint(x: frame.midX, y: frame.midY),
+                        axElement: el,
+                        identifier: AXElementInfo.meaningfulIdentifier(copyStringAttribute(el, "AXIdentifier")))
+                    return
+                }
+            }
+            var children: CFTypeRef?
+            AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &children)
+            for child in (children as? [AXUIElement]) ?? [] {
+                walk(child, depth: depth + 1)
+                if found != nil { return }
+            }
+        }
+        walk(root, depth: 0)
+        return found
+    }
+
     /// The interactive element under an AX-global point — hit-testing via the
     /// system-wide AX element. Walks UP from the deepest hit to the nearest
     /// ancestor with a usable label, so clicking a button's inner text still
