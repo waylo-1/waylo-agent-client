@@ -104,6 +104,7 @@ final class ElementFinder {
         case "tab":      return ["AXTab"]
         case "link":     return ["AXLink"]
         case "field":    return ["AXTextField", "AXComboBox"]
+        case "slider":   return ["AXSlider", "AXValueIndicator"]
         default:         return []
         }
     }
