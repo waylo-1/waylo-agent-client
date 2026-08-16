@@ -112,6 +112,19 @@ final class ElementFinder {
     /// True when the controlKind names a real interactive control (not plain text).
     static func isControlKind(_ kind: String) -> Bool { !rolesFor(kind).isEmpty }
 
+    /// Canonicalises common British spellings to American so name matching is
+    /// locale-agnostic (macOS labels controls "Control Centre", "Colour", etc.
+    /// on en-GB/en-IN systems while planner labels are American).
+    static func usSpelling(_ s: String) -> String {
+        var t = s
+        for (uk, us) in [("centre", "center"), ("colour", "color"), ("grey", "gray"),
+                         ("favourite", "favorite"), ("customise", "customize"),
+                         ("licence", "license"), ("catalogue", "catalog")] {
+            t = t.replacingOccurrences(of: uk, with: us)
+        }
+        return t
+    }
+
     /// Logs a low-confidence match and returns nil so the resolver falls through
     /// to OCR; returns nil silently for sub-threshold scores.
     private func lowConfidence(_ match: AXElementInfo?, _ score: Int) -> AXElementInfo? {
@@ -127,9 +140,14 @@ final class ElementFinder {
         guard isOnScreen(element.frame) else { return Int.min }
 
         var score = 0
-        let elementText = element.allText
-        let titleLower = element.title.lowercased()
-        let descLower = element.description.lowercased()
+        // Normalise British→American spelling on BOTH sides, so a US query like
+        // "Control Center" matches the macOS menu-bar item "Control Centre" (and
+        // colour/color, grey/gray, …) instead of scoring too low and being rejected.
+        let query = Self.usSpelling(query)
+        let keywords = keywords.map { Self.usSpelling($0) }
+        let elementText = Self.usSpelling(element.allText)
+        let titleLower = Self.usSpelling(element.title.lowercased())
+        let descLower = Self.usSpelling(element.description.lowercased())
         let titleWords = wordSet(titleLower)
         let descWords = wordSet(descLower)
         let textWords = wordSet(elementText)
