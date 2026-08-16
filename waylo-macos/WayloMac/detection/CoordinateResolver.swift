@@ -113,11 +113,21 @@ final class CoordinateResolver {
             }
         }
 
+        // The rect that CONFINES detection (AX name search + OCR). In a native
+        // modal/sheet, restrict to the dialog so a same-named control BEHIND it
+        // (e.g. the "Text size" row while its size sheet is open) can never win —
+        // this is why the slider box landed on the row behind the modal. web and
+        // modal are mutually exclusive (webContentFrame is nil when a modal is up).
+        let axRestrict = webContentFrame ?? dialogFrame
+        if webContentFrame == nil, let df = dialogFrame {
+            DebugLogger.log("RESOLVE", "MODAL step — AX + OCR confined to dialog \(Int(df.width))x\(Int(df.height))")
+        }
+
         // Resolve an anchor location (nearby text the planner gave) once, so AX
         // can prefer the target in the right direction from it.
         var anchorInfo: (point: CGPoint, position: String)?
         if !anchorText.isEmpty {
-            if let el = axSearch(anchorText, region: screenRegion, screen: screen, restrictRect: webContentFrame) {
+            if let el = axSearch(anchorText, region: screenRegion, screen: screen, restrictRect: axRestrict) {
                 anchorInfo = (el.center, anchorPosition)
             } else if let m = webContentFrame != nil
                         ? await visionDetector.findLabelScored(anchorText, in: image, on: screen, cropAXRect: webContentFrame!)
@@ -136,7 +146,7 @@ final class CoordinateResolver {
         // Deep AX for the exact name lands on the real control every time. This is
         // why "the tree wasn't working": it worked, but OCR won before we asked it.
         if !accessibleName.isEmpty,
-           let el = await AccessibilityReader.shared.deepFindByName(accessibleName, restrictRect: webContentFrame),
+           let el = await AccessibilityReader.shared.deepFindByName(accessibleName, restrictRect: axRestrict),
            passesRegion(el.center, screenRegion, screen: screen) {
             DebugLogger.log("RESOLVE", "ACCESSIBLE_NAME deep-AX hit (first) — '\(accessibleName)' \(el.center)")
             DebugLogger.logResolution("accessible-name-deepAX", found: true, point: el.center, label: accessibleName)
@@ -159,7 +169,7 @@ final class CoordinateResolver {
             if let hit = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
                                            region: screenRegion, preferRect: effectivePreferRect,
-                                           restrictRect: webContentFrame) {
+                                           restrictRect: axRestrict) {
                 return Resolution(axPoint: hit.point, updatedInstruction: "", targetFrame: hit.frame,
                                   alternates: hit.alternates)
             }
@@ -172,7 +182,7 @@ final class CoordinateResolver {
         for candidate in Self.labelVariants(targetLabel) where !candidate.isEmpty {
             guard let found = axSearchDetailed(candidate, region: screenRegion, screen: screen, allowSystemUI: true,
                                                preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect,
-                                               restrictRect: webContentFrame)
+                                               restrictRect: axRestrict)
             else { continue }
             if candidate != targetLabel {
                 DebugLogger.log("RESOLVE", "matched locale variant '\(candidate)' for planner label '\(targetLabel)'")
@@ -256,7 +266,7 @@ final class CoordinateResolver {
                let ocr = await locateByOCR(targetLabel: targetLabel, elementDescription: elementDescription,
                                            instruction: stepInstruction, image: image, screen: screen,
                                            region: screenRegion, preferRect: effectivePreferRect,
-                                           restrictRect: webContentFrame) {
+                                           restrictRect: axRestrict) {
                 DebugLogger.log("RESOLVE", "AX ambiguous for text target '\(targetLabel)' — OCR resolved it confidently, preferring OCR over \(found.alternates.count + 1) badges")
                 DebugLogger.logResolution("L1-OCR (ambiguity override)", found: true, point: ocr.point, label: targetLabel)
                 DebugState.shared.update(layer: "OCR (AX-ambiguous)", dot: ocr.point)
@@ -283,7 +293,7 @@ final class CoordinateResolver {
         // worse than an honest "look here, it's the small colour wheel".
         let descMatch = axSearch(axQuery, region: screenRegion, screen: screen, allowSystemUI: false,
                                  preferredRole: controlKind, anchor: anchorInfo, preferRect: effectivePreferRect,
-                                 restrictRect: webContentFrame)
+                                 restrictRect: axRestrict)
             .flatMap { el -> AXElementInfo? in
                 let named = !el.title.trimmingCharacters(in: .whitespaces).isEmpty
                     || !el.description.trimmingCharacters(in: .whitespaces).isEmpty
@@ -355,7 +365,7 @@ final class CoordinateResolver {
            ["avatar", "profile", "account", "user icon", "your picture", "profile picture"].contains(where: profileHay.contains) {
             for name in ["Avatar", "Account", "Your profile", "Profile", "User menu", "Account settings"]
             where name.lowercased() != accessibleName.lowercased() {
-                if let el = await AccessibilityReader.shared.deepFindByName(name, restrictRect: webContentFrame),
+                if let el = await AccessibilityReader.shared.deepFindByName(name, restrictRect: axRestrict),
                    passesRegion(el.center, screenRegion, screen: screen) {
                     DebugLogger.log("RESOLVE", "PROFILE synonym deep-AX hit — '\(name)' \(el.center)")
                     DebugLogger.logResolution("profile-synonym-deepAX", found: true, point: el.center, label: name)
@@ -380,7 +390,7 @@ final class CoordinateResolver {
             // cached the planner's "Trash" on a Mac whose Dock says "Bin").
             for candidate in Self.labelVariants(cachedLabel) {
                 guard let element = axSearch(candidate, region: screenRegion, screen: screen, allowSystemUI: true,
-                                             restrictRect: webContentFrame),
+                                             restrictRect: axRestrict),
                       passesRegion(element.center, screenRegion, screen: screen) else { continue }
                 DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT, skipped L3 — '\(candidate)' \(element.center)")
                 DebugLogger.logResolution("label-cache-AX", found: true, point: element.center, label: candidate)
@@ -394,7 +404,7 @@ final class CoordinateResolver {
             // working label here, so do a focused DEEP search for exactly it —
             // free, private, pixel-exact. This is the reliable web-icon path.
             for candidate in Self.labelVariants(cachedLabel) where !candidate.isEmpty {
-                if let el = await AccessibilityReader.shared.deepFindByName(candidate, restrictRect: webContentFrame),
+                if let el = await AccessibilityReader.shared.deepFindByName(candidate, restrictRect: axRestrict),
                    passesRegion(el.center, screenRegion, screen: screen) {
                     DebugLogger.log("RESOLVE", "LABEL_CACHE_HIT via DEEP AX — '\(candidate)' \(el.center)")
                     DebugLogger.logResolution("label-cache-deepAX", found: true, point: el.center, label: candidate)
@@ -675,7 +685,7 @@ final class CoordinateResolver {
             }
             let refined = result.updatedFindDescription
             if !refined.isEmpty {
-                if let element = axSearch(refined, region: screenRegion, screen: screen, restrictRect: webContentFrame) {
+                if let element = axSearch(refined, region: screenRegion, screen: screen, restrictRect: axRestrict) {
                     DebugLogger.logResolution("L3-Nova-refine-AX", found: true, point: element.center, label: refined)
                     DebugState.shared.update(layer: "L3 Gemini→AX", dot: element.center)
                     return Resolution(axPoint: element.center, updatedInstruction: result.updatedInstruction,
