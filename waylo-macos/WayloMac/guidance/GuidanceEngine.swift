@@ -124,10 +124,17 @@ final class GuidanceEngine: ObservableObject {
         let startIdx = firstInAppStepIndex(appName: planApp)
         if startIdx > 0 { DebugLogger.log("ENGINE", "skipping \(startIdx) leading 'open \(planApp)' step(s) — Waylo opens the app itself") }
 
-        if !planApp.isEmpty,
-           TargetAppTracker.shared.targetName.caseInsensitiveCompare(planApp) != .orderedSame,
+        // Open the app when it's NOT frontmost, OR when it IS frontmost but has
+        // NO window — a document app (Pages/Preview/…) left running with its window
+        // closed needs a fresh window (the template chooser) before "New Document"
+        // etc. exist. Without the no-window check, the guide went straight to step 1
+        // and failed because there was nothing on screen to point at.
+        let appIsFrontmost = TargetAppTracker.shared.targetName.caseInsensitiveCompare(planApp) == .orderedSame
+        let appHasWindow = AccessibilityReader.shared.targetFocusedWindowFrame() != nil
+        if !planApp.isEmpty, (!appIsFrontmost || !appHasWindow),
            let url = AppLauncher.resolveApp(named: planApp) {
-            DebugLogger.log("ENGINE", "plan app '\(planApp)' not frontmost (\(TargetAppTracker.shared.targetName)) — opening it first")
+            let why = !appIsFrontmost ? "not frontmost (\(TargetAppTracker.shared.targetName))" : "frontmost but has no window"
+            DebugLogger.log("ENGINE", "plan app '\(planApp)' \(why) — opening it first")
             NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
             Task {
                 await ScreenCapturer.shared.settleAfterAction()
