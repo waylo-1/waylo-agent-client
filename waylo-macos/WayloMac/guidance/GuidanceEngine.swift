@@ -50,6 +50,7 @@ final class GuidanceEngine: ObservableObject {
 
     private var steps: [Step] = []
     private var taskName = ""
+    private var planAppName = ""   // the plan's target app, so a learned plan can auto-open it
     /// When true, the running plan is a locked demo: corrections only relabel the
     /// current step, never replan (so the curated step sequence stays intact).
     private var planLocked = false
@@ -100,6 +101,7 @@ final class GuidanceEngine: ObservableObject {
         steps = plan.steps
         stepCount = plan.steps.count
         taskName = plan.task
+        planAppName = plan.app
         planLocked = plan.demo
         TrainingHarvest.shared.beginGuide(task: plan.task)
         currentStepIndex = 0
@@ -1637,7 +1639,7 @@ final class GuidanceEngine: ObservableObject {
         // Record the finished guide so the user can rate it (✓ caches it as
         // correct, ✗ forgets it) from the panel's history list.
         if !taskName.isEmpty, !steps.isEmpty {
-            TaskHistory.shared.record(task: taskName, steps: steps)
+            TaskHistory.shared.record(task: taskName, app: planAppName, steps: steps)
         }
 
         // Reopen the panel so the completion banner + rating are actually

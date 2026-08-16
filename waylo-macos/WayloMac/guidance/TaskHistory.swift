@@ -12,6 +12,7 @@ final class TaskHistory: ObservableObject {
     struct Entry: Identifiable {
         let id = UUID()
         let task: String
+        let app: String
         let steps: [Step]
         let date: Date
         var feedback: Feedback = .none
@@ -23,10 +24,10 @@ final class TaskHistory: ObservableObject {
     private init() {}
 
     /// Records a finished guide at the top of the list.
-    func record(task: String, steps: [Step]) {
+    func record(task: String, app: String, steps: [Step]) {
         let trimmed = task.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !steps.isEmpty else { return }
-        entries.insert(Entry(task: trimmed, steps: steps, date: Date()), at: 0)
+        entries.insert(Entry(task: trimmed, app: app, steps: steps, date: Date()), at: 0)
         if entries.count > maxEntries { entries.removeLast(entries.count - maxEntries) }
     }
 
@@ -36,7 +37,7 @@ final class TaskHistory: ObservableObject {
     func markCorrect(_ entry: Entry) {
         guard let i = entries.firstIndex(where: { $0.id == entry.id }) else { return }
         entries[i].feedback = .correct
-        WayloAPIClient.shared.learnPlan(task: entry.task, steps: entry.steps)
+        WayloAPIClient.shared.learnPlan(task: entry.task, app: entry.app, steps: entry.steps)
         TrainingHarvest.shared.commitVerified()
         // Element-level knowledge: every step label the user's clicks verified
         // during this run goes to the step-label cache (cross-task reuse).

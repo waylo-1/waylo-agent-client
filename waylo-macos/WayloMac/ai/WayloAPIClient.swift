@@ -599,7 +599,7 @@ final class WayloAPIClient {
     /// After a guide completes whose plan was corrected mid-run, persist the
     /// corrected steps keyed by the original task so it's right next time.
     /// Fire-and-forget.
-    func learnPlan(task: String, steps: [Step]) {
+    func learnPlan(task: String, app: String, steps: [Step]) {
         guard !task.isEmpty, !steps.isEmpty,
               let url = URL(string: "\(baseURL)/plan/learn") else { return }
         let stepDicts: [[String: Any]] = steps.map { s in
@@ -615,7 +615,9 @@ final class WayloAPIClient {
                 "key": s.key as Any
             ]
         }
-        let body: [String: Any] = ["task": task, "platform": "macos", "steps": stepDicts]
+        var body: [String: Any] = ["task": task, "platform": "macos", "steps": stepDicts]
+        let cleanApp = app.trimmingCharacters(in: .whitespaces)
+        if !cleanApp.isEmpty { body["app"] = cleanApp }   // so re-runs can auto-open the app
         guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
