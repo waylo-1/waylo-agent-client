@@ -65,10 +65,11 @@ struct HomePanelView: View {
                 // Agent mode ("Do it for me") in flight: live action feed +
                 // a way OUT — Esc or this button.
                 agentActivity
-            } else if !signedIn {
-                // Sign-in is REQUIRED: the user must enter the email they
-                // registered with on the website; we check their plan (free 5 /
-                // paid 25) before anything else.
+            } else if !signedIn && !WayloConfig.isJudgeBuild {
+                // Sign-in is REQUIRED for the website build: the user enters the
+                // email they registered with; we check their plan (free 5 / paid
+                // 25) before anything else. The REVIEWER build skips this entirely
+                // — judges get unlimited tasks with no sign-up.
                 signInGate
             } else if !engine.isRunning {
                 // isRunning flips false the moment a guide finishes, so the
@@ -643,7 +644,7 @@ struct HomePanelView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            if signedIn {
+            if signedIn || WayloConfig.isJudgeBuild {
                 HStack(spacing: 6) {
                     if WayloConfig.isJudgeBuild {
                         Text("REVIEWER")
@@ -674,12 +675,14 @@ struct HomePanelView: View {
                         }
                     }
                     Spacer()
-                    Text(UserAccount.email)
-                        .font(.caption2).foregroundColor(.secondary).lineLimit(1)
-                    Button("Sign out") {
-                        UserAccount.signOut(); signedIn = false; status = nil
+                    if signedIn {
+                        Text(UserAccount.email)
+                            .font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                        Button("Sign out") {
+                            UserAccount.signOut(); signedIn = false; status = nil
+                        }
+                        .buttonStyle(.plain).font(.caption2).foregroundColor(.secondary)
                     }
-                    .buttonStyle(.plain).font(.caption2).foregroundColor(.secondary)
                 }
             }
             Toggle(isOn: $captureTrainingImages) {
