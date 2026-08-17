@@ -59,6 +59,22 @@ struct HomePanelView: View {
                 .cornerRadius(8)
             }
 
+            // Backend-pushed UPDATE prompt — appears when the server advertises a
+            // newer version (latestVersion + updateURL in remote config), so new
+            // builds can be rolled out from the backend without touching the app.
+            if remoteConfig.updateAvailable, let url = URL(string: remoteConfig.updateURL) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.down.circle.fill").foregroundColor(.green)
+                    Text("Update available (\(remoteConfig.latestVersion))").font(.caption).fontWeight(.medium)
+                    Spacer()
+                    Button("Download") { NSWorkspace.shared.open(url) }
+                        .buttonStyle(.borderedProminent).controlSize(.small).tint(.green)
+                }
+                .padding(9)
+                .background(Color.green.opacity(0.12))
+                .cornerRadius(8)
+            }
+
             Divider()
 
             if agent.isRunning {

@@ -35,6 +35,28 @@ final class RemoteConfig: ObservableObject {
     var messageLevel: String { (values["messageLevel"] as? String) ?? "info" }
     var latestVersion: String { (values["latestVersion"] as? String) ?? "" }
     var updateURL: String { (values["updateURL"] as? String) ?? "" }
+
+    /// True when the backend advertises a NEWER version than this build — lets us
+    /// push a new download from the server (set latestVersion + updateURL) and
+    /// prompt users to update, without shipping anything ourselves first.
+    var updateAvailable: Bool {
+        let latest = latestVersion.trimmingCharacters(in: .whitespaces)
+        guard !latest.isEmpty, !updateURL.isEmpty else { return false }
+        let current = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? ""
+        return Self.isVersion(latest, newerThan: current)
+    }
+
+    /// Semantic-ish version compare ("1.2" > "1.1", "1.1.1" > "1.1").
+    static func isVersion(_ a: String, newerThan b: String) -> Bool {
+        let pa = a.split(separator: ".").map { Int($0) ?? 0 }
+        let pb = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(pa.count, pb.count) {
+            let x = i < pa.count ? pa[i] : 0
+            let y = i < pb.count ? pb[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
     /// "google" → narrate via Cloud TTS (/tts); anything else → on-device voice.
     var voiceEngine: String { (values["voiceEngine"] as? String) ?? "system" }
 }
