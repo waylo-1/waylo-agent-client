@@ -53,16 +53,16 @@ final class GuidanceEngine: ObservableObject {
     private var taskName = ""
     private var planAppName = ""   // the plan's target app, so a learned plan can auto-open it
 
-    // HACKATHON (All Things Agentic): live-agent mode. Steps are fetched ONE AT A
-    // TIME from the Genkit cloud agent (/agent/next) instead of a whole plan up
-    // front; everything else (app-open, notch, dot, click-advance, voice) is the
-    // same teach machinery. The running conversation accumulates in agentHistory.
-    private var liveAgentActive = false
-    private var liveAgentGoal = ""
-    private var agentHistory: [WayloAgentClient.HistoryItem] = []
-    private var agentAnswers: [WayloAgentClient.Answer] = []
-    private var lastAgentInstruction: String? = nil     // the step the user is acting on now
-    private var pendingClarify: WayloAgentClient.Question? = nil
+    // HACKATHON (All Things Agentic): follow-up agent mode. The task runs as a
+    // normal FULL plan (fast, proven) — but the guide never dead-ends. When it
+    // completes it asks for a follow-up; each follow-up is a fresh plan that
+    // inherits this session's memory (so the user can learn a whole app across
+    // many questions), correct wrong dots by Right-⌘ voice, and finish with 1 or
+    // the End button.
+    private var followUpMode = false
+    private var awaitingFollowUp = false
+    private var followUpTrail: [String] = []     // tasks done this session — memory for follow-ups
+    private var followUpKeyMonitor: Any? = nil
     /// When true, the running plan is a locked demo: corrections only relabel the
     /// current step, never replan (so the curated step sequence stays intact).
     private var planLocked = false
@@ -214,9 +214,9 @@ final class GuidanceEngine: ObservableObject {
         currentInstruction = ""
         currentStepIndex = 0
         planLocked = false
-        liveAgentActive = false
-        pendingClarify = nil
-        lastAgentInstruction = nil
+        followUpMode = false
+        awaitingFollowUp = false
+        removeFollowUpKeyMonitor()
     }
 
     // MARK: - New-window tracking
@@ -310,9 +310,6 @@ final class GuidanceEngine: ObservableObject {
         guard isRunning else { return }
         guard index >= 0 else { return }
         guard index < steps.count else {
-            // Live-agent: ran out of pre-fetched steps → ask the cloud agent for
-            // the next one (it may also say the task is done). Otherwise finish.
-            if liveAgentActive { await fetchNextAgentStep(); return }
             await onTaskComplete()
             return
         }
@@ -1638,221 +1635,125 @@ final class GuidanceEngine: ObservableObject {
         Speaker.shared.speak(trimmed)
     }
 
-    // MARK: - Live agent (All Things Agentic hackathon)
+    // MARK: - Follow-up agent (All Things Agentic hackathon)
 
-    /// Run a task as a LIVE agent loop. Identical teach behavior to
-    /// `startGuidance` — Waylo opens the target app, collapses to the notch,
-    /// points with the red dot, advances on click, takes Right-⌘ voice
-    /// corrections — but the steps are decided ONE AT A TIME by the Genkit cloud
-    /// agent (`/agent/next`) from the current screen + the running conversation,
-    /// instead of a whole plan generated up front.
-    func startLiveAgent(goal: String) {
-        NSLog("[Waylo] startLiveAgent: '%@'", goal)
-        resetForNewRun()
-        steps = []
-        stepCount = 0
-        currentStepIndex = 0
-        taskName = goal
-        liveAgentActive = true
-        liveAgentGoal = goal
-        agentHistory = []
-        agentAnswers = []
-        lastAgentInstruction = nil
-        pendingClarify = nil
-        isRunning = true
-        installDebugHotkey()
-        DebugLogger.log("LIVE", "▶ live agent start — goal='\(goal)'")
-
-        // Collapse to the notch pill — the guide lives in the notch (same as teach).
-        NotchPanelController.expansion.expanded = false
-
-        // Open the target app first, inferred from the goal (Waylo opens native
-        // apps itself — the agent then guides INSIDE it and never has to fumble
-        // the Dock). Mirrors startGuidance's deterministic app-open guard.
-        let app = Self.appFromGoal(goal)
-        planAppName = app
-        let appIsFrontmost = !app.isEmpty && TargetAppTracker.shared.targetName.caseInsensitiveCompare(app) == .orderedSame
-        let appHasWindow = AccessibilityReader.shared.targetFocusedWindowFrame() != nil
-        if !app.isEmpty, (!appIsFrontmost || !appHasWindow), let url = AppLauncher.resolveApp(named: app) {
-            DebugLogger.log("LIVE", "opening target app '\(app)' first (frontmost=\(appIsFrontmost) window=\(appHasWindow))")
-            NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
-            Task {
-                await ScreenCapturer.shared.settleAfterAction()
-                guard self.isRunning, self.liveAgentActive else { return }
-                await self.fetchNextAgentStep()
-            }
-            return
-        }
-        Task { await fetchNextAgentStep() }
+    /// Start a task in follow-up mode: run it as a normal FULL plan (fast,
+    /// proven), then keep the session open for follow-up questions with memory.
+    func startFollowUpTask(task: String) {
+        followUpTrail = []
+        Task { await generateAndRun(task: task) }
     }
 
-    /// Ask the cloud agent for the next single step given the live screen + the
-    /// running conversation, then feed it into the same step machinery as a plan.
-    private func fetchNextAgentStep() async {
-        guard isRunning, liveAgentActive else { return }
-
-        // Record what the user just did (the step they were on) into the convo.
-        if let last = lastAgentInstruction {
-            agentHistory.append(.init(instruction: last, outcome: "user did it"))
-            lastAgentInstruction = nil
-        }
-
+    /// Generate a full plan (memory-aware) and run it in follow-up mode. On
+    /// completion the guide asks for a follow-up instead of ending.
+    private func generateAndRun(task: String) async {
+        awaitingFollowUp = false
+        removeFollowUpKeyMonitor()
+        HelperButtonController.shared.hide()
         state = .locating
-        statusMessage = "Thinking about the next step…"
-        let spinner = ScreenCoordinates.cocoaToAX(NSEvent.mouseLocation)
-        OverlayWindowController.shared.showLoading(at: spinner)
-
-        let screen = ScreenContextBuilder.build()
-        let appName = TargetAppTracker.shared.targetName
-
-        let decision: WayloAgentClient.Decision
+        statusMessage = "Making a guide…"
+        OverlayWindowController.shared.showLoading(at: ScreenCoordinates.cocoaToAX(NSEvent.mouseLocation))
         do {
-            // userId nil ⇒ Firestore memory OFF for now (it was bleeding stale
-            // answers across unrelated tasks); re-enable once scoped by goal.
-            decision = try await WayloAgentClient.shared.nextStep(
-                goal: liveAgentGoal, appName: appName, screen: screen,
-                userId: nil, history: agentHistory, answers: agentAnswers)
+            // Memory: everything already done this session is handed to the
+            // planner so a follow-up ("now make it italic") builds on it.
+            let mem = followUpTrail.isEmpty ? "" :
+                "Earlier in THIS session the user already completed: " + followUpTrail.joined(separator: "; ") + ". This new request is a FOLLOW-UP — assume that state and build on it."
+            let sessionCtx = [SkillSession.shared.contextForPlan(), mem]
+                .filter { !$0.isEmpty }.joined(separator: "\n")
+            let plan = try await WayloAPIClient.shared.generatePlan(
+                task: task, screenContext: ScreenContextBuilder.build(),
+                sessionContext: sessionCtx, userContext: "")
+            OverlayWindowController.shared.hideDot()
+            DebugLogger.log("FOLLOWUP", "plan for '\(task)' → \(plan.steps.count) steps")
+            startGuidance(plan: plan)
+            followUpMode = true   // set AFTER startGuidance (its resetForNewRun clears it)
         } catch {
             OverlayWindowController.shared.hideDot()
-            DebugLogger.log("LIVE", "agent call FAILED: \(error.localizedDescription)")
-            finishLiveAgent(spoken: "Sorry, I lost the connection. Let's try that again.")
-            return
-        }
-        guard isRunning, liveAgentActive else { return }
-        DebugLogger.log("LIVE", "decision status=\(decision.status) — \(decision.reasoning ?? "")")
-
-        switch decision.status {
-        case "done":
-            await onTaskComplete()
-
-        case "clarify":
-            OverlayWindowController.shared.hideDot()
-            guard let q = decision.question else { await onTaskComplete(); return }
-            pendingClarify = q
-            state = .showing
-            statusMessage = q.prompt
-            currentInstruction = q.prompt
-            let opts = q.options.isEmpty ? "" : "  (\(q.options.joined(separator: "  /  ")))"
-            OverlayWindowController.shared.showBanner("❓ \(q.prompt)\(opts)\nHold Right ⌘ and answer out loud")
-            Speaker.shared.speak("\(q.prompt) Hold the right command key and tell me.")
-            DebugLogger.log("LIVE", "❓ CLARIFY: \(q.prompt) options=\(q.options)")
-
-        default: // "continue" / "recover"
-            guard let action = decision.action else {
-                OverlayWindowController.shared.hideDot()
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                await fetchNextAgentStep()
-                return
-            }
-            let step = Self.stepFromAction(action, index: steps.count)
-            steps.append(step)
-            stepCount = steps.count
-            lastAgentInstruction = action.instruction
-            await executeStep(index: steps.count - 1)
+            DebugLogger.log("FOLLOWUP", "plan FAILED: \(error.localizedDescription)")
+            enterFollowUpPrompt(lead: "Sorry, I couldn't make a guide for that one.")
         }
     }
 
-    /// Right-⌘ voice while a live-agent guide runs: either the ANSWER to a
-    /// pending clarify, or a CORRECTION of the current dot — both fed back to the
-    /// agent, which re-decides. (Plain nav — "next"/"back"/"repeat" — is handled
-    /// by applyVoiceCorrection's fast-paths before this is called.)
-    private func handleLiveAgentVoice(_ message: String) {
-        OverlayWindowController.shared.hideDot()
-        if let q = pendingClarify {
-            pendingClarify = nil
-            agentAnswers.append(.init(question: q.prompt, answer: message))
-            OverlayWindowController.shared.showBanner("“\(message)”", autoDismissAfter: 2)
-            DebugLogger.log("LIVE", "→ answer: '\(message)'")
-            Task { await fetchNextAgentStep() }
-            return
-        }
-        // A correction on the current dot — tell the agent it was wrong and
-        // re-point THIS step (drop the wrong step, re-fetch a replacement).
-        DebugLogger.log("LIVE", "→ correction: '\(message)'")
-        OverlayWindowController.shared.showBanner("“\(message)”", autoDismissAfter: 2)
-        let last = lastAgentInstruction ?? "(the current step)"
-        lastAgentInstruction = nil
-        agentHistory.append(.init(instruction: last,
-            outcome: "the red dot was NOT right — the user says: \(message). Re-point to the correct place; do not repeat the same spot."))
-        if !steps.isEmpty { steps.removeLast(); stepCount = steps.count }
-        Task { await fetchNextAgentStep() }
-    }
-
-    private func finishLiveAgent(spoken: String) {
-        liveAgentActive = false
-        isRunning = false
+    /// The guide is done but the SESSION isn't: ask for a follow-up. Keeps
+    /// isRunning true so Right-⌘ voice routes here; press 1 or End to finish.
+    private func enterFollowUpPrompt(lead: String) {
+        awaitingFollowUp = true
+        followUpMode = true
+        isRunning = true
         state = .complete
-        locateToken += 1
+        currentInstruction = "Any follow-up? Hold the right command key to ask."
+        statusMessage = "Ask a follow-up (hold Right ⌘) · press 1 or End to finish"
+        OverlayWindowController.shared.hideDot()
         removeClickMonitor()
         removeKeyAdvanceMonitor()
+        Speaker.shared.speak("\(lead) If you'd like to do something else, hold the right command key and tell me. Or press one, or the End button, to finish.")
+
+        // Floating End button + press-1 to finish the whole session.
+        HelperButtonController.shared.show(title: "End session") { [weak self] in
+            Task { @MainActor in self?.finishFollowUpSession() }
+        }
+        removeFollowUpKeyMonitor()
+        followUpKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] ev in
+            guard (ev.charactersIgnoringModifiers ?? "") == "1" else { return }
+            Task { @MainActor in self?.finishFollowUpSession() }
+        }
+        NotchPanelController.expansion.expanded = false
+        DebugLogger.log("FOLLOWUP", "awaiting follow-up")
+    }
+
+    /// Right-⌘ voice at the follow-up prompt: a new follow-up task (or "done").
+    private func handleFollowUp(_ message: String) {
+        let t = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let low = t.lowercased()
+        if low == "done" || low == "finish" || low == "stop" || low == "that's all"
+            || low == "thats all" || low.contains("nothing else") || low.contains("i'm done")
+            || low.contains("im done") || low.contains("no thanks") || low.contains("that is all") {
+            finishFollowUpSession(); return
+        }
+        awaitingFollowUp = false
+        removeFollowUpKeyMonitor()
+        HelperButtonController.shared.hide()
+        OverlayWindowController.shared.showBanner("“\(t)”", autoDismissAfter: 2)
+        DebugLogger.log("FOLLOWUP", "follow-up: '\(t)'")
+        Task { await generateAndRun(task: t) }
+    }
+
+    /// End the whole follow-up session (press 1 / End button / "done").
+    func finishFollowUpSession() {
+        guard followUpMode || awaitingFollowUp else { return }
+        followUpMode = false
+        awaitingFollowUp = false
+        removeFollowUpKeyMonitor()
+        HelperButtonController.shared.hide()
         OverlayWindowController.shared.hideDot()
-        statusMessage = spoken
-        currentInstruction = spoken
-        Speaker.shared.speak(spoken)
+        removeClickMonitor()
+        removeKeyAdvanceMonitor()
+        isRunning = false
+        state = .complete
+        currentInstruction = "All done! You've completed the task."
+        statusMessage = L10n.t("task_complete")
+        Speaker.shared.speak("Great — we're all done.")
         NotchPanelController.expansion.expanded = true
-        DebugLogger.log("LIVE", "■ \(spoken)")
+        DebugLogger.log("FOLLOWUP", "■ session ended")
     }
 
-    /// Best-effort: the installed app whose name appears in the goal text.
-    /// "make the text bold in pages" → "Pages"; "" when none matches. Longest
-    /// name wins so "Google Chrome" beats "Chrome".
-    static func appFromGoal(_ goal: String) -> String {
-        let g = " " + goal.lowercased()
-            .replacingOccurrences(of: ",", with: " ")
-            .replacingOccurrences(of: ".", with: " ") + " "
-        let fm = FileManager.default
-        let dirs = ["/Applications", "/System/Applications", "/System/Applications/Utilities",
-                    "/Applications/Utilities", ("~/Applications" as NSString).expandingTildeInPath]
-        var names: [String] = []
-        for dir in dirs {
-            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            names += items.filter { $0.hasSuffix(".app") }.map { String($0.dropLast(4)) }
-        }
-        for name in names.sorted(by: { $0.count > $1.count }) {
-            let n = name.lowercased()
-            guard n.count >= 3 else { continue }
-            if g.contains(" \(n) ") { return name }
-        }
-        return ""
-    }
-
-    /// Convert a cloud-agent action into a teach Step (always a click target).
-    static func stepFromAction(_ a: WayloAgentClient.Action, index: Int) -> Step {
-        let isIcon = (a.elementType ?? "").uppercased().contains("ICON")
-        return Step(
-            index: index,
-            instruction: a.instruction,
-            findDescription: a.findDescription ?? a.visualDescription ?? a.instruction,
-            targetLabel: a.alternateLabels?.first ?? "",
-            elementDescription: a.visualDescription ?? a.findDescription ?? a.instruction,
-            action: .click,
-            key: nil,
-            screenRegion: mapRegion(a.screenRegion),
-            targetType: isIcon ? .icon : .text,
-            controlKind: mapControl(a.elementType))
-    }
-
-    static func mapRegion(_ s: String?) -> ScreenRegion {
-        let x = (s ?? "").lowercased()
-        if x.contains("menu") { return .menuBar }
-        if x.contains("dialog") || x.contains("popup") || x.contains("sheet") { return .dialog }
-        if x.contains("sidebar") || x.contains("nav") { return .sidebar }
-        if x.contains("toolbar") || x.contains("ribbon") { return .ribbon }
-        if x.contains("status") { return .statusBar }
-        return .fullScreen
-    }
-
-    static func mapControl(_ t: String?) -> String {
-        switch (t ?? "").uppercased() {
-        case let x where x.contains("BUTTON") || x.contains("FAB"): return "button"
-        case "TOGGLE": return "checkbox"
-        case "TAB": return "tab"
-        case "TEXT_INPUT": return "field"
-        default: return ""
-        }
+    private func removeFollowUpKeyMonitor() {
+        if let m = followUpKeyMonitor { NSEvent.removeMonitor(m); followUpKeyMonitor = nil }
     }
 
     private func onTaskComplete() async {
+        // Follow-up mode: the guide is done but the session isn't — remember what
+        // we just did (memory for the next follow-up) and ask for another, rather
+        // than ending. Everything below (the real end) is skipped.
+        if followUpMode {
+            if !taskName.isEmpty { followUpTrail.append(taskName) }
+            SkillSession.shared.recordCompleted(task: taskName)
+            if !taskName.isEmpty, !steps.isEmpty {
+                TaskHistory.shared.record(task: taskName, app: planAppName, steps: steps)
+            }
+            enterFollowUpPrompt(lead: L10n.t("spoken_done"))
+            return
+        }
         state = .complete
         OverlayWindowController.shared.hideDot()
         HelperButtonController.shared.hide()
@@ -2003,6 +1904,11 @@ final class GuidanceEngine: ObservableObject {
         guard isRunning else { return }
         let lower = message.lowercased()
 
+        // Follow-up prompt: the whole utterance is a new follow-up task (or a
+        // spoken "done") — not a mid-guide correction. Handle it first so words
+        // like "next" aren't mistaken for navigation.
+        if awaitingFollowUp { handleFollowUp(message); return }
+
         // Fast-path navigation so "next"/"go back"/"repeat" don't need a round trip.
         if lower.contains("go back") || lower.contains("previous") {
             Speaker.shared.speak(L10n.t("spoken_going_back"))
@@ -2016,10 +1922,6 @@ final class GuidanceEngine: ObservableObject {
             Speaker.shared.speak(L10n.t("spoken_again"))
             relocate(); return
         }
-
-        // Live-agent: an answer to a clarify, or a correction — the cloud agent
-        // re-decides. (Reuses this same Right-⌘ voice entry point.)
-        if liveAgentActive { handleLiveAgentVoice(message); return }
 
         DebugLogger.log("VOICE", "correction='\(message)' at step \(currentStepIndex)")
         let idx = currentStepIndex

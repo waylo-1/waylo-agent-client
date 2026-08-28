@@ -445,13 +445,13 @@ struct HomePanelView: View {
                         Text("Teach me").tag(GuideMode.teach)
                         Text("Do it with me").tag(GuideMode.assist)
                         Text("Do it for me").tag(GuideMode.agent)
-                        Text("Live agent").tag(GuideMode.liveAgent)
+                        Text("Follow-up").tag(GuideMode.liveAgent)
                     }
                     .pickerStyle(.segmented)
                     .controlSize(.small)
                     .labelsHidden()
                     Text(engine.mode == .liveAgent
-                         ? "Live agent: same pointing, but the cloud agent decides each step as you go"
+                         ? "Same pointing — but it never ends: ask follow-ups by voice, it remembers the session. Press 1 / End to finish"
                          : engine.mode == .agent
                          ? "Waylo does the whole task itself; risky actions still ask you first"
                          : engine.mode == .assist
@@ -917,14 +917,14 @@ struct HomePanelView: View {
             return
         }
 
-        // HACKATHON (All Things Agentic): live-agent mode runs the SAME teach
-        // guidance (Waylo opens the app, points, advances on click, takes Right-⌘
-        // voice corrections) — but each step is decided LIVE by the Genkit cloud
-        // agent instead of a whole plan generated up front.
+        // HACKATHON (All Things Agentic): follow-up agent mode. Runs the task as
+        // the SAME fast full-plan guide, but never dead-ends — when it finishes it
+        // asks for a follow-up, and each follow-up is a new plan that inherits the
+        // session's memory (learn a whole app across many questions).
         if engine.mode == .liveAgent {
             taskText = ""
             errorMessage = nil
-            GuidanceEngine.shared.startLiveAgent(goal: task)
+            GuidanceEngine.shared.startFollowUpTask(task: task)
             return
         }
 
