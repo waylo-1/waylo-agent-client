@@ -26,6 +26,7 @@ final class CloudAgentEngine: ObservableObject {
     func run(goal: String) {
         guard !isRunning else { return }
         isRunning = true
+        NotchPanelController.expansion.expanded = false   // collapse to the notch pill, like a normal guide
         DebugLogger.log("CLOUD", "▶ agent start — goal='\(goal)' userId=\(userId)")
         Task { await loop(goal: goal) }
     }
@@ -34,6 +35,7 @@ final class CloudAgentEngine: ObservableObject {
         isRunning = false
         removeClick(); removeKey()
         OverlayWindowController.shared.hideDot()
+        NotchPanelController.expansion.expanded = true    // bring the panel back
         DebugLogger.log("CLOUD", "■ agent stopped")
     }
 
@@ -64,10 +66,9 @@ final class CloudAgentEngine: ObservableObject {
 
             switch decision.status {
             case "done":
-                OverlayWindowController.shared.hideDot()
                 Speaker.shared.speak("All done!")
                 DebugLogger.log("CLOUD", "✓ DONE")
-                isRunning = false
+                stop()
                 return
 
             case "clarify":

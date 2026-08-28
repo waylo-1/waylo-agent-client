@@ -914,6 +914,17 @@ struct HomePanelView: View {
             return
         }
 
+        // HACKATHON (All Things Agentic): run the task through the LIVE Google
+        // Cloud agent LOOP (Gemini 3.5 + Genkit on Cloud Run) instead of the old
+        // one-shot plan. Same notch UX + same fast dot detection — but the AI is
+        // in the loop the whole time, deciding each step from the current screen
+        // (Pages already open? → go straight to Bold; not open? → open it first),
+        // asking a clarifying question when unsure, and remembering across sessions.
+        taskText = ""
+        errorMessage = nil
+        CloudAgentEngine.shared.run(goal: task)
+        return
+
         isLoading = true
         errorMessage = nil
 
