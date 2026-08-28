@@ -6,6 +6,12 @@ import Foundation
 ///   2. The `WayloBackendURL` key in Info.plist
 ///   3. A safe localhost default
 enum AppConfig {
+    /// HACKATHON (All Things Agentic): the GenKit + Gemini 3.5 backend on Google
+    /// Cloud Run. The plan "brain" (`/plan`) is routed here so planning runs
+    /// through GenKit + Gemini; detection (YOLO), the vision fallback, and the
+    /// Postgres/Aurora caches stay on `backendBaseURL` (the primary backend).
+    static let genkitBaseURL = "https://waylo-agent-506434766076.asia-south1.run.app"
+
     static var backendBaseURL: String {
         if let env = ProcessInfo.processInfo.environment["WAYLO_BACKEND_URL"],
            !env.isEmpty {

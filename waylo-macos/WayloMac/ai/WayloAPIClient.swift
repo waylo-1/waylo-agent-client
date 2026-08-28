@@ -21,7 +21,9 @@ final class WayloAPIClient {
     /// starting point, for native apps the AX snapshot can't fully see.
     func generatePlan(task: String, screenContext: String = "", sessionContext: String = "",
                       userContext: String = "") async throws -> GuidePlan {
-        guard let url = URL(string: "\(baseURL)/plan") else { throw APIError.invalidURL }
+        // HACKATHON: the plan brain runs on the GenKit + Gemini 3.5 Cloud Run
+        // backend (detection/cache stay on the primary backend).
+        guard let url = URL(string: "\(AppConfig.genkitBaseURL)/plan") else { throw APIError.invalidURL }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
