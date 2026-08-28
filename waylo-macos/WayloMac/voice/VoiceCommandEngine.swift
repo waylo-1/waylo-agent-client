@@ -59,15 +59,6 @@ final class VoiceCommandEngine: ObservableObject {
         state = .working
         DebugLogger.log("VOICE", "heard: '\(text)'")
 
-        // HACKATHON: while the live cloud agent is running, Right ⌘ voice is the
-        // way to answer its question, correct a wrong dot, or add a follow-up.
-        if CloudAgentEngine.shared.isRunning {
-            OverlayWindowController.shared.showBanner("“\(text)”", autoDismissAfter: 3)
-            CloudAgentEngine.shared.receiveVoice(text)
-            state = .idle
-            return
-        }
-
         if GuidanceEngine.shared.isRunning {
             // Mid-guide: spoken correction / follow-up → recover & continue.
             OverlayWindowController.shared.showBanner("“\(text)”")

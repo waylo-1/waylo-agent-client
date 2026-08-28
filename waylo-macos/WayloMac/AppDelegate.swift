@@ -104,12 +104,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // consumed when something was actually running (handler returns true).
         hk.escStopAction = {
             MainActor.assumeIsolated {
-                if CloudAgentEngine.shared.isRunning {   // hackathon cloud agent (branch)
-                    CloudAgentEngine.shared.stop()
-                    Speaker.shared.stop()
-                    Speaker.shared.speak("Stopped.")
-                    return true
-                }
                 if AgentEngine.shared.isRunning {
                     AgentEngine.shared.stop()
                     Speaker.shared.stop()
@@ -123,16 +117,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return true
                 }
                 return false
-            }
-        }
-        // ⌃⌥⌘ G — HACKATHON: run the LIVE Google Cloud agent loop (/agent/next).
-        // Goal comes from UserDefaults "waylo.cloudGoal" (set it with
-        // `defaults write com.waylo.macos waylo.cloudGoal "open a document"`),
-        // defaulting to the clarify+memory demo. Branch-only demo trigger.
-        hk.register(keyCode: 5, name: "cloud-agent") {
-            Task { @MainActor in
-                let goal = UserDefaults.standard.string(forKey: "waylo.cloudGoal") ?? "open a document"
-                CloudAgentEngine.shared.run(goal: goal)
             }
         }
         // ⌃⌥⌘ V — HOLD to talk: speak a task (or mid-guide correction) for as

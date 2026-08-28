@@ -445,11 +445,14 @@ struct HomePanelView: View {
                         Text("Teach me").tag(GuideMode.teach)
                         Text("Do it with me").tag(GuideMode.assist)
                         Text("Do it for me").tag(GuideMode.agent)
+                        Text("Live agent").tag(GuideMode.liveAgent)
                     }
                     .pickerStyle(.segmented)
                     .controlSize(.small)
                     .labelsHidden()
-                    Text(engine.mode == .agent
+                    Text(engine.mode == .liveAgent
+                         ? "Live agent: same pointing, but the cloud agent decides each step as you go"
+                         : engine.mode == .agent
                          ? "Waylo does the whole task itself; risky actions still ask you first"
                          : engine.mode == .assist
                          ? "Waylo clicks safe steps itself; risky ones you confirm"
@@ -914,16 +917,16 @@ struct HomePanelView: View {
             return
         }
 
-        // HACKATHON (All Things Agentic): run the task through the LIVE Google
-        // Cloud agent LOOP (Gemini 3.5 + Genkit on Cloud Run) instead of the old
-        // one-shot plan. Same notch UX + same fast dot detection — but the AI is
-        // in the loop the whole time, deciding each step from the current screen
-        // (Pages already open? → go straight to Bold; not open? → open it first),
-        // asking a clarifying question when unsure, and remembering across sessions.
-        taskText = ""
-        errorMessage = nil
-        CloudAgentEngine.shared.run(goal: task)
-        return
+        // HACKATHON (All Things Agentic): live-agent mode runs the SAME teach
+        // guidance (Waylo opens the app, points, advances on click, takes Right-⌘
+        // voice corrections) — but each step is decided LIVE by the Genkit cloud
+        // agent instead of a whole plan generated up front.
+        if engine.mode == .liveAgent {
+            taskText = ""
+            errorMessage = nil
+            GuidanceEngine.shared.startLiveAgent(goal: task)
+            return
+        }
 
         isLoading = true
         errorMessage = nil
