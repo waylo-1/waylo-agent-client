@@ -63,6 +63,9 @@ final class GuidanceEngine: ObservableObject {
     private var awaitingFollowUp = false
     private var followUpTrail: [String] = []     // tasks done this session — memory for follow-ups
     private var followUpKeyMonitor: Any? = nil
+    /// Set when the agent asked a clarifying question before planning; the next
+    /// Right-⌘ voice utterance is the ANSWER, which re-plans. (task, question).
+    private var awaitingClarify: (task: String, prompt: String)? = nil
     /// When true, the running plan is a locked demo: corrections only relabel the
     /// current step, never replan (so the curated step sequence stays intact).
     private var planLocked = false
@@ -216,6 +219,7 @@ final class GuidanceEngine: ObservableObject {
         planLocked = false
         followUpMode = false
         awaitingFollowUp = false
+        awaitingClarify = nil
         removeFollowUpKeyMonitor()
     }
 
@@ -1667,11 +1671,44 @@ final class GuidanceEngine: ObservableObject {
             DebugLogger.log("FOLLOWUP", "plan for '\(task)' → \(plan.steps.count) steps")
             startGuidance(plan: plan)
             followUpMode = true   // set AFTER startGuidance (its resetForNewRun clears it)
+        } catch let APIError.clarify(prompt, options) {
+            OverlayWindowController.shared.hideDot()
+            DebugLogger.log("FOLLOWUP", "plan CLARIFY: \(prompt)")
+            enterPlanClarify(task: task, prompt: prompt, options: options)
         } catch {
             OverlayWindowController.shared.hideDot()
             DebugLogger.log("FOLLOWUP", "plan FAILED: \(error.localizedDescription)")
             enterFollowUpPrompt(lead: "Sorry, I couldn't make a guide for that one.")
         }
+    }
+
+    /// The agent asked a clarifying question instead of planning. Speak it, show
+    /// the options, and wait for the user to answer by Right-⌘ voice — then
+    /// re-plan with the answer folded in. (Collaborative Partner: asks when unsure.)
+    private func enterPlanClarify(task: String, prompt: String, options: [String]) {
+        awaitingClarify = (task, prompt)
+        awaitingFollowUp = false
+        followUpMode = true
+        isRunning = true                 // so Right-⌘ voice routes here
+        state = .showing
+        currentInstruction = prompt
+        statusMessage = "Answer to continue (hold Right ⌘)"
+        OverlayWindowController.shared.hideDot()
+        removeClickMonitor(); removeKeyAdvanceMonitor(); removeFollowUpKeyMonitor()
+        HelperButtonController.shared.hide()
+        let opts = options.isEmpty ? "" : "  (\(options.joined(separator: "  /  ")))"
+        OverlayWindowController.shared.showBanner("❓ \(prompt)\(opts)\nHold Right ⌘ and answer out loud")
+        Speaker.shared.speak("\(prompt) Hold the right command key and tell me.")
+        NotchPanelController.expansion.expanded = false
+        DebugLogger.log("FOLLOWUP", "❓ clarify awaiting answer — options=\(options)")
+    }
+
+    /// The user answered the clarifying question — re-plan with their answer.
+    private func handleClarifyAnswer(task: String, prompt: String, answer: String) {
+        OverlayWindowController.shared.showBanner("“\(answer)”", autoDismissAfter: 2)
+        DebugLogger.log("FOLLOWUP", "→ clarify answer: '\(answer)'")
+        let augmented = "\(task)\n\n(The user was asked: \"\(prompt)\" and answered: \"\(answer)\". Use this answer.)"
+        Task { await generateAndRun(task: augmented) }
     }
 
     /// The guide is done but the SESSION isn't: ask for a follow-up. Keeps
@@ -1903,6 +1940,14 @@ final class GuidanceEngine: ObservableObject {
     func applyVoiceCorrection(_ message: String) {
         guard isRunning else { return }
         let lower = message.lowercased()
+
+        // Clarify answer: the agent asked a question before planning; this
+        // utterance is the answer → re-plan with it. Handle first.
+        if let clarify = awaitingClarify {
+            awaitingClarify = nil
+            handleClarifyAnswer(task: clarify.task, prompt: clarify.prompt, answer: message)
+            return
+        }
 
         // Follow-up prompt: the whole utterance is a new follow-up task (or a
         // spoken "done") — not a mid-guide correction. Handle it first so words

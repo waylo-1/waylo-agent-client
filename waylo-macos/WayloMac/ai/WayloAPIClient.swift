@@ -57,6 +57,15 @@ final class WayloAPIClient {
             throw APIError.serverError
         }
 
+        // The agent may ask a clarifying question INSTEAD of returning a plan
+        // (Collaborative Partner) — surface it so the caller can ask the user.
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let clarify = obj["clarify"] as? [String: Any],
+           let prompt = (clarify["prompt"] as? String), !prompt.isEmpty {
+            let options = (clarify["options"] as? [String]) ?? []
+            throw APIError.clarify(prompt: prompt, options: options)
+        }
+
         return try PlanParser.parsePlan(from: data, fallbackTask: task)
     }
 
@@ -849,6 +858,8 @@ enum APIError: Error, LocalizedError {
     /// (e.g. "Too many tokens per day, please wait before trying again.").
     case serverMessage(String)
     case decodingError
+    /// The agent asked a clarifying question instead of returning a plan.
+    case clarify(prompt: String, options: [String])
 
     var errorDescription: String? {
         switch self {
@@ -856,6 +867,7 @@ enum APIError: Error, LocalizedError {
         case .serverError: return "The server returned an error."
         case .serverMessage(let detail): return detail
         case .decodingError: return "Could not decode the server response."
+        case .clarify(let prompt, _): return prompt
         }
     }
 }

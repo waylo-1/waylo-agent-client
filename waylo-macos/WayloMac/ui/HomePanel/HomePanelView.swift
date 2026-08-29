@@ -950,7 +950,13 @@ struct HomePanelView: View {
             } catch {
                 NSLog("[Waylo] generatePlan FAILED: %@", String(describing: error))
                 isLoading = false
-                if case let APIError.serverMessage(detail) = error {
+                if case let APIError.clarify(prompt, options) = error {
+                    // Agent needs a detail — show the question so the user can
+                    // re-submit with the answer. (Voice-answered in Follow-up mode.)
+                    let opts = options.isEmpty ? "" : "  (\(options.joined(separator: " / ")))"
+                    errorMessage = "One question first: \(prompt)\(opts)"
+                    Speaker.shared.speak(prompt)
+                } else if case let APIError.serverMessage(detail) = error {
                     errorMessage = "The server couldn't make a guide: \(detail)"
                 } else {
                     errorMessage = "Failed to generate guide. Check your internet connection."
