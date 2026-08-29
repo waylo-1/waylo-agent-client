@@ -18,19 +18,19 @@ This repo is the **client**: it reads the screen, draws the talking red dot, and
 
 Per the **New Projects Only** rule, the boundary is explicit:
 
-- **Built during the Submission Period (Aug 3–31, 2026):** the entire **agent backend** (Genkit + Gemini 3.5 planner, clarifying-question flow, per-turn agent) in the `waylo_agent` repo; and, in **this** repo, the client's **agent wiring** — Follow-up mode, the clarify UI, and Right-⌘ voice / typed feedback capture (all commits in this window, on the branch merged here).
+- **Built during the Submission Period (Aug 3–31, 2026):** the entire **agent backend** (Genkit + Gemini 3.5 planner, clarifying-question flow, per-turn agent) in the [`waylo_agent`](https://github.com/waylo-1/waylo_agent) repo; and, in **this** repo, the client's **agent wiring** — Follow-up mode, the clarify UI, and Right-⌘ voice / typed feedback capture. The dated commits for this work are all inside the window.
 - **Pre-existing, carried in (before Aug 3, 2026), named as such:** the macOS / Android **client shell** (window, notch panel, red-dot overlay) and the **on-device detection pipeline** (L0 Accessibility, L1 OCR, L2 / L2.5 YOLO) that turns a planned step into pixel coordinates.
 - **Standard frameworks:** Genkit, Google GenAI SDK, SwiftUI / AppKit, Kotlin.
 
 ## Reproducible testing instructions
 
-**Easiest — try the prebuilt macOS app (no build needed):**
-1. Download `Waylo-AgentDemo.app` from the hosted download page (Devpost "Try it" link).
-2. Open it. On first launch, grant the three macOS permissions it requests: **Accessibility**, **Screen Recording**, and **Microphone + Speech Recognition** (System Settings → Privacy & Security). These let it read the screen and draw the dot.
-3. In the notch panel, pick **Follow-up** in the mode picker.
-4. Type or say a task, e.g. **"make the text bold in Pages"**. Waylo opens the app and guides you with the red dot.
-5. When it finishes, the panel opens for a **follow-up** — type/say **"now make it bigger"** (it remembers you were in Pages). Try a vague one like **"share this"** to see it **ask a clarifying question**. Correct a dot by holding **Right ⌘** and speaking, or press **⌃⌥⌘N** to confirm-and-learn.
-6. The plans come live from the Genkit backend on Cloud Run — no local backend needed.
+**Easiest — prebuilt judge build (no build needed):**
+1. Download the macOS DMG from the hosted download page (Devpost "Try it" link) or the [GitHub Release](https://github.com/waylo-1/waylo-agent-client/releases/tag/judge-build).
+2. Open the DMG and drag **Waylo** to Applications. The app isn't notarized, so on first launch **right-click `Waylo.app` → Open → Open** (or System Settings → Privacy & Security → "Open Anyway").
+3. Grant the three macOS permissions it asks for: **Accessibility**, **Screen Recording**, and **Microphone + Speech Recognition** (System Settings → Privacy & Security) — these let it read the screen and draw the dot.
+4. In the notch panel, type or say a task — e.g. **"make the text bold in Pages"**. This build runs the agent's **Follow-up** (Collaborative Partner) loop, so there's nothing to configure; Waylo opens the app and guides you with the red dot.
+5. When it finishes, the panel stays open for a **follow-up** — type/say **"now make it bigger"** (it remembers you were in Pages). Try a vague one like **"share this"** to see it **ask a clarifying question**. Correct a dot by holding **Right ⌘** and speaking, or press **⌃⌥⌘N** to confirm-and-learn.
+6. Plans come live from the **Genkit + Gemini 3.5** backend on **Cloud Run** — no local backend or keys needed.
 
 **Build from source (macOS):**
 ```bash
