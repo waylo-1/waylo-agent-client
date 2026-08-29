@@ -48,6 +48,9 @@ final class GuidanceEngine: ObservableObject {
     @Published var stepCount = 0
     @Published var currentInstruction = ""
     @Published var statusMessage = ""
+    /// True while the session is waiting for the user to type/speak a follow-up
+    /// request or a clarify answer — the panel shows a text field for it.
+    @Published private(set) var awaitingInput = false
 
     private var steps: [Step] = []
     private var taskName = ""
@@ -220,6 +223,7 @@ final class GuidanceEngine: ObservableObject {
         followUpMode = false
         awaitingFollowUp = false
         awaitingClarify = nil
+        awaitingInput = false
         removeFollowUpKeyMonitor()
     }
 
@@ -1652,6 +1656,7 @@ final class GuidanceEngine: ObservableObject {
     /// completion the guide asks for a follow-up instead of ending.
     private func generateAndRun(task: String) async {
         awaitingFollowUp = false
+        awaitingInput = false
         removeFollowUpKeyMonitor()
         HelperButtonController.shared.hide()
         state = .locating
@@ -1688,6 +1693,7 @@ final class GuidanceEngine: ObservableObject {
     private func enterPlanClarify(task: String, prompt: String, options: [String]) {
         awaitingClarify = (task, prompt)
         awaitingFollowUp = false
+        awaitingInput = true
         followUpMode = true
         isRunning = true                 // so Right-⌘ voice routes here
         state = .showing
@@ -1716,6 +1722,7 @@ final class GuidanceEngine: ObservableObject {
     /// isRunning true so Right-⌘ voice routes here; press 1 or End to finish.
     private func enterFollowUpPrompt(lead: String) {
         awaitingFollowUp = true
+        awaitingInput = true
         followUpMode = true
         isRunning = true
         state = .complete
@@ -1781,6 +1788,7 @@ final class GuidanceEngine: ObservableObject {
         guard followUpMode || awaitingFollowUp else { return }
         followUpMode = false
         awaitingFollowUp = false
+        awaitingInput = false
         removeFollowUpKeyMonitor()
         HelperButtonController.shared.hide()
         OverlayWindowController.shared.hideDot()

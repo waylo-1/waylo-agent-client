@@ -87,6 +87,9 @@ struct HomePanelView: View {
                 // 25) before anything else. The REVIEWER build skips this entirely
                 // — judges get unlimited tasks with no sign-up.
                 signInGate
+            } else if engine.awaitingInput {
+                // Follow-up / clarify prompt: let the user TYPE (or speak) it.
+                followUpInput
             } else if !engine.isRunning {
                 // isRunning flips false the moment a guide finishes, so the
                 // completion state must be shown here — the .complete branch
@@ -106,6 +109,28 @@ struct HomePanelView: View {
         .onAppear {
             if !WayloConfig.showDevSurface { engine.mode = .teach }
             refreshStatus()
+        }
+    }
+
+    // MARK: - Follow-up / clarify input (type or speak)
+
+    /// Shown while a session waits for the next request or a clarify answer.
+    /// The user can TYPE it here (reusing the task field) or hold Right ⌘ to say it.
+    private var followUpInput: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(engine.currentInstruction.isEmpty ? "Anything else you'd like to do?" : engine.currentInstruction)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.white)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Type it below, or hold the right ⌘ key to say it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            taskInput
+            Button { GuidanceEngine.shared.finishFollowUpSession() } label: {
+                Text("End session")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
         }
     }
 
