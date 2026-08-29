@@ -21,8 +21,9 @@ enum WayloConfig {
     }
 
     /// Whether to show the developer surface (mode picker + Developer Tools):
-    /// any non-production build, or a signed-in developer account.
-    static var showDevSurface: Bool { !isProduction || isDeveloper }
+    /// any non-production build, a signed-in developer account, or the judge
+    /// build (so reviewers get the Follow-up surface on any machine).
+    static var showDevSurface: Bool { !isProduction || isDeveloper || isJudgeBuild }
 
     /// The XPRIZE REVIEWER ("judge") build: unlimited tasks — the backend waives
     /// the paywall for requests carrying `judgeBuildKey` — with the SAME clean

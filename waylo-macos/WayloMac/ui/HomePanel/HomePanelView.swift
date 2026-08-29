@@ -107,7 +107,8 @@ struct HomePanelView: View {
         .padding(20)
         .frame(width: 340)
         .onAppear {
-            if !WayloConfig.showDevSurface { engine.mode = .teach }
+            // Hackathon build: Follow-up is the only mode.
+            engine.mode = .liveAgent
             refreshStatus()
         }
     }
@@ -467,9 +468,7 @@ struct HomePanelView: View {
                         get: { engine.mode },
                         set: { engine.mode = $0 }
                     )) {
-                        Text("Teach me").tag(GuideMode.teach)
-                        Text("Do it with me").tag(GuideMode.assist)
-                        Text("Do it for me").tag(GuideMode.agent)
+                        // Hackathon build: Follow-up is the only mode.
                         Text("Follow-up").tag(GuideMode.liveAgent)
                     }
                     .pickerStyle(.segmented)
