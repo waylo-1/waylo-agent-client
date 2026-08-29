@@ -28,15 +28,41 @@ final class DebugLogger {
         return f
     }()
 
+    /// Plain-text file sink: every line is appended to a log file so tools can
+    /// read the trace DIRECTLY (no `log show`, no pasting a report). Truncated
+    /// once per launch so each session's file stays small and relevant.
+    /// Path: ~/Library/Logs/Waylo/agent-debug.log
+    static let logFileURL: URL = {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/Waylo", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("agent-debug.log")
+        try? "=== Waylo debug log — launched \(Date()) ===\n".write(to: url, atomically: false, encoding: .utf8)
+        return url
+    }()
+    private static let fileLock = NSLock()
+    private static let fileHandle: FileHandle? = {
+        guard let h = try? FileHandle(forWritingTo: logFileURL) else { return nil }
+        h.seekToEndOfFile()
+        return h
+    }()
+
     static func log(_ tag: String, _ message: String) {
         guard isEnabled else { return }
         // .public so the dynamic values aren't redacted to <private>.
         logger.log("[\(tag, privacy: .public)] \(message, privacy: .public)")
 
+        let line = "\(timeFormatter.string(from: Date())) [\(tag)] \(message)"
+
         bufferLock.lock()
-        buffer.append("\(timeFormatter.string(from: Date())) [\(tag)] \(message)")
+        buffer.append(line)
         if buffer.count > bufferCap { buffer.removeFirst(buffer.count - bufferCap) }
         bufferLock.unlock()
+
+        // Append to the on-disk trace (Release included — that's the point).
+        fileLock.lock()
+        fileHandle?.write((line + "\n").data(using: .utf8) ?? Data())
+        fileLock.unlock()
 
         #if DEBUG
         // Mirror to stderr for Xcode console runs; skipped in Release so
