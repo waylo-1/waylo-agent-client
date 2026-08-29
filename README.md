@@ -12,6 +12,8 @@ This repo is the **client**: it reads the screen, draws the talking red dot, and
 - **Live backend (Google Cloud Run):** https://waylo-agent-506434766076.asia-south1.run.app
 - **How it works:** you type or speak a task → the client sends the task + a live screen snapshot + session memory to Cloud Run → **Genkit + Gemini 3.5** return a step-by-step plan (or a clarifying question) → the client points the red dot at each step, on-device. It never dead-ends: after a task it asks for a follow-up and remembers what you just did.
 
+![Waylo Agent — architecture](docs/architecture.png)
+
 ## What was built for this hackathon (disclosure)
 
 Per the **New Projects Only** rule, the boundary is explicit:
