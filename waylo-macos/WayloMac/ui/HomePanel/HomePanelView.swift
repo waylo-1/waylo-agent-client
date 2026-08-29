@@ -885,6 +885,15 @@ struct HomePanelView: View {
         let task = taskText.trimmingCharacters(in: .whitespaces)
         guard !task.isEmpty else { return }
 
+        // If a follow-up session is waiting for input (a follow-up request or a
+        // clarify answer), a TYPED submission goes there — same as speaking it.
+        // Lets users type instead of relying on speech recognition.
+        if GuidanceEngine.shared.submitTypedInput(task) {
+            taskText = ""
+            errorMessage = nil
+            return
+        }
+
         // Direct intents (open a site, web search, launch an app) execute
         // instantly — no plan, no dot, no cost.
         if let intent = IntentShortcuts.match(task) {

@@ -8,6 +8,28 @@ import AVFoundation
 /// a transcript survives even if no "final" arrives, and log every stage so the
 /// "empty transcript" failure mode is debuggable.
 final class MicHandler: NSObject, SFSpeechRecognizerDelegate {
+
+    /// Words users commonly say to Waylo — supplied as `contextualStrings` so the
+    /// recognizer biases toward them (big accuracy win for short domain words).
+    static let vocabulary: [String] = [
+        // formatting
+        "bold", "italic", "italicize", "underline", "bigger", "smaller", "font",
+        "font size", "text size", "color", "colour", "highlight", "bullet",
+        "bullet list", "numbered list", "indent", "outdent", "align", "center",
+        "heading", "title", "strikethrough", "superscript", "subscript",
+        // actions
+        "open", "close", "save", "new document", "undo", "redo", "copy", "paste",
+        "cut", "delete", "select all", "share", "export", "print", "find",
+        "replace", "insert", "table", "image", "comment", "zoom",
+        // apps / places
+        "Pages", "Numbers", "Keynote", "Safari", "Mail", "Notes", "Reminders",
+        "Calendar", "Messages", "Photos", "Finder", "System Settings", "Spotify",
+        "Preview", "Contacts", "Maps", "Music", "Dark Mode", "Wi-Fi", "Bluetooth",
+        // control words for the follow-up loop
+        "done", "finished", "next", "back", "repeat", "stop", "yes", "no",
+        "that's wrong", "wrong spot", "make it bigger", "make it bold",
+    ]
+
     static let shared = MicHandler()
 
     /// Rebuilt when the user's language preference changes (en/hi/pa).
@@ -113,6 +135,15 @@ final class MicHandler: NSObject, SFSpeechRecognizerDelegate {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        // Prefer Apple's SERVER recognizer — markedly more accurate than the
+        // on-device model (which mis-hears domain words like "italic"). Falls
+        // back to on-device automatically when offline.
+        request.requiresOnDeviceRecognition = false
+        request.taskHint = .dictation
+        // Bias recognition toward the words users actually say to Waylo, so
+        // "italic", "bigger", "Pages" etc. are far less likely to be mis-heard.
+        request.contextualStrings = MicHandler.vocabulary
+        if #available(macOS 13.0, *) { request.addsPunctuation = false }
         recognitionRequest = request
 
         let inputNode = audioEngine.inputNode

@@ -1697,9 +1697,10 @@ final class GuidanceEngine: ObservableObject {
         removeClickMonitor(); removeKeyAdvanceMonitor(); removeFollowUpKeyMonitor()
         HelperButtonController.shared.hide()
         let opts = options.isEmpty ? "" : "  (\(options.joined(separator: "  /  ")))"
-        OverlayWindowController.shared.showBanner("❓ \(prompt)\(opts)\nHold Right ⌘ and answer out loud")
-        Speaker.shared.speak("\(prompt) Hold the right command key and tell me.")
-        NotchPanelController.expansion.expanded = false
+        OverlayWindowController.shared.showBanner("❓ \(prompt)\(opts)\nType your answer in the panel, or hold Right ⌘ to say it")
+        Speaker.shared.speak("\(prompt) Type your answer, or hold the right command key to say it.")
+        // Expand so the answer can be TYPED (speech optional).
+        NotchPanelController.expansion.expanded = true
         DebugLogger.log("FOLLOWUP", "❓ clarify awaiting answer — options=\(options)")
     }
 
@@ -1723,7 +1724,7 @@ final class GuidanceEngine: ObservableObject {
         OverlayWindowController.shared.hideDot()
         removeClickMonitor()
         removeKeyAdvanceMonitor()
-        Speaker.shared.speak("\(lead) If you'd like to do something else, hold the right command key and tell me. Or press one, or the End button, to finish.")
+        Speaker.shared.speak("\(lead) Type your next request in the panel, or hold the right command key to say it. Press one, or End, to finish.")
 
         // Floating End button + press-1 to finish the whole session.
         HelperButtonController.shared.show(title: "End session") { [weak self] in
@@ -1734,7 +1735,8 @@ final class GuidanceEngine: ObservableObject {
             guard (ev.charactersIgnoringModifiers ?? "") == "1" else { return }
             Task { @MainActor in self?.finishFollowUpSession() }
         }
-        NotchPanelController.expansion.expanded = false
+        // Expand the panel so the user can TYPE the follow-up (speech is optional).
+        NotchPanelController.expansion.expanded = true
         DebugLogger.log("FOLLOWUP", "awaiting follow-up")
     }
 
@@ -1753,6 +1755,25 @@ final class GuidanceEngine: ObservableObject {
         OverlayWindowController.shared.showBanner("“\(t)”", autoDismissAfter: 2)
         DebugLogger.log("FOLLOWUP", "follow-up: '\(t)'")
         Task { await generateAndRun(task: t) }
+    }
+
+    /// Route a TYPED submission from the notch panel while a session waits for
+    /// input: answer a pending clarify, or take it as the next follow-up. Returns
+    /// true if consumed (so the panel does NOT start a fresh, separate task).
+    /// Lets users type instead of speaking when speech recognition is unreliable.
+    func submitTypedInput(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        if let clarify = awaitingClarify {
+            awaitingClarify = nil
+            handleClarifyAnswer(task: clarify.task, prompt: clarify.prompt, answer: t)
+            return true
+        }
+        if awaitingFollowUp {
+            handleFollowUp(t)
+            return true
+        }
+        return false
     }
 
     /// End the whole follow-up session (press 1 / End button / "done").
